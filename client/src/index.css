@@ -1,0 +1,135 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #322bd0;
+  --color-primary-hover: #4d4ae8;
+  --color-primary-light: #e2dfff;
+
+  /* Backround colors */
+  --color-page: #f8f9ff;
+  --color-surface: #ffffff;
+  --color-field: #eff4ff;
+
+  /* Text colors */
+  --color-ink: #0b1c30;
+  --color-ink-soft: #464555;
+  --color-muted: #565e74;
+  --color-subtle: #6b6a7c;
+
+  /* Borders and soft panels */
+  --color-line: #eaf2ff;
+  --color-line-soft: #e5eeff;
+  --color-panel: #f2f6ff;
+
+  /* Dark */
+  --color-navy: #213145;
+  --color-footer: #111827;
+
+  /* Status */
+  --color-danger: #ba1a1a;
+  --color-danger-light: #fff8f7;
+  --color-success: #01724e;
+  --color-forest: #00563a;
+  --color-mint: #6ffbbe;
+  --color-warning: #f59e0b;
+  --color-info-light: #dce9ff;
+
+  /* Fonts (loaded in index.html) */
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+
+  /* Shadow */
+  --shadow-card: 0 2px 8px rgba(11, 28, 48, 0.04);
+  --shadow-banner: 0 20px 40px -12px rgba(11, 28, 48, 0.25);
+  --shadow-lift: 0 14px 28px -14px rgba(11, 28, 48, 0.22);
+
+  /* Animations  */
+  --animate-fade-in: fade-in 0.25s ease-out both; /*pages, overlays*/
+  --animate-pop-in: pop-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.15) both; /*popups and menus */
+  --animate-slide-in-right: slide-in-right 0.3s cubic-bezier(0.2, 0.8, 0.2, 1)
+    both; /*side panels*/
+  --animate-slide-in-left: slide-in-left 0.3s cubic-bezier(0.2, 0.8, 0.2, 1)
+    both; /*the admin phone menu*/
+  --animate-slide-up: slide-up 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) both; /*toastes, back-to-top*/
+  --animate-bumb: bumb 0.4s ease-out; /*the cart count when something is added*/
+  --animate-heart: heart 0.4s ease-out; /*a heart when a product is liked or saved */
+  --animate-tick: tick 0.3s ease-out; /*the countdown numbers*/
+  --animate-grow-x: grow-x 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both; /*progress bars filling up*/
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: scale(0.95) translateY(-6px);
+    }
+  }
+
+  @keyframes slide-in-right {
+    from {
+      transform: translateX(100%);
+    }
+  }
+
+  @keyframes slide-in-left {
+    from {
+      transform: translateX(-100%);
+    }
+  }
+
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+  }
+
+  @keyframes bumb {
+    40% {
+      transform: scale(1.35);
+    }
+  }
+
+  @keyframes heart {
+    35% {
+      transform: scale(1.35);
+    }
+    70% {
+      transform: scale(0.9);
+    }
+  }
+
+  @keyframes tick {
+    from {
+      opacity: 0.2;
+      transform: translateY(-40%);
+    }
+  }
+
+  @keyframes grow-x {
+    from {
+      transform: scale(0);
+    }
+  }
+}
+
+/* Base look of the whole app */
+@layer base {
+  body {
+    @apply bg-page text-ink antialiased;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+
+  /* Buttons press in a little when clicked */
+  @media (prefers-reduced-motion: no-preference) {
+    button:not(:disabled):active {
+      scale: 0.97;
+    }
+  }
+}

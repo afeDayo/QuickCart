@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "es2022", // javascript/typescript version
+    "module": "nodenext", // tells typescript how to handle imports and exports of packages
+    "moduleResolution": "nodenext",
+    "rootDir": "src", // tells typescript that all your source files lives inside src
+    "outDir": "dist", // dist simply means distribution
+    "types": ["node"], // typescript works with node modules
+    "strict": true, // turns on all checks e.g synthax errors etc
+    "esModuleInterop": true, // it lets us imports packages
+    "skipLibCheck": true, // checks for spelling errors
+    "forceConsistentCasingInFileNames": true // prevents bugs caused by case-sensitive files
+  },
+  "include": ["src"] // tells typescript which file to include in the compilation
+}
