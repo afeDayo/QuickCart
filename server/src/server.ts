@@ -22,4 +22,4 @@ const startServer = async () => {
 
 startServer();
 
-// Next: STEP 7 (The Category model) -> server/src/model/Category.ts
+// Next: STEP 7 (The Category model) -> server/src/models/Category.ts
