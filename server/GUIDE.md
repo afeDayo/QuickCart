@@ -19,9 +19,9 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅ | 9 | `slugify` |
 | ✅ | 10 | Demo data: `categories.ts`, `products.ts` (40 products) |
 | ✅ | 11 | Upload photos to Cloudinary (renames skipped: STEP 12.0 handles it) |
-| 🟡 | 12 | `demoData.ts`: 12.1 done ✅, **12.2 still to write** (`demoData.ts` is empty) |
-| ⬜ | **13** | **`seed.ts`: `npm run seed` fills MongoDB** ← you are here |
-| ⬜ | 14 | Error handler (`errorHandler.ts`) |
+| 🟡 | 12 | `demoData.ts` ✅, but **line 97 still uses `photosFor(slug, ...)`** and `photosFor` is the old version (see STEP 14 ⚠️) |
+| ✅ | 13 | `seed.ts`: `npm run seed` works (commit `seed.ts`, it's still untracked) |
+| ⬜ | **14** | **Error handler (`AppError` + `errorHandler.ts`)** ← you are here |
 | ⬜ | 15 | Categories API: `GET /api/categories` |
 | ⬜ | 16 | Products API: list, filters, sort, pagination, one product |
 | ⬜ | 17 | User model (password hashing, roles, addresses, saved items) |
@@ -674,3 +674,193 @@ git push
 
 ➡️ **Next: STEP 14 (error handler)**. After that, STEPS 15–16 make the products you just seeded available
 at `/api/categories` and `/api/products`, and the shop starts having real data. Reply **NEXT** when 13.3 checks out.
+
+---
+
+## STEP 14: One place to handle errors
+
+### ⚠️ Still open from STEP 13 (2 minutes, do it first)
+`src/data/demoData.ts` **line 97** still says `images: photosFor(slug, photoIds),`, so the 9 products with a
+`photo:` name are still saved **without photos**. Change it to:
+```ts
+    images: photosFor(item.photo ?? slug, photoIds), // "photo" from 12.0, otherwise the slug
+```
+Also replace your `photosFor` (lines 48–60) with the version in STEP 12.2, the one with `bare` and `photoNumber`.
+Then run `npm run seed` again until the "have no photos" line is gone.
+Also, `src/data/seed.ts` has **never been committed** (`git status` shows `??`), so include it in this step's commit.
+
+### What this step is for
+From STEP 15 on, every route can go wrong in some way:
+- someone asks for a product that doesn't exist (404)
+- they send an id that isn't a valid MongoDB id (400)
+- they register with an email that's already taken (409)
+- their login has expired (401)
+- the database is down (500)
+
+Without a plan, every route ends up with its own `try/catch` and its own way of replying. Instead:
+
+1. **Routes just `throw`.** For example, `throw new AppError(404, "Product not found")`.
+2. **Express 5 catches it.** Even in `async` functions, a thrown error or rejected promise is passed along
+   automatically. (Express 4 couldn't do this, which is why older tutorials wrap everything in `asyncHandler`.
+   You don't need that.)
+3. **One `errorHandler` turns any error into a tidy JSON reply** like `{ "message": "Product not found" }`,
+   with the right status code. The website can then always show `response.message`.
+
+```
+route throws ──► Express 5 passes it on ──► errorHandler ──► res.status(404).json({ message })
+```
+
+### 14.1 Create `src/utils/AppError.ts`
+An `Error` that also carries the HTTP status code we want to reply with.
+
+```ts
+// AppError.ts
+// An error with an HTTP status code attached, e.g. throw new AppError(404, "Product not found").
+// errorHandler.ts replies with that status and message.
+
+// STEP 14: One place to handle errors (part 1: an error that knows its status code)
+
+export class AppError extends Error {
+  statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message); // let the normal Error store the message
+    this.statusCode = statusCode;
+  }
+}
+```
+
+**New idea, a class:**
+- `extends Error` means an `AppError` *is* an `Error` with something extra: `statusCode`.
+- `super(message)` calls `Error`'s own constructor, so `.message` works as usual.
+- Later, `error instanceof AppError` asks "is this one of ours?"
+
+Status codes you'll use: **400** bad input · **401** not logged in · **403** logged in but not allowed (e.g. not admin) ·
+**404** not found · **409** already exists · **500** our bug.
+
+### 14.2 Create `src/middleware/errorHandler.ts`
+
+```ts
+// errorHandler.ts
+// The last middleware: turns ANY error thrown in a route into a JSON reply with the right status code,
+// so the server never crashes and the website always gets { message: "..." }.
+
+// STEP 4 / STEP 14: Handle unknown URLs and errors
+// notFound.ts answers "no route matched"; this file answers "a route matched but something went wrong".
+
+import { NextFunction, Request, Response } from "express";
+import mongoose from "mongoose";
+import { AppError } from "../utils/AppError";
+
+export const errorHandler = (
+  error: unknown,
+  _req: Request,
+  res: Response,
+  _next: NextFunction, // not used, but Express only treats a middleware as an error handler when it has 4 parameters
+) => {
+  // 1. Our own errors: throw new AppError(404, "Product not found")
+  if (error instanceof AppError) {
+    return res.status(error.statusCode).json({ message: error.message });
+  }
+
+  // 2. A record broke the model's rules (e.g. required field missing, price below 0)
+  if (error instanceof mongoose.Error.ValidationError) {
+    const messages = Object.values(error.errors).map((field) => field.message);
+    return res.status(400).json({ message: messages.join(". ") });
+  }
+
+  // 3. A badly formed id, e.g. GET /api/products/123 ("123" is not a MongoDB id)
+  if (error instanceof mongoose.Error.CastError) {
+    return res
+      .status(400)
+      .json({ message: `Invalid ${error.path}: ${String(error.value)}` });
+  }
+
+  // The remaining errors aren't classes we can check with instanceof, so we look at their fields
+  const err = error as {
+    code?: number;
+    keyValue?: Record<string, unknown>;
+    type?: string;
+    name?: string;
+  };
+
+  // 4. A "unique" field already used, e.g. registering with an email that exists (MongoDB code 11000)
+  if (err.code === 11000) {
+    const field = Object.keys(err.keyValue ?? {})[0] ?? "value";
+    return res.status(409).json({ message: `That ${field} is already in use.` });
+  }
+
+  // 5. The website sent broken JSON (express.json() couldn't read the body)
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({ message: "The request body is not valid JSON." });
+  }
+
+  // 6. A bad or expired login token (used from STEP 18)
+  if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") {
+    return res
+      .status(401)
+      .json({ message: "Your session has expired. Please log in again." });
+  }
+
+  // 7. Anything else is a bug on our side: log the details for us, send a polite message to the user
+  // (never send the real error to the browser, it can reveal how the server works)
+  console.error(error);
+  return res
+    .status(500)
+    .json({ message: "Something went wrong on our side. Please try again." });
+};
+
+// Next: STEP 15 (The categories API) -> server/src/routes/categoryRoutes.ts
+```
+
+**Things to understand, not just type:**
+- **Why 4 parameters:** Express looks at how many parameters a middleware has. With 4, `(error, req, res, next)`,
+  it's called **only when something went wrong**. Remove `_next` and it stops working, even though it's never used.
+- **The `_` in `_req` / `_next`** is a convention meaning "I know this is unused". (You already used `_req` in `routes/index.ts`.)
+- **`error: unknown`:** anything can be thrown in JavaScript, even a string. `unknown` makes TypeScript insist that we
+  check what it is (`instanceof`) before using it.
+- **Order matters:** specific checks come first, and the "anything else → 500" fallback comes last.
+
+### 14.3 Use it in `src/app.ts`
+1. Import it next to `notFound`:
+   ```ts
+   import { errorHandler } from "./middleware/errorHandler";
+   ```
+2. Add it as the **very last** `app.use`, after `notFound`:
+   ```ts
+   app.use(notFound); // must come after the routes: runs only when nothing above matched
+   app.use(errorHandler); // must be last: catches errors thrown by any route above
+   ```
+3. Update the "Next" comment at the bottom of `app.ts` and `notFound.ts` if you like, since errorHandler is now part of STEP 4/14.
+
+### 14.4 Test it
+Start the server (`npm run dev`), then in a **second** Git Bash window:
+
+```bash
+# 1. Broken JSON -> 400 from errorHandler (express.json fails before any route runs)
+curl -i -X POST http://localhost:5000/api/health -H "Content-Type: application/json" -d "{bad"
+
+# 2. Unknown URL -> 404 from notFound (still works)
+curl -i http://localhost:5000/api/nothing-here
+
+# 3. Health -> 200
+curl -i http://localhost:5000/api/health
+```
+Expected:
+1. `HTTP/1.1 400` with `{"message":"The request body is not valid JSON."}`
+2. `HTTP/1.1 404` with `{"message":"Not found: GET /api/nothing-here"}`
+3. `HTTP/1.1 200` with `{"status":"ok",...}`
+
+Before this step, test 1 replied with an **HTML** error page. Now it's JSON. I tested this handler with thrown `AppError`s
+(sync and async), a bad id, a crash and broken JSON, and all gave the right status and message.
+
+You'll see `AppError`, the 404 and the CastError in action in STEP 15–16, e.g. `GET /api/products/not-an-id` → 400.
+
+### 14.5 Commit
+```bash
+git add .
+git commit -m "STEP 13-14: seed command, AppError and error handler"
+git push
+```
+
+➡️ **Next: STEP 15 (categories API: `GET /api/categories` with item counts)**. Reply **NEXT** when 14.4 gives those 3 results.
