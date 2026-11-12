@@ -18,9 +18,9 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅ | 7–8 | Category and Product models |
 | ✅ | 9 | `slugify` |
 | ✅ | 10 | Demo data: `categories.ts`, `products.ts` (40 products) |
-| ⬜ | **11** | **Fix photo names and upload them to Cloudinary** ← you are here |
-| ⬜ | 12 | `demoData.ts`: turn the data files into database records |
-| ⬜ | 13 | `seed.ts`: `npm run seed` fills MongoDB |
+| ✅ | 11 | Upload photos to Cloudinary (renames skipped: STEP 12.0 handles it) |
+| 🟡 | 12 | `demoData.ts`: 12.1 done ✅, **12.2 still to write** (`demoData.ts` is empty) |
+| ⬜ | **13** | **`seed.ts`: `npm run seed` fills MongoDB** ← you are here |
 | ⬜ | 14 | Error handler (`errorHandler.ts`) |
 | ⬜ | 15 | Categories API: `GET /api/categories` |
 | ⬜ | 16 | Products API: list, filters, sort, pagination, one product |
@@ -81,6 +81,9 @@ Your `client/` is still mostly placeholders, so the server is designed from thes
   slug exactly will leave that product **without photos**.
 
 ### 11.1 Rename these files in `Desktop/quickcart-product-photos`
+> **Skipped.** STEP 12.0 handles these names in code instead, so you don't need to rename anything.
+> The table stays here for reference.
+
 I checked all 154 files against the 40 product names. These files don't match their product's slug yet:
 
 | Current file name (all `.jpeg`) | Rename to | Why |
@@ -207,3 +210,467 @@ git push
 ```
 
 ➡️ **Next: STEP 12 (`demoData.ts`)**. Reply **NEXT** when 11.4 works.
+
+---
+
+## STEP 12: `demoData.ts` turns the data files into database records
+
+### 12.0 Tell 9 products which photo name to use (instead of renaming files)
+> ✅ **Already done for you** in `src/data/products.ts` (see `CHANGES.md`). Read this part to understand
+> it, then go straight to 12.1.
+
+You don't need to rename any files or upload again. Each product looks for photos named after its
+**slug**. For the 9 products whose photos have a different name, you'll **tell the product the
+photo name** with a new optional field called `photo`.
+
+**a) Add the field to the `SeedProduct` type** in `src/data/products.ts`. Put it right under the
+`gallery?` line (line 35):
+
+```ts
+  photo?: string; // photo name on Cloudinary when it isn't the slug, e.g. "bluethoot-portable-speaker"
+```
+
+**b) Add `photo: "..."` under the `name:` line** of each of these products in `src/data/products.ts`:
+
+| Product (line in `products.ts`) | Add this line under `name:` |
+|---|---|
+| Design Systems Handbook (688) | `photo: "design-system-handbook",` |
+| Minimalist LED Desk Lamp (792) | `photo: "minimalistic-led-desk-lamp",` |
+| Bluetooth Portable Speaker (1528) | `photo: "bluethoot-portable-speaker",` |
+| Cast Iron Skillet 10-inch (1740) | `photo: "cast-iron-skillet-10inch",` |
+| Daily Planner & Hardcover Journal (2474) | `photo: "daily-planner-n-hardcover-journal",` |
+| Smart Gooseneck Kettle (2687) | `photo: "electric-gooseneck-kettle",` *(no photos of its own; borrows the Electric Gooseneck Kettle's)* |
+| Gold-Plated 3.5mm AUX Cable (3639) | `photo: "gold-plated-3.5mm-aux-cable",` |
+| True Wireless ANC Earbuds (3954) | `photo: "aeropro-wireless-buds",` *(no photos of its own; borrows the AeroPro Wireless Buds')* |
+| Magnetic Headphone Stand & USB Hub (4061) | `photo: "magnetic-headphone-stand-n-usb-hub",` |
+
+Type them **all in lowercase**. Your upload script lowercased every name (`.toLowerCase()`), so on
+Cloudinary the planner is `daily-planner-n-hardcover-journal`, with a small `j`.
+
+`alloy-adjustable-stand.jpeg` and `compact-mechanical-keypad.jpeg` (no `-1`) also work without
+renaming: the `photosFor` code below treats a photo with no number as the **first** photo.
+
+I ran this against your Cloudinary account: with these 9 lines, **all 40 products get their photos**.
+
+**How to avoid this next time:** name photo files exactly like the product's slug, e.g.
+`slugify("Cast Iron Skillet 10-inch")` → `cast-iron-skillet-10-inch-1.jpeg`. Lowercase only, `&` dropped,
+spaces and dots become `-`, and nothing between the number and `.jpeg`.
+
+### What this step is for
+`categories.ts` and `products.ts` are written for **humans**: a product's category is a slug
+(`"electronics"`), photos aren't listed, and the field is called `rating` where the model says `ratings`.
+MongoDB needs records shaped exactly like the **models**: `category` must be a real category `_id`,
+`images` must be full photo addresses, and so on.
+
+`demoData.ts` is the **translator** between the two. It doesn't touch the database itself;
+`seed.ts` (STEP 13) calls it and saves the results.
+
+```
+categories.ts ─┐
+products.ts  ──┼─► demoData.ts (shape the records) ─► seed.ts (save to MongoDB)
+Cloudinary   ──┘
+```
+
+### 12.1 Add a helper to `src/config/cloudinary.ts`: list the uploaded photos
+The seed needs to know which photos each product has (most have 4, some 3 or 5). Instead of
+guessing, it **asks Cloudinary** for every photo in `quickcart/products`.
+
+Add this at the **bottom** of `src/config/cloudinary.ts`. `cloudinary` is already imported at the top of that file.
+
+```ts
+// Lists the names (public ids) of all demo product photos on Cloudinary,
+// e.g. ["quickcart/products/smart-watch-ultra-1", ...]. Admin uploads are left out.
+// Cloudinary sends at most 500 per page, so we keep asking for the next page until there is none.
+// Empty list when Cloudinary isn't set up (the products are then saved without photos).
+export const listProductPhotoIds = async (): Promise<string[]> => {
+  if (!isCloudinaryReady) {
+    return [];
+  }
+
+  const ids: string[] = [];
+  let nextCursor: string | undefined = undefined;
+
+  do {
+    const page = await cloudinary.api.resources({
+      type: "upload",
+      prefix: `${PHOTO_FOLDER}/`,
+      max_results: 500,
+      next_cursor: nextCursor,
+    });
+
+    for (const photo of page.resources) {
+      ids.push(photo.public_id);
+    }
+
+    nextCursor = page.next_cursor; // undefined on the last page, which ends the loop
+  } while (nextCursor);
+
+  return ids.filter((id) => !id.startsWith(`${UPLOAD_FOLDER}/`));
+};
+```
+
+**What's new here:**
+- `cloudinary.api.resources()` is Cloudinary's "list my files" call. `prefix` means "only names starting with this".
+- `do { ... } while (...)` runs the body **at least once**, then repeats while there's another page.
+  `next_cursor` is Cloudinary's bookmark for the next page.
+
+### 12.2 Write `src/data/demoData.ts`
+Replace the contents of the file (keep your comment style) with:
+
+```ts
+// demoData.ts
+// Turns the demo data files (categories.ts, products.ts) into records shaped like the models,
+// ready for seed.ts to save. Nothing here talks to MongoDB.
+
+// STEP 12: Put the demo data in the database (part 1: shape the records)
+// The data files use slugs and simple names; the database needs real ids, full photo addresses
+// and every field the model expects. These functions do that translation.
+
+import { Types } from "mongoose";
+import { categories } from "./categories";
+import { products, SeedProduct } from "./products";
+import { slugify } from "../utils/slugify";
+import { PHOTO_FOLDER, photoUrl } from "../config/cloudinary";
+
+// --- Star rating breakdown -------------------------------------------------------
+// The product page shows bars for 5, 4, 3, 2 and 1 stars. When products.ts doesn't give
+// ratingCounts, we make believable ones from the average rating.
+// Each row: "if the rating is at least minRating, split the reviews like this (percent)".
+const RATING_SHARES = [
+  { minRating: 4.7, shares: [80, 14, 4, 1, 1] },
+  { minRating: 4.4, shares: [65, 22, 8, 3, 2] },
+  { minRating: 4.0, shares: [50, 28, 12, 6, 4] },
+  { minRating: 0, shares: [35, 30, 18, 10, 7] },
+];
+
+// makeRatingCounts(4.8, 248) -> [199, 35, 10, 2, 2] (adds up to exactly 248)
+export const makeRatingCounts = (rating: number, reviewCount: number): number[] => {
+  const { shares } = RATING_SHARES.find((row) => rating >= row.minRating)!;
+
+  const counts = shares.map((share) => Math.round((reviewCount * share) / 100));
+
+  // Rounding can leave us 1 or 2 off; give the difference to the 5-star bar
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  counts[0] += reviewCount - total;
+
+  return counts;
+};
+
+// --- Photos ------------------------------------------------------------------------
+// From all photo ids on Cloudinary, pick this product's ones ("<name>", "<name>-1", "<name>-2"...),
+// put them in number order, and turn them into full addresses.
+// photoName is the product's slug, or its "photo" from products.ts when the files are named differently.
+export const photosFor = (photoName: string, photoIds: string[]): string[] => {
+  const bare = `${PHOTO_FOLDER}/${photoName}`; // a photo with no number, e.g. "alloy-adjustable-stand"
+  const prefix = `${bare}-`; // numbered photos start with this, e.g. "alloy-adjustable-stand-"
+
+  // The photo with no number counts as 0, so it comes first
+  const photoNumber = (id: string) => (id === bare ? 0 : Number(id.slice(prefix.length)));
+
+  return photoIds
+    .filter(
+      (id) =>
+        id === bare ||
+        (id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length))),
+    )
+    .sort((a, b) => photoNumber(a) - photoNumber(b))
+    .map(photoUrl);
+};
+
+// --- Categories --------------------------------------------------------------------
+// categories.ts is already shaped like the Category model, so we hand it over as it is.
+export const demoCategories = () => {
+  return categories;
+};
+
+// --- Products ----------------------------------------------------------------------
+// One product from products.ts -> one record shaped like the Product model.
+// bundle and related are left out here: they point to other products, which don't have
+// ids until they're saved. seed.ts links them afterwards (STEP 13).
+const buildProduct = (
+  item: SeedProduct,
+  categoryId: Types.ObjectId,
+  photoIds: string[],
+) => {
+  const slug = slugify(item.name);
+
+  return {
+    name: item.name,
+    slug,
+    description: item.description,
+    tagline: item.tagline,
+    priceNote: item.priceNote,
+    features: item.features ?? [],
+    specs: item.specs ?? [],
+    category: categoryId,
+    brand: item.brand,
+    sku: item.sku,
+    price: item.price,
+    oldPrice: item.oldPrice,
+    costPrice: Math.round(item.price * 0.6), // pretend the shop paid 60% (admin margin display)
+    trackStock: true,
+    stock: item.stock,
+    lowStockThreshold: 10,
+    images: photosFor(item.photo ?? slug, photoIds), // "photo" from 12.0, otherwise the slug
+    gallery: [], // empty = the product page uses images
+    colors: item.colors ?? [],
+    tags: item.tags ?? [],
+    badge: item.badge,
+    highlights: item.highlights ?? [],
+    ratings: item.rating, // products.ts says "rating", the model says "ratings"
+    reviewCount: item.reviewCount,
+    ratingCounts:
+      item.ratingCounts ?? makeRatingCounts(item.rating, item.reviewCount),
+    sold: item.sold ?? item.reviewCount * 4,
+    flashSaleStock: item.flashSaleStock,
+    status: "published" as const,
+  };
+};
+
+// All 40 products. categoryIds maps a category slug to its saved _id,
+// e.g. "electronics" -> ObjectId("665f...").
+export const demoProducts = (
+  categoryIds: Map<string, Types.ObjectId>,
+  photoIds: string[],
+) => {
+  return products.map((item) => {
+    const categoryId = categoryIds.get(item.category);
+
+    // A typo in products.ts (e.g. "electronic") should stop the seed loudly, not save bad data
+    if (!categoryId) {
+      throw new Error(`"${item.name}" has an unknown category: "${item.category}"`);
+    }
+
+    return buildProduct(item, categoryId, photoIds);
+  });
+};
+
+// Next: STEP 13 (The seed command) -> server/src/data/seed.ts
+```
+
+**Things to understand, not just type:**
+- **`??` (nullish coalescing):** `item.features ?? []` means "use `item.features`, or `[]` if it's missing".
+  The model expects arrays, never `undefined`.
+- **`!` after `.find(...)`:** `.find` could return `undefined`. The last row has `minRating: 0`, so a match
+  is guaranteed, and the `!` tells TypeScript "trust me, it's there".
+- **`as const` on `"published"`:** without it TypeScript treats it as any `string`, but the model only allows
+  `"published" | "draft" | "scheduled"`.
+- **`Map`:** like an object for looking things up, with `.get(key)` and `.set(key, value)`. It's a clean way to say
+  "slug → id".
+- **The regex `/^\d+$/`** checks that what comes after `<slug>-` is **only digits**. So for the product
+  `smart-watch-ultra`, the photo `smart-watch-ultra-2` counts, but a photo like `smart-watch-ultra-strap-1`
+  (a different product) doesn't.
+
+### 12.3 Fix the step comments in two files
+Your files still use the old step numbers. To keep them matching this guide:
+- `src/data/categories.ts`, last line → `// Next: STEP 12 (Put the demo data in the database) -> server/src/data/demoData.ts`
+- `src/data/uploadImages.ts` → add `// Next: STEP 12 (Put the demo data in the database) -> server/src/data/demoData.ts` at the bottom.
+
+### 12.4 Test it
+```bash
+cd server
+npm run typecheck
+```
+It should finish with **no output**. There's nothing to run yet, because `seed.ts` (next step) is what uses these
+functions. You'll see the real result in STEP 13: 40 products in MongoDB, each with its photos.
+
+Common typecheck errors:
+- `Module has no exported member 'listProductPhotoIds'`: you didn't `export` it in 12.1.
+- `Type 'string' is not assignable to type '"published" | "draft" | "scheduled"'`: you forgot `as const`.
+- `Module './products' has no exported member 'SeedProduct'`: check the spelling and the capital letters.
+
+### 12.5 Commit
+```bash
+git add .
+git commit -m "STEP 12: demo data builders and Cloudinary photo list"
+git push
+```
+
+➡️ **Next: STEP 13 (`seed.ts`: `npm run seed`)**. Reply **NEXT** when typecheck passes.
+
+---
+
+## STEP 13: `seed.ts`, the `npm run seed` command that fills MongoDB
+
+### ⚠️ Before you start: finish 12.2
+Your `listProductPhotoIds()` from 12.1 is in `cloudinary.ts` ✅, but **`src/data/demoData.ts` is still
+empty**. `seed.ts` imports `demoCategories` and `demoProducts` from it, so type 12.2 first.
+Typecheck passes right now only because an empty file has nothing to check.
+
+### What this step is for
+"Seeding" means filling an empty database with starting data, so the shop has products to show from
+day one. `npm run seed` (already in your `package.json`) runs `src/data/seed.ts`, which:
+
+1. connects to MongoDB
+2. **empties** the categories and products collections, so you can run it as often as you like and always get a clean copy
+3. saves the 8 categories, then reads back their `_id`s
+4. asks Cloudinary for the photo list
+5. saves the 40 products, using `demoData.ts` to shape them
+6. links **"Frequently Bought Together"** and **"Related Products"**. `products.ts` lists these by
+   **name**, but the database needs **ids**, and a product only gets an id once it's saved. That's why
+   this happens last.
+7. prints a summary and disconnects
+
+The work is in a function called `seedDatabase()` that is **exported**. In STEP 28 the demo panel's
+"Reset demo data" button reuses it, so the same code doesn't get written twice. Later steps (users, promo
+codes, orders) will add more lines to this same function.
+
+### 13.1 Create `src/data/seed.ts`
+
+```ts
+// seed.ts
+// Fills the database with the demo data: npm run seed
+// Running it again wipes the demo collections and starts fresh, so it's always safe to re-run.
+
+// STEP 13: The seed command
+// seedDatabase() does the work and is exported, so the demo panel (STEP 28) can reuse it.
+// The bottom of the file runs it only when you type npm run seed.
+
+import mongoose, { Types } from "mongoose";
+import { connectDB } from "../config/database";
+import { listProductPhotoIds } from "../config/cloudinary";
+import { Category } from "../models/Category";
+import { Product } from "../models/Product";
+import { demoCategories, demoProducts } from "./demoData";
+import { products } from "./products";
+
+export const seedDatabase = async () => {
+  // 1. Empty the collections (both at the same time with Promise.all)
+  await Promise.all([Category.deleteMany({}), Product.deleteMany({})]);
+
+  // 2. Save the categories, then remember each one's id by slug: "electronics" -> ObjectId(...)
+  const savedCategories = await Category.insertMany(demoCategories());
+  const categoryIds = new Map<string, Types.ObjectId>(
+    savedCategories.map((category) => [category.slug, category._id]),
+  );
+
+  // 3. Which photos are on Cloudinary?
+  const photoIds = await listProductPhotoIds();
+
+  // 4. Save the products
+  const savedProducts = await Product.insertMany(demoProducts(categoryIds, photoIds));
+
+  // 5. Link bundles and related products. products.ts uses names; we swap each name for its id.
+  const productIds = new Map<string, Types.ObjectId>(
+    savedProducts.map((product) => [product.name, product._id]),
+  );
+
+  // ["Gold-Plated 3.5mm AUX Cable", ...] -> [ObjectId(...), ...]
+  // A misspelt name stops the seed with a clear message instead of silently dropping the link.
+  const idsFor = (names: string[] | undefined, owner: string) => {
+    return (names ?? []).map((name) => {
+      const id = productIds.get(name);
+      if (!id) {
+        throw new Error(`"${owner}" links to a product that doesn't exist: "${name}"`);
+      }
+      return id;
+    });
+  };
+
+  // bulkWrite sends all 40 updates to MongoDB in ONE trip instead of 40 separate saves
+  await Product.bulkWrite(
+    products.map((item) => ({
+      updateOne: {
+        filter: { _id: productIds.get(item.name) },
+        update: {
+          $set: {
+            bundleProducts: idsFor(item.bundle, item.name),
+            relatedProducts: idsFor(item.related, item.name),
+          },
+        },
+      },
+    })),
+  );
+
+  // 6. A summary for whoever ran the seed
+  return {
+    categories: savedCategories.length,
+    products: savedProducts.length,
+    withoutPhotos: savedProducts
+      .filter((product) => product.images.length === 0)
+      .map((product) => product.name),
+  };
+};
+
+// Runs when you type "npm run seed": connect, seed, report, disconnect.
+const runSeed = async () => {
+  try {
+    await connectDB();
+    const result = await seedDatabase();
+
+    console.log(`Seeded ${result.categories} categories and ${result.products} products.`);
+    if (result.withoutPhotos.length > 0) {
+      console.log("These products have no photos:", result.withoutPhotos.join(", "));
+    }
+  } catch (error) {
+    console.error("Seed failed:", (error as Error).message);
+    process.exitCode = 1; // tells the terminal it failed, without cutting off the disconnect below
+  } finally {
+    await mongoose.disconnect(); // without this the command would hang and never finish
+  }
+};
+
+// "require.main === module" is true only when this file is run directly (npm run seed),
+// not when another file imports seedDatabase (the demo panel). So importing never re-seeds by accident.
+if (require.main === module) {
+  runSeed();
+}
+
+// Next: STEP 14 (One place to handle errors) -> server/src/middleware/errorHandler.ts
+```
+
+**Things to understand, not just type:**
+- **`deleteMany({})`:** the empty `{}` filter means "every document". Only use it in the seed!
+- **`insertMany`** saves many documents in one go and returns them **with their new `_id`s**. That's how we get
+  the ids we need for steps 2 and 5.
+- **`Promise.all([...])`** runs both deletes at the same time and waits for both to finish.
+- **`$set`** in an update means "change only these fields, leave the rest alone".
+- **`try / catch / finally`:** `finally` always runs, whether the seed worked or failed, so the database
+  connection is always closed.
+- **`process.exitCode = 1` instead of `process.exit(1)`:** `exit` stops immediately, which would skip
+  `finally`. `exitCode` reports the failure after cleanup has finished.
+
+### 13.2 Run it
+```bash
+cd server
+npm run typecheck
+npm run seed
+```
+
+You should see:
+```
+MongoDB connected: ac-...mongodb.net
+Seeded 8 categories and 40 products.
+```
+No "have no photos" line: I ran this same code against your Cloudinary account, and all 40 products got photos.
+
+### 13.3 Check it in MongoDB Atlas
+Atlas → your cluster → **Browse Collections** → database `quickcart`:
+- **categories:** 8 documents.
+- **products:** 40 documents. Open "Wireless Noise-Cancelling Headphones" and check:
+  - `category` is an ObjectId, not the word "electronics"
+  - `images` has 5 Cloudinary addresses (paste one in the browser and it should show the photo)
+  - `bundleProducts` and `relatedProducts` contain ObjectIds
+  - `ratingCounts` is `[203, 30, 10, 3, 2]`
+  - `createdAt` and `updatedAt` are present (from `timestamps: true` in the model)
+- Run `npm run seed` a second time. There should still be exactly 8 and 40, not 16 and 80.
+
+### Common errors
+| Message | Cause |
+|---|---|
+| `Seed failed: E11000 duplicate key error ... sku` | Two products in `products.ts` have the same `sku` (or `slug`). Change one. |
+| `Seed failed: "X" has an unknown category: "y"` | `category` of product X in `products.ts` isn't one of the 8 slugs in `categories.ts`. |
+| `Seed failed: "X" links to a product that doesn't exist` | A name in `bundle` or `related` of product X is misspelt. |
+| `Seed failed: querySrv ENOTFOUND` / timeout | No internet, or your IP isn't allowed in Atlas → **Network Access**. |
+| `Module './demoData' has no exported member ...` | 12.2 isn't written yet, or a function is missing `export`. |
+| The command never finishes | You left out `await mongoose.disconnect()`. |
+
+### 13.4 Commit
+```bash
+git add .
+git commit -m "STEP 12-13: demo data and seed command"
+git push
+```
+
+➡️ **Next: STEP 14 (error handler)**. After that, STEPS 15–16 make the products you just seeded available
+at `/api/categories` and `/api/products`, and the shop starts having real data. Reply **NEXT** when 13.3 checks out.

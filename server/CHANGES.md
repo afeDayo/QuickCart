@@ -40,3 +40,29 @@ There are two reasons:
    - a script file, for example `src/data/uploadImages.ts`, that reads every image in the folder you pass and calls `uploadPhoto(bytes, `${PHOTO_FOLDER}/${fileNameWithoutExtension}`)` for each one
    - this line in the `"scripts"` section of `server/package.json`:
      `"upload-images": "tsx src/data/uploadImages.ts"`
+
+---
+
+## Update: photo names fixed in code (instead of renaming the photo files)
+
+Some photo files on Cloudinary don't match their product's slug (typos, `&`, dots, `Journal` with a capital J),
+and two products have no photos of their own. Instead of renaming files and uploading again, each of those
+products now says which photo name to use.
+
+**File changed: `src/data/products.ts` only** (10 lines added, nothing removed)
+
+| Line | What was added |
+|------|----------------|
+| 36 | New optional field in the `SeedProduct` type: `photo?: string;`, the photo name on Cloudinary when it isn't the slug |
+| 690 | Design Systems Handbook → `photo: "design-system-handbook",` |
+| 795 | Minimalist LED Desk Lamp → `photo: "minimalistic-led-desk-lamp",` |
+| 1532 | Bluetooth Portable Speaker → `photo: "bluethoot-portable-speaker",` |
+| 1745 | Cast Iron Skillet 10-inch → `photo: "cast-iron-skillet-10inch",` |
+| 2480 | Daily Planner & Hardcover Journal → `photo: "daily-planner-n-hardcover-journal",` |
+| 2694 | Smart Gooseneck Kettle → `photo: "electric-gooseneck-kettle",` (borrows that product's photos; it has none) |
+| 3647 | Gold-Plated 3.5mm AUX Cable → `photo: "gold-plated-3.5mm-aux-cable",` |
+| 3963 | True Wireless ANC Earbuds → `photo: "aeropro-wireless-buds",` (borrows that product's photos; it has none) |
+| 4071 | Magnetic Headphone Stand & USB Hub → `photo: "magnetic-headphone-stand-n-usb-hub",` |
+
+`npm run typecheck` passes. The field takes effect once you write `demoData.ts` (GUIDE.md STEP 12.2), where
+`photosFor(item.photo ?? slug, photoIds)` uses it.
