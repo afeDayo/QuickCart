@@ -19,10 +19,10 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅ | 9 | `slugify` |
 | ✅ | 10 | Demo data: `categories.ts`, `products.ts` (40 products) |
 | ✅ | 11 | Upload photos to Cloudinary (renames skipped: STEP 12.0 handles it) |
-| 🟡 | 12 | `demoData.ts` ✅, but **line 97 still uses `photosFor(slug, ...)`** and `photosFor` is the old version (see STEP 14 ⚠️) |
-| ✅ | 13 | `seed.ts`: `npm run seed` works (commit `seed.ts`, it's still untracked) |
-| ⬜ | **14** | **Error handler (`AppError` + `errorHandler.ts`)** ← you are here |
-| ⬜ | 15 | Categories API: `GET /api/categories` |
+| ✅ | 12 | `demoData.ts` (optional: `photosFor` still lacks the `bare` part, see STEP 15 note) |
+| ✅ | 13 | `seed.ts`: `npm run seed` works |
+| ✅ | 14 | Error handler (`AppError` + `errorHandler.ts`) |
+| ⬜ | **15** | **Categories API: `GET /api/categories`** ← you are here |
 | ⬜ | 16 | Products API: list, filters, sort, pagination, one product |
 | ⬜ | 17 | User model (password hashing, roles, addresses, saved items) |
 | ⬜ | 18 | Auth: register, login, me, logout + `protect` / `adminOnly` middleware |
@@ -864,3 +864,183 @@ git push
 ```
 
 ➡️ **Next: STEP 15 (categories API: `GET /api/categories` with item counts)**. Reply **NEXT** when 14.4 gives those 3 results.
+
+---
+
+## STEP 15: The categories API
+
+> **Small optional fix from STEP 12:** line 97 is fixed ✅. Your `photosFor` still lacks the `bare` /
+> `photoNumber` part, so **Alloy Adjustable Stand** and **Compact Mechanical Keypad** use photo `-2` as their
+> main picture, because their first photo has no number. If you want the right cover photo, copy `photosFor` from
+> STEP 12.2 and run `npm run seed` again. Otherwise carry on.
+
+### What this step is for
+The **Home page** "Shop by category" row (`CategoryGrid`), the **Categories page** and the **Shop page** filter
+all need the list of departments, each with **how many products it has** ("Electronics · 340+ items").
+
+You'll build two endpoints:
+
+| Method + URL | Gives back | Used by |
+|---|---|---|
+| `GET /api/categories` | all 8 categories, each with `productCount` | Home grid, Categories page, Shop filter, admin product form |
+| `GET /api/categories/:slug` | one category, e.g. `/api/categories/home-living` | Shop page title when filtered (`/shop?category=home-living`) |
+
+### The pattern you'll use for every feature from now on
+```
+routes/index.ts ──► routes/categoryRoutes.ts ──► controllers/categoryController.ts ──► models (MongoDB)
+  "/categories"        "GET /" → getCategories        does the work, replies JSON
+```
+- **Routes file:** only *which URL runs which function*. It's short and easy to scan.
+- **Controller file:** *what happens*: ask the database and reply. A problem means a `throw new AppError(...)`, and
+  STEP 14 takes care of the reply.
+- **Replies are always an object with a name**, e.g. `{ categories: [...] }` and not a bare `[...]`. That way you can
+  add more fields later (like `total` for pagination) without breaking the website.
+
+### 15.1 Create `src/controllers/categoryController.ts`
+Create the `controllers` folder first.
+
+```ts
+// categoryController.ts
+// What happens when someone asks for categories: read them from MongoDB and reply with JSON.
+
+// STEP 15: The categories API server/src/controllers/categoryController.ts
+// GET /api/categories        -> every category with its number of products
+// GET /api/categories/:slug  -> one category, e.g. /api/categories/home-living
+
+import { Request, Response } from "express";
+import { Types } from "mongoose";
+import { Category } from "../models/Category";
+import { liveProducts, Product } from "../models/Product";
+import { AppError } from "../utils/AppError";
+
+// How many products shoppers can see in each category: { "665f...": 15, "6660...": 6, ... }
+// One "aggregate" query counts them all at once, instead of one query per category.
+const countProductsByCategory = async () => {
+  const rows = await Product.aggregate<{ _id: Types.ObjectId; count: number }>([
+    { $match: liveProducts() }, // only published (or scheduled and already live) products
+    { $group: { _id: "$category", count: { $sum: 1 } } }, // one row per category, adding 1 per product
+  ]);
+
+  // Turn the rows into a Map so we can look a count up by category id
+  return new Map(rows.map((row) => [String(row._id), row.count]));
+};
+
+// GET /api/categories
+export const getCategories = async (_req: Request, res: Response) => {
+  // Run both queries at the same time
+  const [categories, counts] = await Promise.all([
+    Category.find().select("-__v").sort({ _id: 1 }).lean(), // _id order = the order they were seeded
+    countProductsByCategory(),
+  ]);
+
+  res.json({
+    categories: categories.map((category) => ({
+      ...category,
+      productCount: counts.get(String(category._id)) ?? 0, // a category with no products gets 0
+    })),
+  });
+};
+
+// GET /api/categories/:slug
+export const getCategoryBySlug = async (
+  req: Request<{ slug: string }>,
+  res: Response,
+) => {
+  const category = await Category.findOne({ slug: req.params.slug.toLowerCase() })
+    .select("-__v")
+    .lean();
+
+  // No such category: errorHandler (STEP 14) turns this into a 404 JSON reply
+  if (!category) {
+    throw new AppError(404, `Category not found: ${req.params.slug}`);
+  }
+
+  const productCount = await Product.countDocuments({
+    ...liveProducts(),
+    category: category._id,
+  });
+
+  res.json({ category: { ...category, productCount } });
+};
+
+// Next: STEP 15 (part 2) -> server/src/routes/categoryRoutes.ts
+```
+
+**Things to understand, not just type:**
+- **`aggregate([...])`** is MongoDB's "process the data in stages" query. Each stage takes the output of the one before:
+  - `$match` keeps only live products (like `find`'s filter)
+  - `$group` puts products into piles by `category`, and `$sum: 1` counts each pile
+  The result is something like `[{ _id: <electronics id>, count: 15 }, ...]`.
+- **`.lean()`** returns plain JavaScript objects instead of full Mongoose documents. That's faster, and it's what lets
+  `...category` copy the fields cleanly so we can add `productCount`. Use `.lean()` whenever you only **read and reply**.
+- **`.select("-__v")`** leaves out Mongoose's internal version field `__v`, which the website doesn't need.
+- **`String(row._id)`:** ObjectIds are objects, and two different ObjectId objects are never `===` even with the same
+  value. Turning both into strings makes the Map lookup work.
+- **`Request<{ slug: string }>`** tells TypeScript that `req.params.slug` exists and is a string.
+- **No `try/catch`?** Correct. If the database fails, Express 5 passes the error to `errorHandler`.
+
+### 15.2 Create `src/routes/categoryRoutes.ts`
+
+```ts
+// categoryRoutes.ts server/src/routes/categoryRoutes.ts
+// Which URL runs which function for categories. routes/index.ts puts these under /api/categories.
+
+// STEP 15 (part 2): The categories API routes
+
+import { Router } from "express";
+import { getCategories, getCategoryBySlug } from "../controllers/categoryController";
+
+const router = Router();
+
+router.get("/", getCategories); // GET /api/categories
+router.get("/:slug", getCategoryBySlug); // GET /api/categories/home-living
+
+export default router;
+
+// Next: STEP 16 (The products API) -> server/src/controllers/productController.ts
+```
+
+### 15.3 Connect it in `src/routes/index.ts`
+1. Import it at the top, under `import { Router } from "express";`:
+   ```ts
+   import categoryRoutes from "./categoryRoutes";
+   ```
+2. Under the `/health` route and **above** `export default router;`, add:
+   ```ts
+   router.use("/categories", categoryRoutes); // /api/categories...
+   ```
+   `router.use("/categories", ...)` means "send every URL starting with `/categories` to that file". Inside the file,
+   `"/"` then means `/api/categories` and `"/:slug"` means `/api/categories/<something>`.
+
+### 15.4 Test it
+```bash
+npm run typecheck
+npm run dev
+```
+In a second terminal (or just open the URLs in your browser):
+```bash
+curl http://localhost:5000/api/categories
+curl http://localhost:5000/api/categories/home-living
+curl -i http://localhost:5000/api/categories/nope
+```
+Expected:
+1. `{"categories":[{"_id":"...","name":"Electronics","slug":"electronics","icon":"devices",...,"productCount":15}, ...]}`.
+   All 8 should be there, in this order with these counts:
+   **Electronics 15 · Fashion 6 · Home & Living 3 · Beauty 2 · Sports 4 · Books 2 · Office 3 · Kitchen 5** (total 40).
+2. `{"category":{"name":"Home & Living",...,"productCount":3}}`
+3. `HTTP/1.1 404` with `{"message":"Category not found: nope"}`, which comes from your STEP 14 errorHandler.
+
+I ran exactly this code against a freshly seeded copy of your data and got those results.
+
+Tip: install the **"JSON Viewer"** extension in Chrome so JSON in the browser is easy to read.
+
+### 15.5 Commit
+```bash
+git add .
+git commit -m "STEP 15: categories API"
+git push
+```
+
+➡️ **Next: STEP 16 (products API: list with category / search / tag / price filters, sorting, pagination, and one
+product with its bundle and related products)**. That's the big one for the Home, Shop and Product Details pages.
+Reply **NEXT** when 15.4 matches.
