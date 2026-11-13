@@ -12,44 +12,46 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 
 ## Where you are now
 
-| Done | Step | What |
-|------|------|------|
-| ✅ | 1–6 | env, database, Express app, 404 handler, routes + `/api/health`, start server |
-| ✅ | 7–8 | Category and Product models |
-| ✅ | 9 | `slugify` |
-| ✅ | 10 | Demo data: `categories.ts`, `products.ts` (40 products) |
-| ✅ | 11 | Upload photos to Cloudinary (renames skipped: STEP 12.0 handles it) |
-| ✅ | 12 | `demoData.ts` (optional: `photosFor` still lacks the `bare` part, see STEP 15 note) |
-| ✅ | 13 | `seed.ts`: `npm run seed` works |
-| ✅ | 14 | Error handler (`AppError` + `errorHandler.ts`) |
-| ⬜ | **15** | **Categories API: `GET /api/categories`** ← you are here |
-| ⬜ | 16 | Products API: list, filters, sort, pagination, one product |
-| ⬜ | 17 | User model (password hashing, roles, addresses, saved items) |
-| ⬜ | 18 | Auth: register, login, me, logout + `protect` / `adminOnly` middleware |
-| ⬜ | 19 | Forgot password, reset password, verify email |
-| ⬜ | 20 | My Account: profile, change password, addresses, saved items |
-| ⬜ | 21 | Promo codes (`QUICK25`, `QUICK10`) |
-| ⬜ | 22 | Orders: checkout, my orders, order details, cancel within 1 hour |
-| ⬜ | 23 | Reviews (only buyers of delivered orders) |
-| ⬜ | 24 | Newsletter sign-up |
-| ⬜ | 25 | Admin: photo upload, products CRUD, categories CRUD |
-| ⬜ | 26 | Admin: orders management, customers list |
-| ⬜ | 27 | Admin: dashboard stats (sales, chart, top sellers, low stock) |
-| ⬜ | 28 | Demo panel: reset demo data, move orders along |
-| ⬜ | 29 | Final check: build, test every endpoint, clean-up |
+| Done | Step   | What                                                                                |
+| ---- | ------ | ----------------------------------------------------------------------------------- |
+| ✅   | 1–6    | env, database, Express app, 404 handler, routes + `/api/health`, start server       |
+| ✅   | 7–8    | Category and Product models                                                         |
+| ✅   | 9      | `slugify`                                                                           |
+| ✅   | 10     | Demo data: `categories.ts`, `products.ts` (40 products)                             |
+| ✅   | 11     | Upload photos to Cloudinary (renames skipped: STEP 12.0 handles it)                 |
+| ✅   | 12     | `demoData.ts` (optional: `photosFor` still lacks the `bare` part, see STEP 15 note) |
+| ✅   | 13     | `seed.ts`: `npm run seed` works                                                     |
+| ✅   | 14     | Error handler (`AppError` + `errorHandler.ts`)                                      |
+| ✅   | 15     | Categories API: `GET /api/categories`                                               |
+| ⬜   | **16** | **Products API: list, filters, sort, pagination, one product** ← you are here       |
+| ⬜   | 17     | User model (password hashing, roles, addresses, saved items)                        |
+| ⬜   | 18     | Auth: register, login, me, logout + `protect` / `adminOnly` middleware              |
+| ⬜   | 19     | Forgot password, reset password, verify email                                       |
+| ⬜   | 20     | My Account: profile, change password, addresses, saved items                        |
+| ⬜   | 21     | Promo codes (`QUICK25`, `QUICK10`)                                                  |
+| ⬜   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour                    |
+| ⬜   | 23     | Reviews (only buyers of delivered orders)                                           |
+| ⬜   | 24     | Newsletter sign-up                                                                  |
+| ⬜   | 25     | Admin: photo upload, products CRUD, categories CRUD                                 |
+| ⬜   | 26     | Admin: orders management, customers list                                            |
+| ⬜   | 27     | Admin: dashboard stats (sales, chart, top sellers, low stock)                       |
+| ⬜   | 28     | Demo panel: reset demo data, move orders along                                      |
+| ⬜   | 29     | Final check: build, test every endpoint, clean-up                                   |
 
 ### Time plan (deadline: tomorrow 5pm)
+
 - **Today:** steps 11–18. The shop can then show real products and people can log in.
 - **Tomorrow morning:** steps 19–24 (customer side complete).
 - **Tomorrow afternoon:** steps 25–29 (admin + final check).
 - If you run short of time, cut these first: 19 (email verify only), 24, 28. Everything else is needed by a screen in `ui/`.
 
 ### What the screens in `ui/` need from the server (the scope)
+
 - **Home / Shop / Product Details:** categories with item counts, products filtered by category,
   search, sort, tags (`featured`, `flash-deal`, `deal`, `new-arrival`, `recommended`), best sellers
   (by `sold`), flash sale (`flashSaleStock`), bundle and related products, reviews.
 - **Cart / Checkout:** promo code check, free delivery over ₦50,000, Standard (free) or Express
-  (₦2,500) delivery, Card or Pay on Delivery (payment is *simulated*: no real Paystack).
+  (₦2,500) delivery, Card or Pay on Delivery (payment is _simulated_: no real Paystack).
 - **Order Confirmation / Order Details / Order History:** order number like `#QC-1042`, status
   tracker (Placed → Processing → Dispatched → Delivered), courier + waybill, payment record, price
   breakdown, cancel within 1 hour.
@@ -65,12 +67,14 @@ Your `client/` is still mostly placeholders, so the server is designed from thes
 ## STEP 11: Fix the photo names and upload them to Cloudinary
 
 ### Why your command failed
+
 1. You ran `npm run upload-images` from `QuickCarrt/`. npm looks for `package.json` in the folder
    you're in, and only `server/` has the one with this script. **Always run server commands from inside `server/`.**
    This also matters for `.env`: `dotenv` reads `.env` from the folder you run the command in.
 2. `src/data/uploadImages.ts` is empty, so there was nothing to run. You'll write it below.
 
 ### How photos will work (read this first)
+
 - Every product has a **slug** made by `slugify(product.name)`, e.g.
   `"Wireless Noise-Cancelling Headphones"` → `wireless-noise-cancelling-headphones`.
 - A product's photos are named **`<slug>-1`, `<slug>-2`, `<slug>-3`, `<slug>-4`**. Photo `-1` is the
@@ -81,33 +85,35 @@ Your `client/` is still mostly placeholders, so the server is designed from thes
   slug exactly will leave that product **without photos**.
 
 ### 11.1 Rename these files in `Desktop/quickcart-product-photos`
+
 > **Skipped.** STEP 12.0 handles these names in code instead, so you don't need to rename anything.
 > The table stays here for reference.
 
 I checked all 154 files against the 40 product names. These files don't match their product's slug yet:
 
-| Current file name (all `.jpeg`) | Rename to | Why |
-|---|---|---|
-| `alloy-adjustable-stand.jpeg` | `alloy-adjustable-stand-1.jpeg` | number missing |
-| `compact-mechanical-keypad.jpeg` | `compact-mechanical-keypad-1.jpeg` | number missing |
-| `bluethoot-portable-speaker-1..4` | `bluetooth-portable-speaker-1..4` | typo |
-| `cast-iron-skillet-10inch-1..4` | `cast-iron-skillet-10-inch-1..4` | product name is "10-inch" |
-| `daily-planner-n-hardcover-Journal-1..4` | `daily-planner-hardcover-journal-1..4` | `&` becomes nothing; capital J |
-| `design-system-handbook-1..4` | `design-systems-handbook-1..4` | product is "Design Systems Handbook" |
-| `fast-dual-usb-c-gan-charger-35w-1 ..4 ` | `fast-dual-usb-c-gan-charger-35w-1..4` | **space before `.jpeg`**: delete it |
-| `insulated-1l-hydro-flask-1 ..4 ` | `insulated-1l-hydro-flask-1..4` | **space before `.jpeg`**: delete it |
-| `gold-plated-3.5mm-aux-cable-1..4` | `gold-plated-3-5mm-aux-cable-1..4` | slugify turns `.` into `-` |
-| `magnetic-headphone-stand-n-usb-hub-1..4` | `magnetic-headphone-stand-usb-hub-1..4` | `&` becomes nothing |
-| `minimalistic-led-desk-lamp-1..4` | `minimalist-led-desk-lamp-1..4` | product is "Minimalist LED Desk Lamp" |
-| `hi-res-dac-audio-adapter-3.1.jpeg` | `hi-res-dac-audio-adapter-5.jpeg` (or delete it if it's a duplicate) | the extra `.1` |
+| Current file name (all `.jpeg`)           | Rename to                                                            | Why                                   |
+| ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------------- |
+| `alloy-adjustable-stand.jpeg`             | `alloy-adjustable-stand-1.jpeg`                                      | number missing                        |
+| `compact-mechanical-keypad.jpeg`          | `compact-mechanical-keypad-1.jpeg`                                   | number missing                        |
+| `bluethoot-portable-speaker-1..4`         | `bluetooth-portable-speaker-1..4`                                    | typo                                  |
+| `cast-iron-skillet-10inch-1..4`           | `cast-iron-skillet-10-inch-1..4`                                     | product name is "10-inch"             |
+| `daily-planner-n-hardcover-Journal-1..4`  | `daily-planner-hardcover-journal-1..4`                               | `&` becomes nothing; capital J        |
+| `design-system-handbook-1..4`             | `design-systems-handbook-1..4`                                       | product is "Design Systems Handbook"  |
+| `fast-dual-usb-c-gan-charger-35w-1 ..4 `  | `fast-dual-usb-c-gan-charger-35w-1..4`                               | **space before `.jpeg`**: delete it   |
+| `insulated-1l-hydro-flask-1 ..4 `         | `insulated-1l-hydro-flask-1..4`                                      | **space before `.jpeg`**: delete it   |
+| `gold-plated-3.5mm-aux-cable-1..4`        | `gold-plated-3-5mm-aux-cable-1..4`                                   | slugify turns `.` into `-`            |
+| `magnetic-headphone-stand-n-usb-hub-1..4` | `magnetic-headphone-stand-usb-hub-1..4`                              | `&` becomes nothing                   |
+| `minimalistic-led-desk-lamp-1..4`         | `minimalist-led-desk-lamp-1..4`                                      | product is "Minimalist LED Desk Lamp" |
+| `hi-res-dac-audio-adapter-3.1.jpeg`       | `hi-res-dac-audio-adapter-5.jpeg` (or delete it if it's a duplicate) | the extra `.1`                        |
 
 **Two products have no photos at all:** `Smart Gooseneck Kettle` (`smart-gooseneck-kettle`) and
 `True Wireless ANC Earbuds` (`true-wireless-anc-earbuds`). Add photos named `smart-gooseneck-kettle-1.jpeg`
 and `true-wireless-anc-earbuds-1.jpeg` (more if you have them). Otherwise those two show no picture.
 
-Tip: in File Explorer, turn on *View → Show → File name extensions* so you can see the hidden spaces before `.jpeg`.
+Tip: in File Explorer, turn on _View → Show → File name extensions_ so you can see the hidden spaces before `.jpeg`.
 
 ### 11.2 Write `server/src/data/uploadImages.ts`
+
 Open the empty file and type this:
 
 ```ts
@@ -138,7 +144,9 @@ const uploadImages = async () => {
 
   // 1. Check we have everything before we start
   if (!folder) {
-    console.error('Say where the photos are: npm run upload-images -- "C:/path/to/photos"');
+    console.error(
+      'Say where the photos are: npm run upload-images -- "C:/path/to/photos"',
+    );
     process.exit(1);
   }
   if (!isCloudinaryReady) {
@@ -183,12 +191,14 @@ uploadImages();
 ```
 
 **What each part does:**
+
 - `process.argv` is the list of words on the command line. `[0]` is node, `[1]` is the script, and `[2]` is the first thing you typed after `--`.
 - `path.parse(file).name` gives the file name without its extension. `.trim()` fixes names like `"...-1 "`, so a missed space won't break things.
 - `uploadPhoto` (already in `config/cloudinary.ts`) streams the bytes to Cloudinary. It uses `overwrite: true`, so **you can run the script again safely** after fixing names.
 - `for ... of` with `await` uploads one photo at a time. `try/catch` around each photo means one bad file doesn't stop the rest.
 
 ### 11.3 Run it
+
 ```bash
 cd server
 npm run typecheck
@@ -196,6 +206,7 @@ npm run upload-images -- "C:/Users/Afe Temidayo/Desktop/quickcart-product-photos
 ```
 
 ### 11.4 Check it worked
+
 - The last line should say `Done: 154 uploaded, 0 failed.` (more if you added photos).
 - Ctrl+click one of the printed addresses. The photo should open in the browser.
 - In the Cloudinary website go to **Media Library → Folders → quickcart → products**. You should see the photos there.
@@ -203,6 +214,7 @@ npm run upload-images -- "C:/Users/Afe Temidayo/Desktop/quickcart-product-photos
   (they must not have spaces or quotes).
 
 ### 11.5 Commit
+
 ```bash
 git add .
 git commit -m "STEP 11: upload product photos to Cloudinary"
@@ -216,6 +228,7 @@ git push
 ## STEP 12: `demoData.ts` turns the data files into database records
 
 ### 12.0 Tell 9 products which photo name to use (instead of renaming files)
+
 > ✅ **Already done for you** in `src/data/products.ts` (see `CHANGES.md`). Read this part to understand
 > it, then go straight to 12.1.
 
@@ -232,17 +245,17 @@ photo name** with a new optional field called `photo`.
 
 **b) Add `photo: "..."` under the `name:` line** of each of these products in `src/data/products.ts`:
 
-| Product (line in `products.ts`) | Add this line under `name:` |
-|---|---|
-| Design Systems Handbook (688) | `photo: "design-system-handbook",` |
-| Minimalist LED Desk Lamp (792) | `photo: "minimalistic-led-desk-lamp",` |
-| Bluetooth Portable Speaker (1528) | `photo: "bluethoot-portable-speaker",` |
-| Cast Iron Skillet 10-inch (1740) | `photo: "cast-iron-skillet-10inch",` |
-| Daily Planner & Hardcover Journal (2474) | `photo: "daily-planner-n-hardcover-journal",` |
-| Smart Gooseneck Kettle (2687) | `photo: "electric-gooseneck-kettle",` *(no photos of its own; borrows the Electric Gooseneck Kettle's)* |
-| Gold-Plated 3.5mm AUX Cable (3639) | `photo: "gold-plated-3.5mm-aux-cable",` |
-| True Wireless ANC Earbuds (3954) | `photo: "aeropro-wireless-buds",` *(no photos of its own; borrows the AeroPro Wireless Buds')* |
-| Magnetic Headphone Stand & USB Hub (4061) | `photo: "magnetic-headphone-stand-n-usb-hub",` |
+| Product (line in `products.ts`)           | Add this line under `name:`                                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Design Systems Handbook (688)             | `photo: "design-system-handbook",`                                                                      |
+| Minimalist LED Desk Lamp (792)            | `photo: "minimalistic-led-desk-lamp",`                                                                  |
+| Bluetooth Portable Speaker (1528)         | `photo: "bluethoot-portable-speaker",`                                                                  |
+| Cast Iron Skillet 10-inch (1740)          | `photo: "cast-iron-skillet-10inch",`                                                                    |
+| Daily Planner & Hardcover Journal (2474)  | `photo: "daily-planner-n-hardcover-journal",`                                                           |
+| Smart Gooseneck Kettle (2687)             | `photo: "electric-gooseneck-kettle",` _(no photos of its own; borrows the Electric Gooseneck Kettle's)_ |
+| Gold-Plated 3.5mm AUX Cable (3639)        | `photo: "gold-plated-3.5mm-aux-cable",`                                                                 |
+| True Wireless ANC Earbuds (3954)          | `photo: "aeropro-wireless-buds",` _(no photos of its own; borrows the AeroPro Wireless Buds')_          |
+| Magnetic Headphone Stand & USB Hub (4061) | `photo: "magnetic-headphone-stand-n-usb-hub",`                                                          |
 
 Type them **all in lowercase**. Your upload script lowercased every name (`.toLowerCase()`), so on
 Cloudinary the planner is `daily-planner-n-hardcover-journal`, with a small `j`.
@@ -257,6 +270,7 @@ I ran this against your Cloudinary account: with these 9 lines, **all 40 product
 spaces and dots become `-`, and nothing between the number and `.jpeg`.
 
 ### What this step is for
+
 `categories.ts` and `products.ts` are written for **humans**: a product's category is a slug
 (`"electronics"`), photos aren't listed, and the field is called `rating` where the model says `ratings`.
 MongoDB needs records shaped exactly like the **models**: `category` must be a real category `_id`,
@@ -272,6 +286,7 @@ Cloudinary   ──┘
 ```
 
 ### 12.1 Add a helper to `src/config/cloudinary.ts`: list the uploaded photos
+
 The seed needs to know which photos each product has (most have 4, some 3 or 5). Instead of
 guessing, it **asks Cloudinary** for every photo in `quickcart/products`.
 
@@ -310,11 +325,13 @@ export const listProductPhotoIds = async (): Promise<string[]> => {
 ```
 
 **What's new here:**
+
 - `cloudinary.api.resources()` is Cloudinary's "list my files" call. `prefix` means "only names starting with this".
 - `do { ... } while (...)` runs the body **at least once**, then repeats while there's another page.
   `next_cursor` is Cloudinary's bookmark for the next page.
 
 ### 12.2 Write `src/data/demoData.ts`
+
 Replace the contents of the file (keep your comment style) with:
 
 ```ts
@@ -344,7 +361,10 @@ const RATING_SHARES = [
 ];
 
 // makeRatingCounts(4.8, 248) -> [199, 35, 10, 2, 2] (adds up to exactly 248)
-export const makeRatingCounts = (rating: number, reviewCount: number): number[] => {
+export const makeRatingCounts = (
+  rating: number,
+  reviewCount: number,
+): number[] => {
   const { shares } = RATING_SHARES.find((row) => rating >= row.minRating)!;
 
   const counts = shares.map((share) => Math.round((reviewCount * share) / 100));
@@ -365,7 +385,8 @@ export const photosFor = (photoName: string, photoIds: string[]): string[] => {
   const prefix = `${bare}-`; // numbered photos start with this, e.g. "alloy-adjustable-stand-"
 
   // The photo with no number counts as 0, so it comes first
-  const photoNumber = (id: string) => (id === bare ? 0 : Number(id.slice(prefix.length)));
+  const photoNumber = (id: string) =>
+    id === bare ? 0 : Number(id.slice(prefix.length));
 
   return photoIds
     .filter(
@@ -438,7 +459,9 @@ export const demoProducts = (
 
     // A typo in products.ts (e.g. "electronic") should stop the seed loudly, not save bad data
     if (!categoryId) {
-      throw new Error(`"${item.name}" has an unknown category: "${item.category}"`);
+      throw new Error(
+        `"${item.name}" has an unknown category: "${item.category}"`,
+      );
     }
 
     return buildProduct(item, categoryId, photoIds);
@@ -449,6 +472,7 @@ export const demoProducts = (
 ```
 
 **Things to understand, not just type:**
+
 - **`??` (nullish coalescing):** `item.features ?? []` means "use `item.features`, or `[]` if it's missing".
   The model expects arrays, never `undefined`.
 - **`!` after `.find(...)`:** `.find` could return `undefined`. The last row has `minRating: 0`, so a match
@@ -462,24 +486,30 @@ export const demoProducts = (
   (a different product) doesn't.
 
 ### 12.3 Fix the step comments in two files
+
 Your files still use the old step numbers. To keep them matching this guide:
+
 - `src/data/categories.ts`, last line → `// Next: STEP 12 (Put the demo data in the database) -> server/src/data/demoData.ts`
 - `src/data/uploadImages.ts` → add `// Next: STEP 12 (Put the demo data in the database) -> server/src/data/demoData.ts` at the bottom.
 
 ### 12.4 Test it
+
 ```bash
 cd server
 npm run typecheck
 ```
+
 It should finish with **no output**. There's nothing to run yet, because `seed.ts` (next step) is what uses these
 functions. You'll see the real result in STEP 13: 40 products in MongoDB, each with its photos.
 
 Common typecheck errors:
+
 - `Module has no exported member 'listProductPhotoIds'`: you didn't `export` it in 12.1.
 - `Type 'string' is not assignable to type '"published" | "draft" | "scheduled"'`: you forgot `as const`.
 - `Module './products' has no exported member 'SeedProduct'`: check the spelling and the capital letters.
 
 ### 12.5 Commit
+
 ```bash
 git add .
 git commit -m "STEP 12: demo data builders and Cloudinary photo list"
@@ -493,11 +523,13 @@ git push
 ## STEP 13: `seed.ts`, the `npm run seed` command that fills MongoDB
 
 ### ⚠️ Before you start: finish 12.2
+
 Your `listProductPhotoIds()` from 12.1 is in `cloudinary.ts` ✅, but **`src/data/demoData.ts` is still
 empty**. `seed.ts` imports `demoCategories` and `demoProducts` from it, so type 12.2 first.
 Typecheck passes right now only because an empty file has nothing to check.
 
 ### What this step is for
+
 "Seeding" means filling an empty database with starting data, so the shop has products to show from
 day one. `npm run seed` (already in your `package.json`) runs `src/data/seed.ts`, which:
 
@@ -548,7 +580,9 @@ export const seedDatabase = async () => {
   const photoIds = await listProductPhotoIds();
 
   // 4. Save the products
-  const savedProducts = await Product.insertMany(demoProducts(categoryIds, photoIds));
+  const savedProducts = await Product.insertMany(
+    demoProducts(categoryIds, photoIds),
+  );
 
   // 5. Link bundles and related products. products.ts uses names; we swap each name for its id.
   const productIds = new Map<string, Types.ObjectId>(
@@ -561,7 +595,9 @@ export const seedDatabase = async () => {
     return (names ?? []).map((name) => {
       const id = productIds.get(name);
       if (!id) {
-        throw new Error(`"${owner}" links to a product that doesn't exist: "${name}"`);
+        throw new Error(
+          `"${owner}" links to a product that doesn't exist: "${name}"`,
+        );
       }
       return id;
     });
@@ -598,9 +634,14 @@ const runSeed = async () => {
     await connectDB();
     const result = await seedDatabase();
 
-    console.log(`Seeded ${result.categories} categories and ${result.products} products.`);
+    console.log(
+      `Seeded ${result.categories} categories and ${result.products} products.`,
+    );
     if (result.withoutPhotos.length > 0) {
-      console.log("These products have no photos:", result.withoutPhotos.join(", "));
+      console.log(
+        "These products have no photos:",
+        result.withoutPhotos.join(", "),
+      );
     }
   } catch (error) {
     console.error("Seed failed:", (error as Error).message);
@@ -620,6 +661,7 @@ if (require.main === module) {
 ```
 
 **Things to understand, not just type:**
+
 - **`deleteMany({})`:** the empty `{}` filter means "every document". Only use it in the seed!
 - **`insertMany`** saves many documents in one go and returns them **with their new `_id`s**. That's how we get
   the ids we need for steps 2 and 5.
@@ -631,6 +673,7 @@ if (require.main === module) {
   `finally`. `exitCode` reports the failure after cleanup has finished.
 
 ### 13.2 Run it
+
 ```bash
 cd server
 npm run typecheck
@@ -638,14 +681,18 @@ npm run seed
 ```
 
 You should see:
+
 ```
 MongoDB connected: ac-...mongodb.net
 Seeded 8 categories and 40 products.
 ```
+
 No "have no photos" line: I ran this same code against your Cloudinary account, and all 40 products got photos.
 
 ### 13.3 Check it in MongoDB Atlas
+
 Atlas → your cluster → **Browse Collections** → database `quickcart`:
+
 - **categories:** 8 documents.
 - **products:** 40 documents. Open "Wireless Noise-Cancelling Headphones" and check:
   - `category` is an ObjectId, not the word "electronics"
@@ -656,16 +703,18 @@ Atlas → your cluster → **Browse Collections** → database `quickcart`:
 - Run `npm run seed` a second time. There should still be exactly 8 and 40, not 16 and 80.
 
 ### Common errors
-| Message | Cause |
-|---|---|
-| `Seed failed: E11000 duplicate key error ... sku` | Two products in `products.ts` have the same `sku` (or `slug`). Change one. |
-| `Seed failed: "X" has an unknown category: "y"` | `category` of product X in `products.ts` isn't one of the 8 slugs in `categories.ts`. |
-| `Seed failed: "X" links to a product that doesn't exist` | A name in `bundle` or `related` of product X is misspelt. |
-| `Seed failed: querySrv ENOTFOUND` / timeout | No internet, or your IP isn't allowed in Atlas → **Network Access**. |
-| `Module './demoData' has no exported member ...` | 12.2 isn't written yet, or a function is missing `export`. |
-| The command never finishes | You left out `await mongoose.disconnect()`. |
+
+| Message                                                  | Cause                                                                                 |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `Seed failed: E11000 duplicate key error ... sku`        | Two products in `products.ts` have the same `sku` (or `slug`). Change one.            |
+| `Seed failed: "X" has an unknown category: "y"`          | `category` of product X in `products.ts` isn't one of the 8 slugs in `categories.ts`. |
+| `Seed failed: "X" links to a product that doesn't exist` | A name in `bundle` or `related` of product X is misspelt.                             |
+| `Seed failed: querySrv ENOTFOUND` / timeout              | No internet, or your IP isn't allowed in Atlas → **Network Access**.                  |
+| `Module './demoData' has no exported member ...`         | 12.2 isn't written yet, or a function is missing `export`.                            |
+| The command never finishes                               | You left out `await mongoose.disconnect()`.                                           |
 
 ### 13.4 Commit
+
 ```bash
 git add .
 git commit -m "STEP 12-13: demo data and seed command"
@@ -680,17 +729,22 @@ at `/api/categories` and `/api/products`, and the shop starts having real data. 
 ## STEP 14: One place to handle errors
 
 ### ⚠️ Still open from STEP 13 (2 minutes, do it first)
+
 `src/data/demoData.ts` **line 97** still says `images: photosFor(slug, photoIds),`, so the 9 products with a
 `photo:` name are still saved **without photos**. Change it to:
+
 ```ts
     images: photosFor(item.photo ?? slug, photoIds), // "photo" from 12.0, otherwise the slug
 ```
+
 Also replace your `photosFor` (lines 48–60) with the version in STEP 12.2, the one with `bare` and `photoNumber`.
 Then run `npm run seed` again until the "have no photos" line is gone.
 Also, `src/data/seed.ts` has **never been committed** (`git status` shows `??`), so include it in this step's commit.
 
 ### What this step is for
+
 From STEP 15 on, every route can go wrong in some way:
+
 - someone asks for a product that doesn't exist (404)
 - they send an id that isn't a valid MongoDB id (400)
 - they register with an email that's already taken (409)
@@ -711,6 +765,7 @@ route throws ──► Express 5 passes it on ──► errorHandler ──► r
 ```
 
 ### 14.1 Create `src/utils/AppError.ts`
+
 An `Error` that also carries the HTTP status code we want to reply with.
 
 ```ts
@@ -731,7 +786,8 @@ export class AppError extends Error {
 ```
 
 **New idea, a class:**
-- `extends Error` means an `AppError` *is* an `Error` with something extra: `statusCode`.
+
+- `extends Error` means an `AppError` _is_ an `Error` with something extra: `statusCode`.
 - `super(message)` calls `Error`'s own constructor, so `.message` works as usual.
 - Later, `error instanceof AppError` asks "is this one of ours?"
 
@@ -787,12 +843,16 @@ export const errorHandler = (
   // 4. A "unique" field already used, e.g. registering with an email that exists (MongoDB code 11000)
   if (err.code === 11000) {
     const field = Object.keys(err.keyValue ?? {})[0] ?? "value";
-    return res.status(409).json({ message: `That ${field} is already in use.` });
+    return res
+      .status(409)
+      .json({ message: `That ${field} is already in use.` });
   }
 
   // 5. The website sent broken JSON (express.json() couldn't read the body)
   if (err.type === "entity.parse.failed") {
-    return res.status(400).json({ message: "The request body is not valid JSON." });
+    return res
+      .status(400)
+      .json({ message: "The request body is not valid JSON." });
   }
 
   // 6. A bad or expired login token (used from STEP 18)
@@ -814,6 +874,7 @@ export const errorHandler = (
 ```
 
 **Things to understand, not just type:**
+
 - **Why 4 parameters:** Express looks at how many parameters a middleware has. With 4, `(error, req, res, next)`,
   it's called **only when something went wrong**. Remove `_next` and it stops working, even though it's never used.
 - **The `_` in `_req` / `_next`** is a convention meaning "I know this is unused". (You already used `_req` in `routes/index.ts`.)
@@ -822,6 +883,7 @@ export const errorHandler = (
 - **Order matters:** specific checks come first, and the "anything else → 500" fallback comes last.
 
 ### 14.3 Use it in `src/app.ts`
+
 1. Import it next to `notFound`:
    ```ts
    import { errorHandler } from "./middleware/errorHandler";
@@ -834,6 +896,7 @@ export const errorHandler = (
 3. Update the "Next" comment at the bottom of `app.ts` and `notFound.ts` if you like, since errorHandler is now part of STEP 4/14.
 
 ### 14.4 Test it
+
 Start the server (`npm run dev`), then in a **second** Git Bash window:
 
 ```bash
@@ -846,7 +909,9 @@ curl -i http://localhost:5000/api/nothing-here
 # 3. Health -> 200
 curl -i http://localhost:5000/api/health
 ```
+
 Expected:
+
 1. `HTTP/1.1 400` with `{"message":"The request body is not valid JSON."}`
 2. `HTTP/1.1 404` with `{"message":"Not found: GET /api/nothing-here"}`
 3. `HTTP/1.1 200` with `{"status":"ok",...}`
@@ -857,6 +922,7 @@ Before this step, test 1 replied with an **HTML** error page. Now it's JSON. I t
 You'll see `AppError`, the 404 and the CastError in action in STEP 15–16, e.g. `GET /api/products/not-an-id` → 400.
 
 ### 14.5 Commit
+
 ```bash
 git add .
 git commit -m "STEP 13-14: seed command, AppError and error handler"
@@ -875,28 +941,32 @@ git push
 > STEP 12.2 and run `npm run seed` again. Otherwise carry on.
 
 ### What this step is for
+
 The **Home page** "Shop by category" row (`CategoryGrid`), the **Categories page** and the **Shop page** filter
 all need the list of departments, each with **how many products it has** ("Electronics · 340+ items").
 
 You'll build two endpoints:
 
-| Method + URL | Gives back | Used by |
-|---|---|---|
-| `GET /api/categories` | all 8 categories, each with `productCount` | Home grid, Categories page, Shop filter, admin product form |
+| Method + URL                | Gives back                                       | Used by                                                      |
+| --------------------------- | ------------------------------------------------ | ------------------------------------------------------------ |
+| `GET /api/categories`       | all 8 categories, each with `productCount`       | Home grid, Categories page, Shop filter, admin product form  |
 | `GET /api/categories/:slug` | one category, e.g. `/api/categories/home-living` | Shop page title when filtered (`/shop?category=home-living`) |
 
 ### The pattern you'll use for every feature from now on
+
 ```
 routes/index.ts ──► routes/categoryRoutes.ts ──► controllers/categoryController.ts ──► models (MongoDB)
   "/categories"        "GET /" → getCategories        does the work, replies JSON
 ```
-- **Routes file:** only *which URL runs which function*. It's short and easy to scan.
-- **Controller file:** *what happens*: ask the database and reply. A problem means a `throw new AppError(...)`, and
+
+- **Routes file:** only _which URL runs which function_. It's short and easy to scan.
+- **Controller file:** _what happens_: ask the database and reply. A problem means a `throw new AppError(...)`, and
   STEP 14 takes care of the reply.
 - **Replies are always an object with a name**, e.g. `{ categories: [...] }` and not a bare `[...]`. That way you can
   add more fields later (like `total` for pagination) without breaking the website.
 
 ### 15.1 Create `src/controllers/categoryController.ts`
+
 Create the `controllers` folder first.
 
 ```ts
@@ -946,7 +1016,9 @@ export const getCategoryBySlug = async (
   req: Request<{ slug: string }>,
   res: Response,
 ) => {
-  const category = await Category.findOne({ slug: req.params.slug.toLowerCase() })
+  const category = await Category.findOne({
+    slug: req.params.slug.toLowerCase(),
+  })
     .select("-__v")
     .lean();
 
@@ -967,10 +1039,11 @@ export const getCategoryBySlug = async (
 ```
 
 **Things to understand, not just type:**
+
 - **`aggregate([...])`** is MongoDB's "process the data in stages" query. Each stage takes the output of the one before:
   - `$match` keeps only live products (like `find`'s filter)
   - `$group` puts products into piles by `category`, and `$sum: 1` counts each pile
-  The result is something like `[{ _id: <electronics id>, count: 15 }, ...]`.
+    The result is something like `[{ _id: <electronics id>, count: 15 }, ...]`.
 - **`.lean()`** returns plain JavaScript objects instead of full Mongoose documents. That's faster, and it's what lets
   `...category` copy the fields cleanly so we can add `productCount`. Use `.lean()` whenever you only **read and reply**.
 - **`.select("-__v")`** leaves out Mongoose's internal version field `__v`, which the website doesn't need.
@@ -988,7 +1061,10 @@ export const getCategoryBySlug = async (
 // STEP 15 (part 2): The categories API routes
 
 import { Router } from "express";
-import { getCategories, getCategoryBySlug } from "../controllers/categoryController";
+import {
+  getCategories,
+  getCategoryBySlug,
+} from "../controllers/categoryController";
 
 const router = Router();
 
@@ -1001,6 +1077,7 @@ export default router;
 ```
 
 ### 15.3 Connect it in `src/routes/index.ts`
+
 1. Import it at the top, under `import { Router } from "express";`:
    ```ts
    import categoryRoutes from "./categoryRoutes";
@@ -1013,17 +1090,22 @@ export default router;
    `"/"` then means `/api/categories` and `"/:slug"` means `/api/categories/<something>`.
 
 ### 15.4 Test it
+
 ```bash
 npm run typecheck
 npm run dev
 ```
+
 In a second terminal (or just open the URLs in your browser):
+
 ```bash
 curl http://localhost:5000/api/categories
 curl http://localhost:5000/api/categories/home-living
 curl -i http://localhost:5000/api/categories/nope
 ```
+
 Expected:
+
 1. `{"categories":[{"_id":"...","name":"Electronics","slug":"electronics","icon":"devices",...,"productCount":15}, ...]}`.
    All 8 should be there, in this order with these counts:
    **Electronics 15 · Fashion 6 · Home & Living 3 · Beauty 2 · Sports 4 · Books 2 · Office 3 · Kitchen 5** (total 40).
@@ -1035,6 +1117,7 @@ I ran exactly this code against a freshly seeded copy of your data and got those
 Tip: install the **"JSON Viewer"** extension in Chrome so JSON in the browser is easy to read.
 
 ### 15.5 Commit
+
 ```bash
 git add .
 git commit -m "STEP 15: categories API"
@@ -1044,3 +1127,335 @@ git push
 ➡️ **Next: STEP 16 (products API: list with category / search / tag / price filters, sorting, pagination, and one
 product with its bundle and related products)**. That's the big one for the Home, Shop and Product Details pages.
 Reply **NEXT** when 15.4 matches.
+
+---
+
+## STEP 16: The products API
+
+### What this step is for
+
+This is the endpoint the shop runs on. Almost every customer screen in `ui/` lists products in some way:
+
+| Screen / section                                       | Request the website will make                                                                |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Shop page, all products, 24 per page                   | `GET /api/products?page=1`                                                                   |
+| Shop page category pills / `?category=` links          | `GET /api/products?category=electronics`                                                     |
+| Search bar ("Search products, brands and categories…") | `GET /api/products?search=headphones`                                                        |
+| Shop "Sort: Featured" dropdown                         | `&sort=featured` / `price-asc` / `price-desc` / `newest` / `rating` / `best-selling`         |
+| Home "Limited Rush Deals" (flash sale)                 | `GET /api/products?tag=flash-deal`                                                           |
+| Home "Featured products"                               | `GET /api/products?tag=featured`                                                             |
+| Home "Today's Deals"                                   | `GET /api/products?tag=deal`                                                                 |
+| Home "New Arrivals"                                    | `GET /api/products?tag=new-arrival`                                                          |
+| Home "Recommended for You"                             | `GET /api/products?tag=recommended`                                                          |
+| Home "Best Sellers in Nigeria"                         | `GET /api/products?sort=best-selling&limit=4`                                                |
+| Price filter                                           | `&minPrice=10000&maxPrice=20000`                                                             |
+| Product Details page                                   | `GET /api/products/wireless-noise-cancelling-headphones` (slug) **or** `/api/products/<_id>` |
+
+So you build **two** endpoints. The first one takes optional filters that can be **combined**, e.g.
+`/api/products?category=electronics&sort=price-asc&page=2`.
+
+Reply shapes:
+
+- **List:** `{ products: [...], total: 39, page: 1, pages: 2 }`. The Shop page needs `total` and `pages` for
+  "Showing 1–24 of 39" and the page numbers.
+- **One:** `{ product: { ...everything, category: {name, slug, icon}, bundleProducts: [...], relatedProducts: [...] } }`
+
+**Security rule:** `costPrice` (what the shop paid) is for admins only and must **never** appear in these public replies.
+
+### 16.1 Create `src/utils/escapeRegex.ts`
+
+Search uses a _regular expression_ to find the typed text anywhere in a name. Some characters mean something special in a regex.
+If someone searches `3.5mm`, the `.` would match **any** character. If they search `(` the server would crash with an invalid regex.
+This helper puts a `\` in front of every special character so the search text is matched **literally**.
+
+```ts
+// escapeRegex.ts server/src/utils/escapeRegex.ts
+// Makes user text safe to put inside a regular expression: "3.5mm (black)" -> "3\.5mm \(black\)"
+// Without it, "." would match any character and "(" would crash the search.
+
+// STEP 16: The products API (helper)
+
+export const escapeRegex = (text: string) => {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); // $& = "the character that matched"
+};
+```
+
+Type this regex **very carefully**: `/[.*+?^${}()|[\]\\]/g`. It's a list of special characters between `[` and `]`.
+
+### 16.2 Create `src/controllers/productController.ts`
+
+```ts
+// productController.ts server/src/controllers/productController.ts
+// The public products API: the Shop page list (with filters, search, sorting and pages)
+// and the Product Details page. Only products shoppers may see (liveProducts) are ever returned.
+
+// STEP 16: The products API
+// GET /api/products             -> a page of products, e.g. ?category=electronics&sort=price-asc&page=2
+// GET /api/products/:idOrSlug   -> one product with its category, bundle and related products
+
+import { Request, Response } from "express";
+import { SortOrder, Types } from "mongoose";
+import { Category } from "../models/Category";
+import { liveProducts, Product } from "../models/Product";
+import { AppError } from "../utils/AppError";
+import { escapeRegex } from "../utils/escapeRegex";
+
+// The fields a product card needs. Leaving out the rest (description, specs...) keeps the list fast and small.
+// costPrice is NOT here on purpose: it's admin-only.
+const CARD_FIELDS =
+  "name slug brand price oldPrice images ratings reviewCount badge tagline priceNote tags sold stock trackStock flashSaleStock colors category";
+
+// ?sort=... -> how MongoDB should order the results (1 = smallest first, -1 = biggest first)
+// _id is added as a tie-breaker so products with the same price always come in the same order.
+const SORTS: Record<string, Record<string, SortOrder>> = {
+  featured: { _id: 1 }, // the order in products.ts (the design's "Featured" order)
+  newest: { createdAt: -1, _id: -1 },
+  "price-asc": { price: 1, _id: 1 },
+  "price-desc": { price: -1, _id: 1 },
+  rating: { ratings: -1, reviewCount: -1 },
+  "best-selling": { sold: -1, _id: 1 },
+};
+
+// --- Small helpers to read the query string safely --------------------------------
+// Everything in req.query arrives as text (or an array, or nothing), never as a number.
+
+// "  Headphones " -> "Headphones"; anything that isn't a single string -> ""
+const text = (value: unknown) =>
+  typeof value === "string" ? value.trim() : "";
+
+// "15000" -> 15000; "" or "abc" -> undefined (meaning "no filter")
+const toNumber = (value: unknown) => {
+  const number = Number(text(value));
+  return text(value) !== "" && Number.isFinite(number) ? number : undefined;
+};
+
+// For page and limit: a whole number above 0, otherwise the fallback ("abc", "-3", "0" -> fallback)
+const wholeNumber = (value: unknown, fallback: number) => {
+  const number = Math.floor(Number(text(value)));
+  return number > 0 ? number : fallback;
+};
+
+// GET /api/products
+export const getProducts = async (req: Request, res: Response) => {
+  // Every filter is added to this list; a product must match ALL of them ($and).
+  // It always starts with liveProducts(), so drafts and future products are never shown.
+  const conditions: Record<string, unknown>[] = [liveProducts()];
+
+  // ?category=electronics: the website sends the slug, the products store the category id
+  const categorySlug = text(req.query.category).toLowerCase();
+  if (categorySlug) {
+    const category = await Category.findOne({ slug: categorySlug });
+
+    // An unknown category simply has no products (the Shop page shows "no products found")
+    if (!category) {
+      res.json({ products: [], total: 0, page: 1, pages: 0 });
+      return;
+    }
+    conditions.push({ category: category._id });
+  }
+
+  // ?tag=flash-deal: the Home page sections
+  const tag = text(req.query.tag).toLowerCase();
+  if (tag) {
+    conditions.push({ tags: tag }); // matches when the tags array CONTAINS this tag
+  }
+
+  // ?search=aura: the text anywhere in the name, brand or tags, ignoring capitals ("i")
+  const search = text(req.query.search);
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), "i");
+    conditions.push({
+      $or: [{ name: pattern }, { brand: pattern }, { tags: pattern }],
+    });
+  }
+
+  // ?minPrice=10000&maxPrice=20000 (either one alone works too)
+  const minPrice = toNumber(req.query.minPrice);
+  const maxPrice = toNumber(req.query.maxPrice);
+  if (minPrice !== undefined) {
+    conditions.push({ price: { $gte: minPrice } }); // $gte = greater than or equal
+  }
+  if (maxPrice !== undefined) {
+    conditions.push({ price: { $lte: maxPrice } }); // $lte = less than or equal
+  }
+
+  // ?sort=price-asc (unknown or missing -> featured)
+  const sort = SORTS[text(req.query.sort)] ?? SORTS.featured;
+
+  // ?page=2&limit=24: 24 per page like the design, never more than 60 at once
+  const limit = Math.min(wholeNumber(req.query.limit, 24), 60);
+  const page = wholeNumber(req.query.page, 1);
+
+  const filter = { $and: conditions };
+
+  // The page of products AND the total count, at the same time
+  const [products, total] = await Promise.all([
+    Product.find(filter)
+      .select(CARD_FIELDS)
+      .populate("category", "name slug") // swap the category id for { _id, name, slug }
+      .sort(sort)
+      .skip((page - 1) * limit) // page 2 with limit 24 skips the first 24
+      .limit(limit)
+      .lean(),
+    Product.countDocuments(filter),
+  ]);
+
+  res.json({ products, total, page, pages: Math.ceil(total / limit) });
+};
+
+// A MongoDB id is exactly 24 characters of 0-9 and a-f
+const OBJECT_ID = /^[a-f0-9]{24}$/i;
+
+// GET /api/products/:idOrSlug
+export const getProduct = async (
+  req: Request<{ idOrSlug: string }>,
+  res: Response,
+) => {
+  const { idOrSlug } = req.params;
+
+  // Links can use either the id or the readable slug
+  const which = OBJECT_ID.test(idOrSlug)
+    ? { _id: idOrSlug }
+    : { slug: idOrSlug.toLowerCase() };
+
+  const product = await Product.findOne({ $and: [which, liveProducts()] })
+    .select("-costPrice -__v") // everything EXCEPT these
+    .populate<{
+      category: {
+        _id: Types.ObjectId;
+        name: string;
+        slug: string;
+        icon: string;
+      };
+    }>("category", "name slug icon")
+    // Fill in the linked products with card fields, skipping any that are no longer live
+    .populate({
+      path: "bundleProducts",
+      match: liveProducts(),
+      select: CARD_FIELDS,
+    })
+    .populate({
+      path: "relatedProducts",
+      match: liveProducts(),
+      select: CARD_FIELDS,
+    })
+    .lean();
+
+  // Not found, or a draft/scheduled product: both look the same to shoppers
+  if (!product) {
+    throw new AppError(404, "Product not found");
+  }
+
+  // The model says: empty relatedProducts = show the best sellers from the same category
+  let relatedProducts: unknown[] = product.relatedProducts;
+  if (relatedProducts.length === 0) {
+    relatedProducts = await Product.find({
+      $and: [
+        liveProducts(),
+        { category: product.category._id },
+        { _id: { $ne: product._id } }, // $ne = not equal: don't recommend the product to itself
+      ],
+    })
+      .select(CARD_FIELDS)
+      .sort({ sold: -1 })
+      .limit(4)
+      .lean();
+  }
+
+  res.json({ product: { ...product, relatedProducts } });
+};
+
+// Next: STEP 16 (part 2) -> server/src/routes/productRoutes.ts
+```
+
+**Things to understand, not just type:**
+
+- **Why `$and` with a list?** `liveProducts()` already uses `$or` (published **or** scheduled-and-due), and search uses
+  `$or` too. A filter object can only have **one** `$or` key, so a second one would silently overwrite the first and
+  drafts would leak into the shop. Putting each condition in the `$and` list keeps them all.
+- **`req.query` is always text.** `?page=2` gives `"2"`, not `2`, and a user can type anything (`?page=abc`, `?page=-5`).
+  That's why the small helpers exist: bad input falls back to a sensible default instead of crashing.
+- **`skip` + `limit` = pagination.** Page `p` skips `(p - 1) × limit` products and takes `limit`.
+  `pages = Math.ceil(total / limit)`, so 39 products at 24 per page is 2 pages.
+- **`populate`** replaces an id with the document it points to. `.populate("category", "name slug")` turns
+  `category: ObjectId("665f…")` into `category: { _id, name: "Electronics", slug: "electronics" }`.
+  The version with `{ path, match, select }` also **filters**: linked products that were turned into drafts are dropped.
+- **`populate<{ category: {...} }>`** tells TypeScript that after populating, `category` is an object, not an id.
+  That's what makes `product.category._id` typecheck.
+- **`select("-costPrice -__v")`:** a `-` means "leave this out". `CARD_FIELDS` is the opposite, a list of fields to
+  **include**. (You can't mix including and leaving out in one select.)
+- **The `res.json(...); return;` in the category check:** we've already replied, so we stop the function there.
+  Replying twice crashes with "Cannot set headers after they are sent".
+
+### 16.3 Create `src/routes/productRoutes.ts`
+
+```ts
+// productRoutes.ts server/src/routes/productRoutes.ts
+// Which URL runs which function for products. routes/index.ts puts these under /api/products.
+
+// STEP 16 (part 2): The products API routes
+
+import { Router } from "express";
+import { getProduct, getProducts } from "../controllers/productController";
+
+const router = Router();
+
+router.get("/", getProducts); // GET /api/products?category=...&search=...&sort=...&page=...
+router.get("/:idOrSlug", getProduct); // GET /api/products/smart-watch-ultra
+
+export default router;
+
+// Next: STEP 17 (The User model) -> server/src/models/User.ts
+```
+
+### 16.4 Connect it in `src/routes/index.ts`
+
+Same as STEP 15:
+
+```ts
+import productRoutes from "./productRoutes";
+```
+
+```ts
+router.use("/products", productRoutes); // /api/products...
+```
+
+### 16.5 Test it
+
+Run `npm run seed` first so you have a clean copy of all 40 products, then `npm run typecheck` and `npm run dev`.
+Open these in the browser (or use `curl`):
+
+| URL                                                         | Expected                                                                                                                                                                                                       |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/products`                                             | `total: 40`, `pages: 2`, 24 products, starting with **Wireless Noise-Cancelling Headphones**, Canvas Low-Top Sneakers, Ceramic Mug Set                                                                         |
+| `/api/products?page=2`                                      | the remaining 16 products                                                                                                                                                                                      |
+| `/api/products?category=electronics&sort=price-asc&limit=3` | `total: 15`, cheapest first: **Gold-Plated 3.5mm AUX Cable ₦2,200**, Protective Hard Shell Case ₦6,500, Fast Dual USB-C GaN Charger 35W ₦8,000                                                                 |
+| `/api/products?search=3.5mm`                                | exactly 1: the AUX cable (proof that `escapeRegex` works)                                                                                                                                                      |
+| `/api/products?search=aura`                                 | 10 products (name, brand "Aura Sound Labs", or tags), case doesn't matter                                                                                                                                      |
+| `/api/products?tag=flash-deal`                              | 4: AeroPro Wireless Buds, Smart Gooseneck Kettle, Botanical Radiance Elixir, Alloy Adjustable Stand (the Home "Limited Rush Deals" row)                                                                        |
+| `/api/products?sort=best-selling&limit=4`                   | starts with Wireless Noise-Cancelling Headphones (1,420 sold)                                                                                                                                                  |
+| `/api/products?minPrice=10000&maxPrice=20000`               | only products from ₦10,000 to ₦20,000                                                                                                                                                                          |
+| `/api/products?category=nope`                               | `{"products":[],"total":0,"page":1,"pages":0}`                                                                                                                                                                 |
+| `/api/products?page=abc&limit=-5`                           | still works, using page 1 and 24 per page                                                                                                                                                                      |
+| `/api/products/wireless-noise-cancelling-headphones`        | full product; `category` is `{name:"Electronics",...}`; 3 `bundleProducts` (Protective Hard Shell Case, Gold-Plated 3.5mm AUX Cable, Fast Dual USB-C GaN Charger 35W); 4 `relatedProducts`; **no `costPrice`** |
+| `/api/products/<paste that product's _id>`                  | the same product                                                                                                                                                                                               |
+| `/api/products/nope`                                        | `404 {"message":"Product not found"}`                                                                                                                                                                          |
+
+**Check that drafts stay hidden.** In Atlas, change one product's `status` to `"draft"`. `/api/products` should now
+say `total: 39`, and that product's page should give a 404. Then run `npm run seed` to put everything back.
+
+I ran this exact code against a freshly seeded copy of your data, including the draft test and the "no related products"
+fallback, and got the results above.
+
+### 16.6 Commit
+
+```bash
+git add .
+git commit -m "STEP 16: products API with filters, search, sorting and pagination"
+git push
+```
+
+🎉 After this step, the **whole customer catalogue** (Home, Shop, Categories, Product Details) has real data.
+
+➡️ **Next: STEP 17 (User model: password hashing with bcrypt, customer/admin roles, addresses, saved items)**.
+Reply **NEXT** when 16.5 checks out.

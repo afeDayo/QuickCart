@@ -20,7 +20,7 @@ app.use(express.json());
 app.use("/api", routes); // every route lives under /api, e.g. /api/health
 
 app.use(notFound); // must come after the routes: runs only when nothing above matched
-app.use(errorHandler) // must be last: catches errors thrown by any route above
+app.use(errorHandler); // must be last: catches errors thrown by any route above
 
 export default app;
 // Next: STEP 4 (Handle unknown URLs and errors) -> server/src/middleware/notFound.ts
