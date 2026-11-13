@@ -24,8 +24,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 14     | Error handler (`AppError` + `errorHandler.ts`)                                      |
 | ✅   | 15     | Categories API: `GET /api/categories`                                               |
 | ✅   | 16     | Products API: list, filters, sort, pagination, one product                          |
-| ⬜   | **17** | **User model (password hashing, roles, addresses, saved items)** ← you are here     |
-| ⬜   | 18     | Auth: register, login, me, logout + `protect` / `adminOnly` middleware              |
+| ✅   | 17     | User model (password hashing, roles, addresses, saved items)                        |
+| ⬜   | **18** | **Auth: register, login, me, logout + `protect` / `adminOnly`** ← you are here       |
 | ⬜   | 19     | Forgot password, reset password, verify email                                       |
 | ⬜   | 20     | My Account: profile, change password, addresses, saved items                        |
 | ⬜   | 21     | Promo codes (`QUICK25`, `QUICK10`)                                                  |
@@ -1846,3 +1846,393 @@ git push
 
 ➡️ **Next: STEP 18 (Auth: register, login, logout, "who am I", JWT tokens, and the `protect` / `adminOnly`
 middleware that guards private and admin routes)**. Reply **NEXT** when 17.5 checks out.
+
+---
+
+## STEP 18: Auth (register, login, "who am I", logout) and the route guards
+
+After this step, people can create an account and log in. You'll also have two "guards" you can put in front of any
+route: `protect` (must be logged in) and `adminOnly` (must be an admin). Every later step uses them.
+
+**How login works here (JWT):**
+
+1. The user logs in with email + password. The server checks the password and replies with a **token**: a long
+   string like `eyJhbGciOi...` that says "this is user 6650..., valid until ...". The token is **signed** with your
+   `JWT_SECRET`.
+2. The website saves the token and sends it with every private request in a header:
+   `Authorization: Bearer eyJhbGciOi...`
+3. `protect` reads that header and checks the signature (nobody can fake one without your secret). Then it loads
+   the user and lets the request through.
+
+The server doesn't store logins anywhere, so **logout** just means the website deletes its token.
+
+What the screens need (from `ui/`):
+
+- **Registration:**
+  - first name, last name, email (with an **"Available"** tick) and phone
+  - a password with rules: 8+ characters, an uppercase letter and a number (the symbol is optional because
+    "Medium" is accepted)
+  - confirm password, and an "I agree to the Terms" box
+- **Login:** email, password, **"Remember me for 30 days"**. Without it, the token lasts `JWT_EXPIRES_IN` (15 days).
+- "Continue with Google" is **out of scope**. Leave the button in the client but don't build it.
+
+### 18.0 First, fix a typo in `errorHandler.ts` (from STEP 14)
+
+Open `src/middleware/errorHandler.ts`. Part 2 (the ValidationError part) says:
+
+```ts
+return res.status(400).json({ messages: messages.join(". ") });
+```
+
+The key must be `message` (singular), like every other reply. The website reads `message`, so with this typo a
+registration with no first name would show no error at all. My test caught it:
+`{"messages":"First name is required"}`. Change it to:
+
+```ts
+return res.status(400).json({ message: messages.join(". ") });
+```
+
+### 18.1 `src/utils/token.ts`: make and check tokens
+
+New file. It has two small functions, so the rest of the code never touches `jsonwebtoken` directly.
+
+```ts
+// token.ts server/src/utils/token.ts
+// Makes login tokens (JWTs) and checks them.
+
+// STEP 18 (part 1): Tokens
+
+import jwt from "jsonwebtoken";
+import { env } from "../config/env";
+
+// What is inside one of our tokens once it's checked
+export interface TokenPayload {
+  id: string; // the user's _id
+  iat: number; // "issued at": when it was made, in SECONDS since 1970
+  exp: number; // when it stops working, in seconds
+}
+
+// signToken("6650...") -> "eyJhbGciOi..."
+// rememberMe ("Remember me for 30 days" on the login screen) -> 30 days, otherwise JWT_EXPIRES_IN (15d)
+export const signToken = (userId: string, rememberMe = false) => {
+  // The "as" is needed because TypeScript only accepts strings like "15d" here, and env gives a plain string
+  const expiresIn = (rememberMe ? "30d" : env.jwtExpiresIn) as jwt.SignOptions["expiresIn"];
+
+  return jwt.sign({ id: userId }, env.jwtSecret, { expiresIn });
+};
+
+// verifyToken("eyJhbGciOi...") -> { id, iat, exp }
+// If the token was changed, faked or has expired, jwt.verify THROWS (JsonWebTokenError / TokenExpiredError).
+// We don't catch it: errorHandler part 6 (STEP 14) already turns those into a 401.
+export const verifyToken = (token: string) => {
+  return jwt.verify(token, env.jwtSecret) as TokenPayload;
+};
+```
+
+**Check your `.env`:** `JWT_SECRET` should be a long random string, not a word. You can make one with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### 18.2 `src/middleware/auth.ts`: the `protect` and `adminOnly` guards
+
+New file.
+
+```ts
+// auth.ts server/src/middleware/auth.ts
+// Guards for routes:
+//   router.get("/me", protect, getMe)                     -> must be logged in
+//   router.post("/", protect, adminOnly, createProduct)   -> must be an admin
+
+// STEP 18 (part 2): Route guards
+
+import { NextFunction, Request, Response } from "express";
+import { HydratedDocument } from "mongoose";
+import { IUser, User } from "../models/User";
+import { AppError } from "../utils/AppError";
+import { verifyToken } from "../utils/token";
+
+// Teach TypeScript that a request can carry the logged-in user: req.user
+// (Express's Request type doesn't have "user", so we add it to Express's own type.)
+declare global {
+  namespace Express {
+    interface Request {
+      user?: HydratedDocument<IUser>; // a full user document, so later steps can change and .save() it
+    }
+  }
+}
+
+// protect: let the request through only if it carries a valid token for a user who still exists
+export const protect = async (req: Request, _res: Response, next: NextFunction) => {
+  // 1. The header looks like "Bearer eyJhbGciOi..."
+  const header = req.headers.authorization;
+
+  if (!header || !header.startsWith("Bearer ")) {
+    throw new AppError(401, "Please log in to continue.");
+  }
+
+  const token = header.split(" ")[1]; // the part after "Bearer "
+
+  // 2. Check the token. A fake or expired one throws here -> errorHandler -> 401
+  const payload = verifyToken(token);
+
+  // 3. The user might have been deleted since the token was made
+  const user = await User.findById(payload.id);
+  if (!user) {
+    throw new AppError(401, "This account no longer exists. Please log in again.");
+  }
+
+  // 4. If the password was changed AFTER this token was made, the token is no longer accepted.
+  //    (Someone who stole an old token is locked out as soon as the real owner changes the password.)
+  //    Math.floor: iat is in whole seconds, so we compare whole seconds too. Without it, a token made in
+  //    the same second as the change (e.g. right after "change password" in STEP 20) would be refused.
+  if (user.passwordChangedAt) {
+    const changedAt = Math.floor(user.passwordChangedAt.getTime() / 1000);
+    if (changedAt > payload.iat) {
+      throw new AppError(401, "Your password was changed. Please log in again.");
+    }
+  }
+
+  // 5. Remember who it is for the next function, and continue
+  req.user = user;
+  next();
+};
+
+// adminOnly: always put it AFTER protect (it needs req.user)
+export const adminOnly = (req: Request, _res: Response, next: NextFunction) => {
+  if (req.user?.role !== "admin") {
+    throw new AppError(403, "Only admins can do this."); // 403 = "I know who you are, but no"
+  }
+
+  next();
+};
+```
+
+**Why `throw` works in middleware here:** Express 5 catches errors thrown in async functions and sends them to
+`errorHandler`. Express 4 couldn't do this, which is why older tutorials wrap everything in `try/catch` or
+`asyncHandler`. You don't need that.
+
+**401 vs 403:** 401 means "I don't know who you are, log in". 403 means "you're logged in, but not allowed".
+
+### 18.3 `src/controllers/authController.ts`
+
+New file.
+
+```ts
+// authController.ts server/src/controllers/authController.ts
+// Create an account, log in, "who am I", log out, and "is this email free?"
+
+// STEP 18 (part 3): The auth controller
+// POST /api/auth/register           -> create an account, reply with a token
+// POST /api/auth/login              -> check email + password, reply with a token
+// GET  /api/auth/me                 -> the logged-in user          (protect)
+// POST /api/auth/logout             -> "logged out"                (protect)
+// GET  /api/auth/check-email?email= -> { available: true/false }  (the "Available" tick)
+
+import { Request, Response } from "express";
+import { User } from "../models/User";
+import { AppError } from "../utils/AppError";
+import { signToken } from "../utils/token";
+
+// The rules from the registration screen: 8+ characters, an uppercase letter and a number.
+// (?=.*[A-Z]) = "somewhere there is an A-Z", (?=.*\d) = "somewhere there is a 0-9", .{8,} = 8 or more characters
+const PASSWORD_RULE = /^(?=.*[A-Z])(?=.*\d).{8,}$/;
+
+// POST /api/auth/register
+export const register = async (req: Request, res: Response) => {
+  // "?? {}": in Express 5, req.body is undefined when nothing was sent, and destructuring undefined crashes
+  const { firstName, lastName, email, phone, password, confirmPassword, agreeToTerms } =
+    req.body ?? {};
+
+  if (!agreeToTerms) {
+    throw new AppError(400, "Please agree to the Terms of Service and Privacy Policy.");
+  }
+
+  // The model only checks "8 characters"; the uppercase + number rules are checked here.
+  // (They can't go in the model: the model sees the HASH when it validates on later saves.)
+  if (typeof password !== "string" || !PASSWORD_RULE.test(password)) {
+    throw new AppError(
+      400,
+      "Password must be at least 8 characters with one uppercase letter (A-Z) and one number (0-9).",
+    );
+  }
+
+  if (password !== confirmPassword) {
+    throw new AppError(400, "Passwords do not match.");
+  }
+
+  // Pick the fields one by one. NEVER do User.create(req.body): someone could send "role": "admin"!
+  // Missing names or a bad email -> the model's messages (400). Email already used -> 409.
+  const user = await User.create({ firstName, lastName, email, phone, password });
+
+  // 201 = "created". Log them straight in by sending a token too.
+  // The user's toJSON (STEP 17) removes the password from the reply.
+  res.status(201).json({ token: signToken(String(user._id)), user });
+};
+
+// POST /api/auth/login
+export const login = async (req: Request, res: Response) => {
+  const { email, password, rememberMe } = req.body ?? {};
+
+  if (!email || !password) {
+    throw new AppError(400, "Please enter your email and password.");
+  }
+
+  // The password has select: false, so we must ask for it to compare it
+  const user = await User.findOne({ email: String(email).toLowerCase().trim() }).select("+password");
+
+  // The SAME message for "no such email" and "wrong password": don't tell strangers which emails have accounts
+  if (!user || !(await user.comparePassword(String(password)))) {
+    throw new AppError(401, "Incorrect email or password.");
+  }
+
+  res.json({ token: signToken(String(user._id), Boolean(rememberMe)), user });
+};
+
+// GET /api/auth/me (after protect, so req.user is already loaded)
+// The website calls this when it opens, to know who is logged in (the avatar, "Hi Ada", admin menu).
+export const getMe = async (req: Request, res: Response) => {
+  res.json({ user: req.user });
+};
+
+// POST /api/auth/logout
+// Nothing to delete on the server: the website deletes its token. This just confirms it.
+export const logout = async (_req: Request, res: Response) => {
+  res.json({ message: "You have been logged out." });
+};
+
+// GET /api/auth/check-email?email=ada.obi@example.com -> { available: false }
+export const checkEmail = async (req: Request, res: Response) => {
+  const email = String(req.query.email ?? "").toLowerCase().trim();
+
+  if (!email) {
+    throw new AppError(400, "Please give an email to check.");
+  }
+
+  const taken = await User.exists({ email }); // exists = cheap "is there one?" (only the _id comes back)
+  res.json({ available: !taken });
+};
+```
+
+### 18.4 `src/routes/authRoutes.ts`
+
+New file.
+
+```ts
+// authRoutes.ts server/src/routes/authRoutes.ts
+// Which URL runs which auth function. routes/index.ts puts these under /api/auth.
+
+// STEP 18 (part 4): The auth routes
+
+import { Router } from "express";
+import { checkEmail, getMe, login, logout, register } from "../controllers/authController";
+import { protect } from "../middleware/auth";
+
+const router = Router();
+
+router.post("/register", register);
+router.post("/login", login);
+router.get("/check-email", checkEmail);
+router.get("/me", protect, getMe); // protect runs first; getMe only runs if it calls next()
+router.post("/logout", protect, logout);
+
+export default router;
+```
+
+### 18.5 Mount it in `src/routes/index.ts`
+
+Add the import with the others:
+
+```ts
+import authRoutes from "./authRoutes";
+```
+
+And add this line with the other `router.use` lines:
+
+```ts
+router.use("/auth", authRoutes); // /api/auth...
+```
+
+No route uses `adminOnly` yet. It gets its first job in STEP 25.
+
+### 18.6 Test it
+
+```bash
+npm run typecheck
+npm run seed      # fresh demo users
+npm run dev
+```
+
+Use Postman, Thunder Client (VS Code extension), or `curl`. For POST requests, set the body to **raw JSON**.
+
+**1. Log in as Ada:** `POST http://localhost:5000/api/auth/login`
+
+```json
+{ "email": "ada.obi@example.com", "password": "Password@123" }
+```
+
+Expected: **200**, `{ "token": "eyJ...", "user": { "firstName": "Ada", ... } }`, with **no** `password` in `user`.
+Copy the token.
+
+**2. Who am I:** send `GET http://localhost:5000/api/auth/me` with the header
+`Authorization: Bearer <paste the token>`. In Postman, that's the Authorization tab → Bearer Token.
+Expected: **200**, `{ "user": { ...Ada... } }`.
+
+**3. The error cases.** Each one should give exactly this status and message:
+
+| Request                                               | Status | Reply                                                         |
+| ----------------------------------------------------- | ------ | ------------------------------------------------------------- |
+| login with a wrong password                           | 401    | Incorrect email or password.                                  |
+| login with an email that has no account               | 401    | Incorrect email or password.                                  |
+| login with `{}`                                       | 400    | Please enter your email and password.                         |
+| `/me` with no header                                  | 401    | Please log in to continue.                                    |
+| `/me` with `Bearer abc.def.ghi`                       | 401    | Your session has expired. Please log in again.                |
+| register with `"agreeToTerms": false`                 | 400    | Please agree to the Terms of Service and Privacy Policy.      |
+| register with password `password`                     | 400    | Password must be at least 8 characters with one uppercase ... |
+| register with a different `confirmPassword`           | 400    | Passwords do not match.                                       |
+| register with `"firstName": ""`                       | 400    | First name is required _(only after the 18.0 fix)_            |
+| register with `ada.obi@example.com`                   | 409    | That email is already in use.                                 |
+| `GET /api/auth/check-email?email=Ada.Obi@example.com` | 200    | `{ "available": false }`                                      |
+| `GET /api/auth/check-email?email=new@example.com`     | 200    | `{ "available": true }`                                       |
+
+**4. Register a new account:** `POST http://localhost:5000/api/auth/register`
+
+```json
+{
+  "firstName": "Tola",
+  "lastName": "Ade",
+  "email": "tola@example.com",
+  "phone": "08031234567",
+  "password": "QuickLagos#2025",
+  "confirmPassword": "QuickLagos#2025",
+  "agreeToTerms": true
+}
+```
+
+Expected: **201** with a token and the user, with `role: "customer"`. Then register again with another email and add
+`"role": "admin"` to the body. The new user must **still** be a `customer`. In Atlas, Tola's password is a
+`$2b$10$...` hash.
+
+**5. Remember me:** log in with `"rememberMe": true` and paste the token into [jwt.io](https://jwt.io). Compare
+`exp - iat`: it should be **2592000** seconds (30 days). Without it, you get **1296000** (15 days).
+
+A JWT isn't secret, only signed: anyone can **read** it, but nobody can **change** it. That's why we only put the
+id inside.
+
+I ran this exact code against a throwaway database, and all of the above passed. I also checked that:
+
+- the admin can pass `protect, adminOnly`, and Ada gets **403**
+- a token for a deleted user gets **401**
+- an expired token gets **401**
+- after a password change, the old token gets **401** "Your password was changed"
+
+### 18.7 Commit
+
+```bash
+git add .
+git commit -m "STEP 18: auth (register, login, me, logout) and protect/adminOnly"
+git push
+```
+
+➡️ **Next: STEP 19 (Forgot password, reset password and verify email).** Reply **NEXT** when 18.6 checks out.
