@@ -23,8 +23,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 13     | `seed.ts`: `npm run seed` works                                                     |
 | ✅   | 14     | Error handler (`AppError` + `errorHandler.ts`)                                      |
 | ✅   | 15     | Categories API: `GET /api/categories`                                               |
-| ⬜   | **16** | **Products API: list, filters, sort, pagination, one product** ← you are here       |
-| ⬜   | 17     | User model (password hashing, roles, addresses, saved items)                        |
+| ✅   | 16     | Products API: list, filters, sort, pagination, one product                          |
+| ⬜   | **17** | **User model (password hashing, roles, addresses, saved items)** ← you are here     |
 | ⬜   | 18     | Auth: register, login, me, logout + `protect` / `adminOnly` middleware              |
 | ⬜   | 19     | Forgot password, reset password, verify email                                       |
 | ⬜   | 20     | My Account: profile, change password, addresses, saved items                        |
@@ -1459,3 +1459,390 @@ git push
 
 ➡️ **Next: STEP 17 (User model: password hashing with bcrypt, customer/admin roles, addresses, saved items)**.
 Reply **NEXT** when 16.5 checks out.
+
+---
+
+## STEP 17: The User model
+
+### What this step is for
+
+Everything from here on needs **people**: logging in (STEP 18), My Account (STEP 20), placing orders (STEP 22),
+reviews (STEP 23) and the admin pages. This step creates the **User model** and seeds two demo accounts.
+There are no routes yet; the login endpoints come in STEP 18.
+
+What the screens in `ui/` say a user needs:
+
+| Screen                                                | Fields                                                                                       |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Register / My Account "Edit Profile"                  | `firstName`, `lastName`, `email`, `phone`                                                    |
+| Login                                                 | `email` + `password`                                                                         |
+| My Account "Verified Customer" badge                  | `isEmailVerified`                                                                            |
+| My Account "Member since March 2024"                  | `createdAt` (from `timestamps`)                                                              |
+| Admin pages vs shop                                   | `role`: `"customer"` or `"admin"`                                                            |
+| Delivery Addresses (Home / Office, "Default Address") | `addresses[]`: label, fullName, phone, street, city, state, country, instructions, isDefault |
+| Saved Items (the heart icon)                          | `savedItems[]`: product ids                                                                  |
+| Forgot / Reset password, Verify email (STEP 19)       | token + expiry fields                                                                        |
+| "Password last updated 42 days ago"                   | `passwordChangedAt`                                                                          |
+
+### The 3 password rules (the most important part of this step)
+
+1. **Never store the real password.** We store a **hash**, a scrambled version made by `bcrypt`. You can't turn
+   a hash back into the password. To check a login, bcrypt hashes the typed password the same way and compares the two.
+   If the database ever leaks, nobody can read the passwords.
+2. **Never send the password, or its hash, to the browser.** `select: false` keeps it out of queries, and `toJSON`
+   removes it from replies just in case.
+3. **Hash automatically.** A `pre("save")` hook hashes the password every time it's set or changed, so no route can
+   forget to do it.
+
+### 17.1 Create `src/models/User.ts`
+
+```ts
+// User model server/src/models/User.ts
+// A person with an account: a shopper ("customer") or a shop manager ("admin").
+// Passwords are never stored as typed: they're scrambled ("hashed") with bcrypt before saving.
+
+// STEP 17: The User model
+
+import bcrypt from "bcryptjs";
+import { Model, model, Schema, Types } from "mongoose";
+
+// One saved delivery address (My Account -> Delivery Addresses, and the checkout form)
+export interface IAddress {
+  _id?: Types.ObjectId; // each address gets its own id, so one can be edited or deleted
+  label: string; // e.g. "Home", "Office"
+  fullName: string; // who receives the package
+  phone: string;
+  street: string; // e.g. "12 Admiralty Way"
+  city: string; // city / neighbourhood, e.g. "Lekki Phase 1"
+  state: string; // e.g. "Lagos State"
+  country: string;
+  instructions?: string; // e.g. "Gate code 4022. Please call upon arrival."
+  isDefault: boolean; // the address picked automatically at checkout
+}
+
+export interface IUser {
+  firstName: string;
+  lastName: string;
+  email: string; // unique: one account per email
+  phone?: string;
+  password: string; // the bcrypt hash, never the real password
+  role: "customer" | "admin";
+  isEmailVerified: boolean;
+  addresses: IAddress[];
+  savedItems: Types.ObjectId[]; // products the user saved (wishlist)
+  emailVerifyToken?: string; // STEP 19
+  emailVerifyExpires?: Date;
+  passwordResetToken?: string; // STEP 19
+  passwordResetExpires?: Date;
+  passwordChangedAt?: Date; // "Password last updated ..."; also used to cancel old logins (STEP 18)
+}
+
+// Functions every user document has: user.comparePassword("typed password")
+interface IUserMethods {
+  comparePassword(candidate: string): Promise<boolean>;
+}
+
+// The model's type: users with the fields of IUser AND the methods of IUserMethods
+type UserModel = Model<IUser, {}, IUserMethods>;
+
+// An address is a "sub-document": it lives inside the user, not in its own collection
+const addressSchema = new Schema<IAddress>({
+  label: { type: String, default: "Home", trim: true },
+  fullName: { type: String, required: true, trim: true },
+  phone: { type: String, required: true, trim: true },
+  street: { type: String, required: true, trim: true },
+  city: { type: String, required: true, trim: true },
+  state: { type: String, required: true, trim: true },
+  country: { type: String, default: "Nigeria", trim: true },
+  instructions: { type: String, trim: true },
+  isDefault: { type: Boolean, default: false },
+});
+
+const userSchema = new Schema<IUser, UserModel, IUserMethods>(
+  {
+    // [rule, message]: the message is what errorHandler (STEP 14) sends back when the rule fails
+    firstName: {
+      type: String,
+      required: [true, "First name is required"],
+      trim: true,
+    },
+
+    lastName: {
+      type: String,
+      required: [true, "Last name is required"],
+      trim: true,
+    },
+
+    email: {
+      type: String,
+      required: [true, "Email is required"],
+      unique: true, // MongoDB refuses a second account with the same email (error 11000 -> 409)
+      lowercase: true, // "Ada.Obi@Example.com" is saved as "ada.obi@example.com"
+      trim: true,
+      match: [/^\S+@\S+\.\S+$/, "Please enter a valid email address"],
+    },
+
+    phone: { type: String, trim: true },
+
+    password: {
+      type: String,
+      required: [true, "Password is required"],
+      minlength: [8, "Password must be at least 8 characters"],
+      select: false, // left out of every query unless asked for with .select("+password")
+    },
+
+    role: { type: String, enum: ["customer", "admin"], default: "customer" },
+
+    isEmailVerified: { type: Boolean, default: false },
+
+    addresses: [addressSchema],
+
+    savedItems: [{ type: Schema.Types.ObjectId, ref: "Product" }],
+
+    // Secret tokens for STEP 19, hidden like the password
+    emailVerifyToken: { type: String, select: false },
+    emailVerifyExpires: { type: Date, select: false },
+    passwordResetToken: { type: String, select: false },
+    passwordResetExpires: { type: Date, select: false },
+
+    passwordChangedAt: { type: Date },
+  },
+  {
+    timestamps: true, // createdAt = "Member since"
+
+    // toJSON runs whenever a user is sent with res.json(user): remove the secret fields, just in case
+    toJSON: {
+      transform: (_doc, ret: Record<string, unknown>) => {
+        delete ret.password;
+        delete ret.emailVerifyToken;
+        delete ret.emailVerifyExpires;
+        delete ret.passwordResetToken;
+        delete ret.passwordResetExpires;
+        delete ret.__v;
+        return ret;
+      },
+    },
+  },
+);
+
+// Before every save: if the password was set or changed, replace it with its bcrypt hash.
+// "function" (not an arrow) is required here: Mongoose sets "this" to the user being saved.
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) {
+    return; // e.g. only the name changed: don't hash the hash again!
+  }
+
+  this.password = await bcrypt.hash(this.password, 10); // 10 = how hard to scramble (the usual choice)
+
+  // A changed password (not a brand-new account) is remembered for "Password last updated"
+  if (!this.isNew) {
+    this.passwordChangedAt = new Date();
+  }
+});
+
+// user.comparePassword("typed password") -> true / false
+// bcrypt hashes the typed password the same way and compares. (Needs .select("+password") when loading the user.)
+userSchema.method("comparePassword", async function (candidate: string) {
+  return bcrypt.compare(candidate, this.password);
+});
+
+export const User = model<IUser, UserModel>("User", userSchema);
+
+// Next: STEP 17 (part 2: demo users) -> server/src/data/users.ts
+```
+
+**Things to understand, not just type:**
+
+- **`isModified("password")`:** the hook runs on **every** save, including when someone only changes their phone.
+  Without this check, the hash would be hashed again and the user could never log in.
+- **`function ()` instead of `() =>`:** arrow functions have no `this` of their own. Mongoose passes the document as
+  `this`, so hooks and methods must use `function`.
+- **`select: false`:** `User.findOne({ email })` comes back **without** `password`. Login (STEP 18) is the only place that
+  asks for it: `User.findOne({ email }).select("+password")`.
+- **Sub-documents (`addresses: [addressSchema]`)** are stored inside the user. Each still gets its own `_id`, so
+  `PATCH /api/account/addresses/:id` (STEP 20) can find one.
+- **`Model<IUser, {}, IUserMethods>`** is how TypeScript learns that users have a `comparePassword` method.
+
+### 17.2 Create `src/data/users.ts`: two demo accounts
+
+One admin to manage the shop, and **Ada Obi**, the customer who appears in every design (her checkout, her order
+#QC-1042, her account page), with the same two addresses as the designs.
+
+```ts
+// users.ts server/src/data/users.ts
+// The demo accounts. Log in with these after npm run seed.
+//   Admin:    admin@quickcart.ng   /  Admin@12345
+//   Customer: ada.obi@example.com  /  Password@123
+// These passwords are for the demo only: they're hashed when saved, but anyone reading this file knows them.
+
+// STEP 17 (part 2): Demo users
+
+import type { IUser } from "../models/User";
+
+// The fields a demo user needs (Pick = "only these fields of IUser")
+export type DemoUser = Pick<
+  IUser,
+  | "firstName"
+  | "lastName"
+  | "email"
+  | "phone"
+  | "password"
+  | "role"
+  | "isEmailVerified"
+  | "addresses"
+>;
+
+export const users: DemoUser[] = [
+  {
+    firstName: "QuickCart",
+    lastName: "Admin",
+    email: "admin@quickcart.ng",
+    phone: "+2348000000001",
+    password: "Admin@12345",
+    role: "admin",
+    isEmailVerified: true,
+    addresses: [],
+  },
+  {
+    firstName: "Ada",
+    lastName: "Obi",
+    email: "ada.obi@example.com",
+    phone: "+2348031234567",
+    password: "Password@123",
+    role: "customer",
+    isEmailVerified: true,
+    addresses: [
+      {
+        label: "Home",
+        fullName: "Ada Obi",
+        phone: "+2348031234567",
+        street: "12 Admiralty Way",
+        city: "Lekki Phase 1",
+        state: "Lagos State",
+        country: "Nigeria",
+        instructions: "Gate code 4022. Please call upon arrival at reception.",
+        isDefault: true,
+      },
+      {
+        label: "Office",
+        fullName: "Ada Obi",
+        phone: "+2348031234567",
+        street: "1415 Adetokunbo Ademola Street",
+        city: "Victoria Island",
+        state: "Lagos State",
+        country: "Nigeria",
+        isDefault: false,
+      },
+    ],
+  },
+];
+
+// Next: STEP 17 (part 3) -> add the users to server/src/data/demoData.ts and seed.ts
+```
+
+### 17.3 Add `demoUsers` to `src/data/demoData.ts`
+
+1. Add the import with the others at the top:
+   ```ts
+   import { users } from "./users";
+   ```
+2. Add this function, e.g. under `demoCategories`:
+   ```ts
+   // --- Users ---------------------------------------------------------------------------
+   // users.ts is already shaped like the User model. Passwords are hashed by the model when seed.ts saves them.
+   export const demoUsers = () => {
+     return users;
+   };
+   ```
+
+### 17.4 Seed the users in `src/data/seed.ts`
+
+Four small changes:
+
+1. **Imports** (top of the file):
+
+   ```ts
+   import { User } from "../models/User";
+   ```
+
+   and add `demoUsers` to the demoData import:
+
+   ```ts
+   import { demoCategories, demoProducts, demoUsers } from "./demoData";
+   ```
+
+   (While you're there: line 11, `import { categories } from "./categories";`, isn't used, so you can delete it.)
+
+2. **Step 1 (line 20)**: empty the users too:
+
+   ```ts
+   await Promise.all([
+     Category.deleteMany({}),
+     Product.deleteMany({}),
+     User.deleteMany({}),
+   ]);
+   ```
+
+3. **New part after step 5** (after the `bulkWrite`, before the summary):
+
+   ```ts
+   // 6. Save the demo users. User.create (NOT insertMany): only create/save runs the model's
+   // pre("save") hook, which hashes the passwords. insertMany would store them as plain text!
+   const savedUsers = await User.create(demoUsers());
+   ```
+
+   Change the summary comment to `// 7. A summary ...` and add `users` to the returned object:
+
+   ```ts
+   users: savedUsers.length,
+   ```
+
+4. **In `runSeed`**, update the message:
+   ```ts
+   console.log(
+     `Seeded ${result.categories} categories, ${result.products} products and ${result.users} users`,
+   );
+   ```
+
+**Why `User.create` and not `insertMany` here:** `insertMany` is fast because it **skips the model's hooks**. For
+categories and products that doesn't matter. For users it means the `pre("save")` that hashes passwords would
+**never run**, and `Password@123` would sit in the database as plain text. `create` saves each user one by one, so
+the hook runs every time.
+
+### 17.5 Test it
+
+```bash
+npm run typecheck
+npm run seed
+```
+
+Expected: `Seeded 8 categories, 40 products and 2 users`
+
+In **Atlas → quickcart → users**:
+
+- 2 documents: `admin@quickcart.ng` (role `admin`) and `ada.obi@example.com` (role `customer`).
+- `password` looks like `$2b$10$Kq9...`, a hash and **not** `Password@123`. If you can read the password, you used
+  `insertMany`. Go back to 17.4 step 3.
+- Ada has 2 `addresses`, each with its own `_id`, and `country: "Nigeria"`.
+- Both have `createdAt` / `updatedAt`.
+
+`comparePassword` gets its real test in STEP 18 when you log in. I tested this model on a throwaway database:
+
+- hashing works
+- `select: false` hides the password
+- `comparePassword` is true for the right password and false for a wrong one
+- changing only the name does **not** re-hash the password
+- changing the password sets `passwordChangedAt`
+- a second account with `ADA.OBI@example.com` is refused (11000 → your errorHandler sends 409)
+- a bad email and a 3-letter password give the friendly messages from the schema
+
+### 17.6 Commit
+
+```bash
+git add .
+git commit -m "STEP 17: User model and demo users"
+git push
+```
+
+➡️ **Next: STEP 18 (Auth: register, login, logout, "who am I", JWT tokens, and the `protect` / `adminOnly`
+middleware that guards private and admin routes)**. Reply **NEXT** when 17.5 checks out.
