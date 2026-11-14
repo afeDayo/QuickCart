@@ -25,9 +25,9 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 15     | Categories API: `GET /api/categories`                                               |
 | ✅   | 16     | Products API: list, filters, sort, pagination, one product                          |
 | ✅   | 17     | User model (password hashing, roles, addresses, saved items)                        |
-| ⬜   | **18** | **Auth: register, login, me, logout + `protect` / `adminOnly`** ← you are here       |
-| ⬜   | 19     | Forgot password, reset password, verify email                                       |
-| ⬜   | 20     | My Account: profile, change password, addresses, saved items                        |
+| ✅   | 18     | Auth: register, login, me, logout + `protect` / `adminOnly`                         |
+| ✅   | 19     | Forgot password, reset password, verify email                                       |
+| ⬜   | **20** | **My Account: profile, change password, addresses, saved items** ← you are here     |
 | ⬜   | 21     | Promo codes (`QUICK25`, `QUICK10`)                                                  |
 | ⬜   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour                    |
 | ⬜   | 23     | Reviews (only buyers of delivered orders)                                           |
@@ -2236,3 +2236,830 @@ git push
 ```
 
 ➡️ **Next: STEP 19 (Forgot password, reset password and verify email).** Reply **NEXT** when 18.6 checks out.
+
+---
+
+## STEP 19: Forgot password, reset password and verify email
+
+This step adds two flows from the designs:
+
+- **Forgot / Reset password:**
+  1. The user types their email and the server "emails" a link like
+     `http://localhost:5173/reset-password/1ba4dc03...`.
+  2. The link opens the "Create a new password" screen.
+  3. The link works **once**, for **15 minutes**. After that the screen shows **"Link Expired or Invalid"**.
+  4. A reset logs out every other device. Your STEP 18 `protect` already does that because `passwordChangedAt`
+     changes.
+- **Verify email:** a logged-in user asks for a **6-digit code**, types it in, and gets `isEmailVerified: true`.
+  That's the "Verified Customer" badge.
+
+**About the emails:** sending real email needs an email service account, SMTP settings and a way to stop it
+landing in spam. That's too much for the deadline, so `sendEmail` **prints the email in the server terminal**.
+In demo mode (`npm run dev`), the reply also includes the link or code (`devResetUrl` / `devCode`), so you can
+demo the whole flow from the website without opening an inbox. When `npm start` runs with demo mode off, those
+fields are not sent.
+
+**The safety rules (the same ones real sites use):**
+
+- The link and code are **random** (`crypto`), so nobody can guess them.
+- Only a **hash** of the token is saved, like passwords. Someone reading the database can't use it.
+- "Forgot password" gives the **same reply** whether the email has an account or not, so strangers can't
+  check who has an account.
+- Your new password must be **different** from the old one (the design says so).
+
+### 19.1 `src/utils/password.ts`: one place for the password rules
+
+Registration, reset password (now) and change password (STEP 20) all need the same rules. Move them out of
+`authController.ts` into a new file:
+
+```ts
+// password.ts server/src/utils/password.ts
+// The password rules from the registration and reset screens, in one place.
+
+// STEP 19 (part 1): Password rules
+
+import { AppError } from "./AppError";
+
+// 8+ characters, an uppercase letter and a number.
+// (?=.*[A-Z]) = "somewhere there is an A-Z", (?=.*\d) = "somewhere there is a 0-9", .{8,} = 8 or more characters
+const PASSWORD_RULE = /^(?=.*[A-Z])(?=.*\d).{8,}$/;
+
+// Throws a 400 with a friendly message if the new password breaks a rule; otherwise gives it back.
+// (Returning it as a string tells TypeScript "this is definitely a string now".)
+export const checkNewPassword = (password: unknown, confirmPassword: unknown): string => {
+  if (typeof password !== "string" || !PASSWORD_RULE.test(password)) {
+    throw new AppError(
+      400,
+      "Password must be at least 8 characters with one uppercase letter (A-Z) and one number (0-9).",
+    );
+  }
+
+  if (password !== confirmPassword) {
+    throw new AppError(400, "Passwords do not match.");
+  }
+
+  return password;
+};
+```
+
+**Now tidy `src/controllers/authController.ts`:**
+
+1. Delete the `PASSWORD_RULE` line 18 and the 2 comment lines above it.
+2. In `register`, delete the two `if` blocks (the `PASSWORD_RULE.test` one and the `password !== confirmPassword`
+   one from line 38-49) and their comments. In their place, write:
+
+   ```ts
+   // 8+ characters, uppercase, number, and both passwords match (utils/password.ts)
+   checkNewPassword(password, confirmPassword);
+   ```
+
+3. Add the import at the top:
+
+   ```ts
+   import { checkNewPassword } from "../utils/password";
+   ```
+
+Registration works exactly as before. The 18.6 error table should still give the same messages.
+
+### 19.2 `src/utils/secrets.ts`: random tokens and codes
+
+New file.
+
+```ts
+// secrets.ts server/src/utils/secrets.ts
+// Random one-time secrets: the password reset token (in the link) and the 6-digit email code.
+// We send the REAL secret to the user and save only its HASH, like a password.
+
+// STEP 19 (part 2): One-time secrets
+
+import crypto from "crypto"; // built into Node, nothing to install
+
+// "1ba4dc03..." -> its sha256 hash (64 characters).
+// Why not bcrypt like passwords? bcrypt is slow on purpose and gives a different hash every time, so we couldn't
+// FIND a user by it. sha256 always gives the same hash, and the token is long and random, so it's safe.
+export const hashSecret = (secret: string) => {
+  return crypto.createHash("sha256").update(secret).digest("hex");
+};
+
+// The reset link token: 32 random bytes = 64 hex characters, impossible to guess
+export const makeResetToken = () => {
+  const token = crypto.randomBytes(32).toString("hex");
+  return { token, hashed: hashSecret(token) }; // token -> the email, hashed -> the database
+};
+
+// The email code: 6 digits, e.g. "048213" (padStart keeps a leading 0, so it's always 6 digits)
+export const makeCode = () => {
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+  return { code, hashed: hashSecret(code) };
+};
+```
+
+### 19.3 `src/utils/sendEmail.ts`: the pretend email
+
+New file.
+
+```ts
+// sendEmail.ts server/src/utils/sendEmail.ts
+// "Sends" an email by printing it in the server terminal.
+// Every email goes through this one function, so a real email service could be plugged in here later
+// without changing anything else.
+
+// STEP 19 (part 3): Emails (printed, not sent)
+
+export const sendEmail = async (to: string, subject: string, text: string) => {
+  console.log(
+    [
+      "",
+      "================ EMAIL (not really sent) ================",
+      `To:      ${to}`,
+      `Subject: ${subject}`,
+      "",
+      text,
+      "=========================================================",
+      "",
+    ].join("\n"),
+  );
+};
+```
+
+It's `async` even though it doesn't wait for anything yet. A real email service would have to wait, and this way
+the code that calls it (`await sendEmail(...)`) won't need to change.
+
+### 19.4 Add the 5 new functions to `src/controllers/authController.ts`
+
+**Update the comment at the top** so it lists the new routes too:
+
+```ts
+// STEP 19 (part 4): Forgot / reset password and verify email
+// POST /api/auth/forgot-password       -> "email" a reset link
+// GET  /api/auth/reset-password/:token -> is this link still good? (to show "Link Expired" straight away)
+// POST /api/auth/reset-password/:token -> set the new password
+// POST /api/auth/send-verification     -> "email" a 6-digit code    (protect)
+// POST /api/auth/verify-email          -> check the code            (protect)
+```
+
+**Add these imports** with the others:
+
+```ts
+import { env } from "../config/env";
+import { hashSecret, makeCode, makeResetToken } from "../utils/secrets";
+import { sendEmail } from "../utils/sendEmail";
+```
+
+**Then add this at the bottom of the file:**
+
+```ts
+// Reset links and email codes stop working after 15 minutes (the design: "15-minute validity window")
+const FIFTEEN_MINUTES = 15 * 60 * 1000; // in milliseconds
+
+// POST /api/auth/forgot-password   { "email": "ada.obi@example.com" }
+export const forgotPassword = async (req: Request, res: Response) => {
+  const email = String(req.body?.email ?? "").toLowerCase().trim();
+
+  if (!email) {
+    throw new AppError(400, "Please enter your email address.");
+  }
+
+  // The SAME reply whether the account exists or not (don't tell strangers who has an account)
+  const reply: { message: string; devResetUrl?: string } = {
+    message: "If an account exists for that email, we've sent a link to reset your password.",
+  };
+
+  const user = await User.findOne({ email });
+
+  if (user) {
+    // 1. A new random token. Asking again replaces the old one, so only the newest link works.
+    const { token, hashed } = makeResetToken();
+    user.passwordResetToken = hashed; // only the hash is saved
+    user.passwordResetExpires = new Date(Date.now() + FIFTEEN_MINUTES);
+    await user.save(); // the password isn't modified, so the pre("save") hook doesn't re-hash anything
+
+    // 2. "Email" the link to the reset screen on the website
+    const resetUrl = `${env.clientUrl}/reset-password/${token}`;
+    await sendEmail(
+      user.email,
+      "Reset your QuickCart password",
+      `Hi ${user.firstName},\n\nClick this link to choose a new password (it works once, for 15 minutes):\n${resetUrl}\n\nIf you didn't ask for this, ignore this email.`,
+    );
+
+    // 3. Demo mode only: also put the link in the reply, so a demo needs no inbox
+    if (env.demoMode) {
+      reply.devResetUrl = resetUrl;
+    }
+  }
+
+  res.json(reply);
+};
+
+// Finds the user a reset link belongs to, or refuses with the "Link Expired or Invalid" message.
+// Used by both reset routes below.
+const findUserByResetToken = async (token: string) => {
+  const user = await User.findOne({
+    passwordResetToken: hashSecret(token), // hash what's in the link and look for the same hash
+    passwordResetExpires: { $gt: new Date() }, // $gt = "greater than": the expiry time is still in the future
+  }).select("+password"); // needed to check "different from your old password"
+
+  if (!user) {
+    throw new AppError(
+      400,
+      "This password reset link has expired or has already been used. Please request a new link.",
+    );
+  }
+
+  return user;
+};
+
+// GET /api/auth/reset-password/:token
+// The reset screen calls this when it opens, to show "Link Expired or Invalid" BEFORE the user types anything
+export const checkResetToken = async (req: Request<{ token: string }>, res: Response) => {
+  await findUserByResetToken(req.params.token);
+  res.json({ valid: true });
+};
+
+// POST /api/auth/reset-password/:token   { "password": "...", "confirmPassword": "..." }
+export const resetPassword = async (req: Request<{ token: string }>, res: Response) => {
+  const user = await findUserByResetToken(req.params.token);
+  const password = checkNewPassword(req.body?.password, req.body?.confirmPassword);
+
+  // "Your new password must be different from previous passwords" (the design)
+  if (await user.comparePassword(password)) {
+    throw new AppError(400, "Your new password must be different from your old password.");
+  }
+
+  user.password = password; // the pre("save") hook hashes it AND sets passwordChangedAt
+  user.passwordResetToken = undefined; // undefined = remove the field: the link can't be used twice
+  user.passwordResetExpires = undefined;
+  await user.save();
+
+  // passwordChangedAt changed, so protect (STEP 18) now refuses every OLDER token: all other devices are logged out.
+  // This device gets a fresh token, so the user is logged in straight away.
+  res.json({ message: "Your password has been reset.", token: signToken(String(user._id)), user });
+};
+
+// POST /api/auth/send-verification   (protect: must be logged in)
+export const sendVerification = async (req: Request, res: Response) => {
+  const user = req.user!; // "!" = "protect ran first, so this is definitely set"
+
+  if (user.isEmailVerified) {
+    throw new AppError(400, "Your email is already verified.");
+  }
+
+  const { code, hashed } = makeCode();
+  user.emailVerifyToken = hashed;
+  user.emailVerifyExpires = new Date(Date.now() + FIFTEEN_MINUTES);
+  await user.save();
+
+  await sendEmail(
+    user.email,
+    "Your QuickCart verification code",
+    `Hi ${user.firstName},\n\nYour verification code is ${code}. It expires in 15 minutes.`,
+  );
+
+  const reply: { message: string; devCode?: string } = {
+    message: `We've sent a 6-digit code to ${user.email}.`,
+  };
+
+  if (env.demoMode) {
+    reply.devCode = code;
+  }
+
+  res.json(reply);
+};
+
+// POST /api/auth/verify-email   { "code": "048213" }   (protect)
+export const verifyEmail = async (req: Request, res: Response) => {
+  const code = String(req.body?.code ?? "").trim();
+
+  // req.user was loaded WITHOUT the secret fields (select: false), so load them now
+  const user = await User.findById(req.user!._id).select("+emailVerifyToken +emailVerifyExpires");
+
+  if (!user) {
+    throw new AppError(401, "This account no longer exists. Please log in again.");
+  }
+
+  if (user.isEmailVerified) {
+    throw new AppError(400, "Your email is already verified.");
+  }
+
+  // No code saved, code too old, or the hash doesn't match -> one message for all three
+  const expired = !user.emailVerifyExpires || user.emailVerifyExpires.getTime() < Date.now();
+
+  if (!code || expired || user.emailVerifyToken !== hashSecret(code)) {
+    throw new AppError(400, "That code is wrong or has expired. Please request a new one.");
+  }
+
+  user.isEmailVerified = true;
+  user.emailVerifyToken = undefined;
+  user.emailVerifyExpires = undefined;
+  await user.save();
+
+  res.json({ message: "Your email is verified.", user });
+};
+```
+
+**Two things that are new here:**
+
+- `Request<{ token: string }>` tells TypeScript that `req.params.token` exists, because the route is
+  `/reset-password/:token`.
+- `req.body?.email`: the `?.` means "if there's no body, give `undefined` instead of crashing". It does the same
+  job as `req.body ?? {}` in STEP 18.
+
+### 19.5 Add the routes to `src/routes/authRoutes.ts`
+
+Add the 5 new names to the import from `../controllers/authController`:
+
+```ts
+checkResetToken, forgotPassword, resetPassword, sendVerification, verifyEmail,
+```
+
+And add these routes under the others:
+
+```ts
+router.post("/forgot-password", forgotPassword);
+router.get("/reset-password/:token", checkResetToken);
+router.post("/reset-password/:token", resetPassword);
+router.post("/send-verification", protect, sendVerification);
+router.post("/verify-email", protect, verifyEmail);
+```
+
+### 19.6 Test it
+
+```bash
+npm run typecheck
+npm run seed
+npm run dev
+```
+
+**A. Forgot + reset password**
+
+1. Log in as Ada (`POST /api/auth/login`) and keep that token. Call it the **old token**.
+2. `POST http://localhost:5000/api/auth/forgot-password` with `{ "email": "ada.obi@example.com" }`.
+   You should get **200**, the message and a `devResetUrl`, and the **server terminal** shows the email. Copy the
+   long token at the end of the URL.
+3. In Atlas, Ada's `passwordResetToken` is a 64-character hash that is **different** from the token in the link,
+   and `passwordResetExpires` is 15 minutes from now.
+4. Then work through these:
+
+| Request                                                                          | Status | Reply                                                          |
+| -------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------- |
+| `forgot-password` with `{}`                                                      | 400    | Please enter your email address.                               |
+| `forgot-password` with `nobody@example.com`                                      | 200    | the **same** message as for Ada, with no `devResetUrl`         |
+| `GET /api/auth/reset-password/<token>`                                           | 200    | `{ "valid": true }`                                            |
+| `GET /api/auth/reset-password/abc`                                               | 400    | This password reset link has expired or has already been used. |
+| `POST .../reset-password/<token>` with `"password": "weak"`                      | 400    | Password must be at least 8 characters ...                     |
+| `POST .../reset-password/<token>` with `Password@123` (Ada's current one)        | 400    | Your new password must be different from your old password.    |
+| `POST .../reset-password/<token>` with `QuickSafe2025#` (both fields)            | 200    | Your password has been reset. + a new `token`                  |
+| the same request again                                                           | 400    | ... has expired or has already been used ... (single-use)      |
+| `GET /api/auth/me` with the **old token**                                        | 401    | Your password was changed. Please log in again.                |
+| `GET /api/auth/me` with the token from the reset reply                           | 200    | Ada                                                            |
+| login with `Password@123`                                                        | 401    | Incorrect email or password.                                   |
+| login with `QuickSafe2025#`                                                      | 200    | a token                                                        |
+
+In Atlas, `passwordResetToken` and `passwordResetExpires` are **gone** from Ada after the reset.
+
+**B. Verify email.** Ada is already verified in the demo data, so register a new user first (STEP 18.6 step 4),
+then use **their** token:
+
+| Request                                                    | Status | Reply                                                        |
+| ---------------------------------------------------------- | ------ | ------------------------------------------------------------ |
+| `POST /api/auth/verify-email` `{ "code": "123456" }`       | 400    | That code is wrong or has expired. Please request a new one. |
+| `POST /api/auth/send-verification` (no body)               | 200    | We've sent a 6-digit code to ... + `devCode`                 |
+| `verify-email` with a wrong code                           | 400    | That code is wrong or has expired ...                        |
+| `verify-email` with the `devCode`                          | 200    | Your email is verified. + the user, `isEmailVerified: true`  |
+| `verify-email` again / `send-verification` again           | 400    | Your email is already verified.                              |
+| `send-verification` with no token                          | 401    | Please log in to continue.                                   |
+
+When you're done, run `npm run seed` to put Ada's password back to `Password@123`.
+
+I ran this exact code against a throwaway database, and every row above passed. I also checked that an expired
+link (`passwordResetExpires` in the past) gets the "expired" message.
+
+**Known limit (fine for a demo):** nothing stops someone from guessing codes over and over. A real shop would
+lock the code after about 5 wrong tries.
+
+### 19.7 Commit
+
+```bash
+git add .
+git commit -m "STEP 19: forgot/reset password and email verification"
+git push
+```
+
+➡️ **Next: STEP 20 (My Account: update profile, change password, delivery addresses, saved items, and the
+account stats).** Reply **NEXT** when 19.6 checks out.
+
+---
+
+## STEP 20: My Account (profile, change password, addresses, saved items)
+
+> **Before you start:** your STEP 19 code is correct, but it isn't committed yet. Do 19.7 first so each step is
+> its own commit:
+> `git add . && git commit -m "STEP 19: forgot/reset password and email verification" && git push`
+
+This step builds everything on the **My Account** screen that belongs to the user:
+
+- **Edit Profile Information:** first name, last name, email and phone. Changing the email turns
+  "Verified" off, because the new address hasn't been checked yet.
+- **Password & Security:** change the password. Your current password is required, and other devices are
+  logged out.
+- **Delivery Addresses:** list, add, edit and delete addresses, with exactly **one default address**. That's the
+  "Default Address" badge and the "Default: Lekki Phase 1" text.
+- **Saved items (wishlist):** save and unsave a product, and list the saved products as product cards.
+
+The order cards ("Total orders 5", "In progress 1", "Recent Orders") need the Order model, so they come in
+**STEP 22**.
+
+Every route here is under `/api/account` and needs `protect`. A user can only ever change **their own** account,
+because every function works on `req.user` and never on an id from the URL.
+
+### 20.1 Friendlier address messages in `src/models/User.ts`
+
+Right now, adding an address with no street replies `Path \`street\` is required.`, which isn't friendly. In
+`addressSchema`, give the 5 required fields a message, the same way you did for the user fields:
+
+```ts
+fullName: { type: String, required: [true, "Full name is required"], trim: true },
+phone: { type: String, required: [true, "Phone number is required"], trim: true },
+street: { type: String, required: [true, "Street address is required"], trim: true },
+city: { type: String, required: [true, "City is required"], trim: true },
+state: { type: String, required: [true, "State is required"], trim: true },
+```
+
+### 20.2 Export `CARD_FIELDS` from `src/controllers/productController.ts`
+
+The saved items list shows product **cards**, so it needs the same fields as the shop. Don't copy the list: add
+`export` in front of it so other files can import it:
+
+```ts
+export const CARD_FIELDS =
+```
+
+### 20.3 `src/controllers/accountController.ts`
+
+New file.
+
+```ts
+// accountController.ts server/src/controllers/accountController.ts
+// The logged-in user's own account: profile, password, delivery addresses and saved items.
+
+// STEP 20: My Account
+// (every route has protect, so req.user is always the logged-in user)
+// PATCH  /api/account/profile               -> change name, email, phone
+// PATCH  /api/account/password              -> change password (current password required)
+// GET    /api/account/addresses             -> my addresses
+// POST   /api/account/addresses             -> add one
+// PATCH  /api/account/addresses/:addressId  -> edit one (or make it the default)
+// DELETE /api/account/addresses/:addressId  -> delete one
+// GET    /api/account/saved                 -> my saved products (as product cards)
+// POST   /api/account/saved/:productId      -> save a product
+// DELETE /api/account/saved/:productId      -> unsave a product
+
+import { Request, Response } from "express";
+import { isValidObjectId } from "mongoose";
+import { IAddress, User } from "../models/User";
+import { liveProducts, Product } from "../models/Product";
+import { AppError } from "../utils/AppError";
+import { checkNewPassword } from "../utils/password";
+import { signToken } from "../utils/token";
+import { CARD_FIELDS } from "./productController";
+
+// The logged-in user. "!" = "protect ran first, so it's definitely set".
+const me = (req: Request) => req.user!;
+
+// ===== Profile =====
+
+// PATCH /api/account/profile   { "firstName"?, "lastName"?, "email"?, "phone"? }
+// PATCH (not PUT) = "change only what I send". A field that isn't sent stays as it is.
+export const updateProfile = async (req: Request, res: Response) => {
+  const user = me(req);
+  const { firstName, lastName, email, phone } = req.body ?? {};
+
+  // Copy only these 4 fields. Anything else in the body (like "role": "admin") is ignored.
+  if (firstName !== undefined) user.firstName = firstName;
+  if (lastName !== undefined) user.lastName = lastName;
+  if (phone !== undefined) user.phone = phone;
+
+  // A NEW email hasn't been checked yet, so "Verified" goes off. ("ADA.OBI@..." is the same email, not a new one.)
+  if (email !== undefined && String(email).toLowerCase().trim() !== user.email) {
+    user.email = email;
+    user.isEmailVerified = false;
+  }
+
+  // save() runs the model's rules: empty name -> 400, bad email -> 400, email already used -> 409
+  await user.save();
+  res.json({ message: "Your profile has been updated.", user });
+};
+
+// ===== Password =====
+
+// PATCH /api/account/password   { "currentPassword", "newPassword", "confirmPassword" }
+export const changePassword = async (req: Request, res: Response) => {
+  const { currentPassword, newPassword, confirmPassword } = req.body ?? {};
+
+  if (!currentPassword) {
+    throw new AppError(400, "Please enter your current password.");
+  }
+
+  // req.user has no password (select: false), so load it with the password this time
+  const user = await User.findById(me(req)._id).select("+password");
+  if (!user) {
+    throw new AppError(401, "This account no longer exists. Please log in again.");
+  }
+
+  // Someone who finds a laptop that's still logged in can't change the password without knowing it
+  if (!(await user.comparePassword(String(currentPassword)))) {
+    throw new AppError(400, "Your current password is incorrect.");
+  }
+
+  const password = checkNewPassword(newPassword, confirmPassword); // the same rules as registration
+
+  if (password === currentPassword) {
+    throw new AppError(400, "Your new password must be different from your old password.");
+  }
+
+  user.password = password; // pre("save") hashes it and sets passwordChangedAt ("Last updated ...")
+  await user.save();
+
+  // passwordChangedAt changed, so every older token stops working (other devices are logged out).
+  // This device gets a new token so it stays logged in. The website must save this new token!
+  res.json({ message: "Your password has been changed.", token: signToken(String(user._id)), user });
+};
+
+// ===== Addresses =====
+
+// Copy only the address fields from the body (never _id or anything else)
+const pickAddress = (body: Record<string, unknown>) => {
+  const fields = [
+    "label", "fullName", "phone", "street", "city", "state", "country", "instructions", "isDefault",
+  ] as const;
+
+  const picked: Partial<Record<(typeof fields)[number], unknown>> = {};
+  for (const field of fields) {
+    if (body[field] !== undefined) picked[field] = body[field];
+  }
+
+  return picked as Partial<IAddress>;
+};
+
+// Find one of MY addresses by the :addressId in the URL, or 404.
+// Because we only search req.user's own addresses, nobody can edit someone else's.
+const findAddress = (req: Request<{ addressId: string }>) => {
+  const address = me(req).addresses.find((a) => String(a._id) === req.params.addressId);
+
+  if (!address) {
+    throw new AppError(404, "Address not found");
+  }
+
+  return address;
+};
+
+// Exactly one default: the chosen address becomes default, every other one stops being default
+const makeOnlyDefault = (addresses: IAddress[], chosen: IAddress) => {
+  for (const address of addresses) {
+    address.isDefault = address === chosen;
+  }
+};
+
+// GET /api/account/addresses
+export const getAddresses = async (req: Request, res: Response) => {
+  res.json({ addresses: me(req).addresses });
+};
+
+// POST /api/account/addresses   { "label", "fullName", "phone", "street", "city", "state", ... }
+export const addAddress = async (req: Request, res: Response) => {
+  const user = me(req);
+
+  user.addresses.push(pickAddress(req.body ?? {}) as IAddress);
+  const added = user.addresses[user.addresses.length - 1]; // the one we just pushed (now with its own _id)
+
+  // It becomes the default if the user asked for that, or if it's their FIRST address
+  if (added.isDefault || user.addresses.length === 1) {
+    makeOnlyDefault(user.addresses, added);
+  }
+
+  await user.save(); // missing street / city / ... -> the messages from 20.1 (400)
+  res.status(201).json({ addresses: user.addresses });
+};
+
+// PATCH /api/account/addresses/:addressId   { any address fields, e.g. "isDefault": true }
+export const updateAddress = async (req: Request<{ addressId: string }>, res: Response) => {
+  const user = me(req);
+  const address = findAddress(req);
+  const wasDefault = address.isDefault;
+
+  Object.assign(address, pickAddress(req.body ?? {})); // copy the sent fields onto the address
+
+  if (address.isDefault) {
+    makeOnlyDefault(user.addresses, address); // "Set as default": the old default loses its badge
+  } else if (wasDefault) {
+    address.isDefault = true; // you can't "un-default" the default: pick ANOTHER one as default instead
+  }
+
+  await user.save();
+  res.json({ addresses: user.addresses });
+};
+
+// DELETE /api/account/addresses/:addressId
+export const deleteAddress = async (req: Request<{ addressId: string }>, res: Response) => {
+  const user = me(req);
+  const address = findAddress(req);
+
+  user.addresses = user.addresses.filter((a) => a !== address); // keep every address except this one
+
+  // Deleted the default? The first remaining address becomes the default, so there's always one.
+  if (address.isDefault && user.addresses.length > 0) {
+    user.addresses[0].isDefault = true;
+  }
+
+  await user.save();
+  res.json({ addresses: user.addresses });
+};
+
+// ===== Saved items =====
+
+// GET /api/account/saved -> the saved products as cards (the same fields as the shop)
+export const getSavedItems = async (req: Request, res: Response) => {
+  const products = await Product.find({
+    $and: [{ _id: { $in: me(req).savedItems } }, liveProducts()], // $in = "the _id is one of these"
+  })
+    .select(CARD_FIELDS)
+    .populate("category", "name slug")
+    .lean();
+
+  res.json({ products });
+};
+
+// POST /api/account/saved/:productId
+export const saveItem = async (req: Request<{ productId: string }>, res: Response) => {
+  const { productId } = req.params;
+
+  // isValidObjectId: "abc" isn't a MongoDB id at all. exists: is there a product shoppers can see with this id?
+  if (!isValidObjectId(productId) || !(await Product.exists({ $and: [{ _id: productId }, liveProducts()] }))) {
+    throw new AppError(404, "Product not found");
+  }
+
+  // $addToSet = add it only if it isn't already in the list (saving twice doesn't make a duplicate).
+  // returnDocument: "after" = give back the user AFTER the change (Mongoose's old name for this was "new: true")
+  const user = await User.findByIdAndUpdate(
+    me(req)._id,
+    { $addToSet: { savedItems: productId } },
+    { returnDocument: "after" },
+  );
+
+  res.json({ savedItems: user!.savedItems });
+};
+
+// DELETE /api/account/saved/:productId
+export const unsaveItem = async (req: Request<{ productId: string }>, res: Response) => {
+  if (!isValidObjectId(req.params.productId)) {
+    throw new AppError(404, "Product not found");
+  }
+
+  // $pull = remove it from the list (no error if it wasn't there)
+  const user = await User.findByIdAndUpdate(
+    me(req)._id,
+    { $pull: { savedItems: req.params.productId } },
+    { returnDocument: "after" },
+  );
+
+  res.json({ savedItems: user!.savedItems });
+};
+```
+
+**Why saved items use `findByIdAndUpdate` but addresses use `save()`:** `$addToSet` and `$pull` change one list
+in a single step inside MongoDB, which is quick and simple. The address rules ("only one default", "the first
+address becomes the default") need JavaScript logic first, so we change `req.user` and then `save()` it. `save()`
+also runs the model's rules, which gives the friendly messages.
+
+### 20.4 `src/routes/accountRoutes.ts`
+
+New file.
+
+```ts
+// accountRoutes.ts server/src/routes/accountRoutes.ts
+// My Account routes. routes/index.ts puts these under /api/account.
+
+// STEP 20: My Account routes
+
+import { Router } from "express";
+import {
+  addAddress,
+  changePassword,
+  deleteAddress,
+  getAddresses,
+  getSavedItems,
+  saveItem,
+  unsaveItem,
+  updateAddress,
+  updateProfile,
+} from "../controllers/accountController";
+import { protect } from "../middleware/auth";
+
+const router = Router();
+
+// router.use(protect) puts protect in front of EVERY route below it, so we don't repeat it 9 times
+router.use(protect);
+
+router.patch("/profile", updateProfile);
+router.patch("/password", changePassword);
+
+router.get("/addresses", getAddresses);
+router.post("/addresses", addAddress);
+router.patch("/addresses/:addressId", updateAddress);
+router.delete("/addresses/:addressId", deleteAddress);
+
+router.get("/saved", getSavedItems);
+router.post("/saved/:productId", saveItem);
+router.delete("/saved/:productId", unsaveItem);
+
+export default router;
+```
+
+### 20.5 Mount it in `src/routes/index.ts`
+
+```ts
+import accountRoutes from "./accountRoutes";
+```
+
+```ts
+router.use("/account", accountRoutes); // /api/account...
+```
+
+### 20.6 Test it
+
+```bash
+npm run typecheck
+npm run seed
+npm run dev
+```
+
+Log in as Ada and use her token (`Authorization: Bearer ...`) for everything below.
+
+**A. Profile and password**
+
+| Request                                                                                     | Status | Reply                                                                   |
+| ------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------- |
+| `GET /api/account/addresses` with **no** token                                              | 401    | Please log in to continue.                                              |
+| `PATCH /api/account/profile` `{ "phone": "+2347012345678", "role": "admin" }`               | 200    | the new phone, and `role` **still** `customer`                          |
+| `PATCH .../profile` `{ "firstName": "" }`                                                   | 400    | First name is required                                                  |
+| `PATCH .../profile` `{ "email": "admin@quickcart.ng" }`                                     | 409    | That email is already in use.                                           |
+| `PATCH .../profile` `{ "email": "ADA.OBI@example.com" }`                                    | 200    | `isEmailVerified` **still true** (it's the same email)                  |
+| `PATCH .../profile` `{ "email": "ada.new@example.com" }`                                    | 200    | `isEmailVerified: false`                                                |
+| `PATCH /api/account/password` `{ "newPassword": "X" }`                                      | 400    | Please enter your current password.                                     |
+| `PATCH .../password` with a wrong `currentPassword`                                         | 400    | Your current password is incorrect.                                     |
+| `PATCH .../password` with `newPassword` `weak`                                              | 400    | Password must be at least 8 characters ...                              |
+| `PATCH .../password` with the same password as now                                          | 400    | Your new password must be different from your old password.             |
+| `PATCH .../password` with the current password and `NewPass#2026` (both fields)             | 200    | Your password has been changed. + a new `token`                         |
+| any request with the **old** token                                                          | 401    | Your password was changed. Please log in again.                         |
+
+Switch to the **new** token from the password reply for the rest of the tests.
+
+**B. Addresses.** `*` marks the default.
+
+| Request                                                                   | Status | Addresses after                    |
+| ------------------------------------------------------------------------- | ------ | ---------------------------------- |
+| `GET /api/account/addresses`                                              | 200    | Home\*, Office                     |
+| `POST .../addresses` with `"street": ""`                                  | 400    | "Street address is required"       |
+| `POST .../addresses` with the body below                                  | 201    | Home\*, Office, Mum's place        |
+| `PATCH .../addresses/<Mum's _id>` `{ "isDefault": true }`                 | 200    | Home, Office, Mum's place\*        |
+| `PATCH .../addresses/<Mum's _id>` `{ "isDefault": false, "city": "Ikeja GRA" }` | 200 | Mum's place **stays** default, city changed |
+| `DELETE .../addresses/<Mum's _id>`                                        | 200    | Home\*, Office (Home takes over)   |
+| the same DELETE again                                                     | 404    | Address not found                  |
+
+```json
+{
+  "label": "Mum's place",
+  "fullName": "Ngozi Obi",
+  "phone": "+2348030000000",
+  "street": "5 Allen Avenue",
+  "city": "Ikeja",
+  "state": "Lagos State"
+}
+```
+
+**C. Saved items.** Copy any product's `_id` from `GET /api/products`.
+
+| Request                                         | Status | Reply                                                     |
+| ----------------------------------------------- | ------ | --------------------------------------------------------- |
+| `POST /api/account/saved/abc`                   | 404    | Product not found                                         |
+| `POST /api/account/saved/665f00000000000000000000` | 404 | Product not found                                         |
+| `POST /api/account/saved/<product id>`          | 200    | `{ "savedItems": ["<that id>"] }`                         |
+| the same POST again                             | 200    | still **one** id (no duplicate)                           |
+| `GET /api/account/saved`                        | 200    | `{ "products": [ ...a card with name, price, images, category name ] }` |
+| `DELETE /api/account/saved/<product id>`        | 200    | `{ "savedItems": [] }`                                    |
+
+Run `npm run seed` afterwards to put Ada back (password `Password@123`, original email and phone).
+
+I ran this exact code against a throwaway database, and every row above passed. The server terminal showed no
+Mongoose warnings.
+
+### 20.7 Commit
+
+```bash
+git add .
+git commit -m "STEP 20: My Account (profile, password, addresses, saved items)"
+git push
+```
+
+➡️ **Next: STEP 21 (Promo codes: `QUICK25` and `QUICK10`, and the "Apply" button in the cart).** Reply **NEXT**
+when 20.6 checks out.
