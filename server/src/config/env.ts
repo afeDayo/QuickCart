@@ -12,8 +12,7 @@ dotenv.config({ quiet: true });
 
 export const env = {
   port: Number(process.env.PORT) || 5000,
-  mongoUri:
-    process.env.MONGO_URI || "mongodb://127.0.0.1:27017/quickcart",
+  mongoUri: process.env.MONGO_URI || "mongodb://127.0.0.1:27017/quickcart",
   jwtSecret: process.env.JWT_SECRET || "dev-secret-change-me",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "15d", // "Remain logged in for 15 days"
   clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
@@ -28,4 +27,9 @@ export const env = {
   cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME || "",
   cloudinaryApiKey: process.env.CLOUDINARY_API_KEY || "",
   cloudinaryApiSecret: process.env.CLOUDINARY_API_SECRET || "",
+
+  // Brevo sends the emails (see utils/sendEmail.ts). Empty = emails are printed in the terminal instead
+  brevoApiKey: process.env.BREVO_API_KEY || "",
+  emailFrom: process.env.EMAIL_FROM || "", // must be a sender you verified in Brevo
+  emailFromName: process.env.EMAIL_FROM_NAME || "QuickCart",
 };

@@ -27,7 +27,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 17     | User model (password hashing, roles, addresses, saved items)                        |
 | ✅   | 18     | Auth: register, login, me, logout + `protect` / `adminOnly`                         |
 | ✅   | 19     | Forgot password, reset password, verify email                                       |
-| ⬜   | **20** | **My Account: profile, change password, addresses, saved items** ← you are here     |
+| ⬜   | **19B** | **Real emails with Brevo (`sendEmail`)** ← you are here                             |
+| ⬜   | 20     | My Account: profile, change password, addresses, saved items                        |
 | ⬜   | 21     | Promo codes (`QUICK25`, `QUICK10`)                                                  |
 | ⬜   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour                    |
 | ⬜   | 23     | Reviews (only buyers of delivered orders)                                           |
@@ -2385,6 +2386,8 @@ export const sendEmail = async (to: string, subject: string, text: string) => {
 It's `async` even though it doesn't wait for anything yet. A real email service would have to wait, and this way
 the code that calls it (`await sendEmail(...)`) won't need to change.
 
+> **Update:** STEP 19B replaces the inside of this function with real emails sent through **Brevo**.
+
 ### 19.4 Add the 5 new functions to `src/controllers/authController.ts`
 
 **Update the comment at the top** so it lists the new routes too:
@@ -2645,16 +2648,194 @@ git commit -m "STEP 19: forgot/reset password and email verification"
 git push
 ```
 
-➡️ **Next: STEP 20 (My Account: update profile, change password, delivery addresses, saved items, and the
-account stats).** Reply **NEXT** when 19.6 checks out.
+➡️ **Next: STEP 19B (real emails with Brevo), then STEP 20 (My Account).** Reply **NEXT** when 19.6 checks out.
+
+---
+
+## STEP 19B: Real emails with Brevo (free)
+
+Every email in the project goes through **one** function, `sendEmail` in `src/utils/sendEmail.ts`. In STEP 19 it
+only printed the email in the terminal. Now it sends real emails with **Brevo**. The free plan allows **300 emails
+a day** and needs no card.
+
+You change **one** file's insides and add 3 settings. `authController.ts` doesn't change at all, because it already
+calls `sendEmail(to, subject, text)`. Later steps use the same function (STEP 22: the order confirmation email).
+
+If Brevo isn't set up, or refuses an email, `sendEmail` **prints it in the terminal like before** and logs why.
+A broken email setting never crashes "forgot password" or checkout.
+
+### 19B.1 Set up Brevo (about 5 minutes, in the browser)
+
+1. Sign up at **brevo.com** (free plan).
+2. **Add a sender:** go to **Settings → Senders, Domains & Dedicated IPs → Senders → Add a sender**. Enter the name
+   `QuickCart` and an email address **you can open**. Brevo emails you a confirmation link: click it. Brevo only
+   sends from verified senders.
+3. **Create an API key:** go to **Settings → SMTP & API → API Keys → Generate a new API key**. Name it `quickcart`
+   and copy it right away (it starts with). Brevo shows it only once. 
+4. If Brevo asks you to **activate your account** or fill in a company profile before sending, do it. New
+   accounts sometimes need this.
+
+### 19B.2 Add the settings to `.env` and `src/config/env.ts`
+
+In `server/.env` (never on GitHub):
+
+```
+BREVO_API_KEY=xkeysib-...your key...
+EMAIL_FROM=the-sender-email-you-verified@example.com
+EMAIL_FROM_NAME=QuickCart
+```
+
+In `src/config/env.ts`, add these 3 lines inside the `env` object, after the Cloudinary ones:
+
+```ts
+  // Brevo sends the emails (see utils/sendEmail.ts). Empty = emails are printed in the terminal instead
+  brevoApiKey: process.env.BREVO_API_KEY || "",
+  emailFrom: process.env.EMAIL_FROM || "", // must be a sender you verified in Brevo
+  emailFromName: process.env.EMAIL_FROM_NAME || "QuickCart",
+```
+
+### 19B.3 Replace everything in `src/utils/sendEmail.ts`
+
+Brevo has a simple web API. We send it one POST request with Node's built-in `fetch`, so there's **nothing to
+install**.
+
+```ts
+// sendEmail.ts server/src/utils/sendEmail.ts
+// Sends an email with Brevo (free plan: 300 emails a day).
+// Every email in the project goes through this one function.
+// No BREVO_API_KEY in .env, or Brevo refuses? Then the email is printed in the server terminal instead,
+// so the website keeps working (and you can still copy the link or code from the terminal).
+
+// STEP 19B: Real emails with Brevo
+
+import { env } from "../config/env";
+
+const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
+
+// Prints the email in the terminal (the STEP 19 version, kept as the fallback)
+const printEmail = (to: string, subject: string, text: string, why: string) => {
+  console.log(
+    [
+      "",
+      `================ EMAIL (not sent: ${why}) ================`,
+      `To:      ${to}`,
+      `Subject: ${subject}`,
+      "",
+      text,
+      "=========================================================",
+      "",
+    ].join("\n"),
+  );
+};
+
+// Brevo wants an HTML version too. This turns plain text into simple HTML:
+// escape < > & (so text can't break the HTML), make links clickable, keep the line breaks.
+const textToHtml = (text: string) => {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const linked = escaped.replace(/(https?:\/\/\S+)/g, '<a href="$1">$1</a>');
+  return `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6">${linked.replace(/\n/g, "<br>")}</div>`;
+};
+
+// sendEmail("ada.obi@example.com", "Subject", "Text...")
+// It never throws: a failed email must not crash "forgot password" or an order. The problem is logged instead.
+export const sendEmail = async (to: string, subject: string, text: string) => {
+  if (!env.brevoApiKey || !env.emailFrom) {
+    printEmail(to, subject, text, "BREVO_API_KEY or EMAIL_FROM missing in .env");
+    return;
+  }
+
+  try {
+    const response = await fetch(BREVO_URL, {
+      method: "POST",
+      headers: {
+        "api-key": env.brevoApiKey, // your secret Brevo key
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        sender: { name: env.emailFromName, email: env.emailFrom }, // must be a sender you verified in Brevo
+        to: [{ email: to }],
+        subject,
+        textContent: text,
+        htmlContent: textToHtml(text),
+      }),
+    });
+
+    if (!response.ok) {
+      // e.g. 401 = wrong API key, 400 = sender not verified. Brevo explains why in the reply.
+      console.error(`Brevo refused the email (${response.status}):`, await response.text());
+      printEmail(to, subject, text, `Brevo error ${response.status}`);
+      return;
+    }
+
+    console.log(`Email sent with Brevo to ${to}: "${subject}"`);
+  } catch (error) {
+    // No internet, Brevo down...
+    console.error("Could not reach Brevo:", (error as Error).message);
+    printEmail(to, subject, text, "could not reach Brevo");
+  }
+};
+```
+
+**Why `sendEmail` never throws:** take "forgot password" as an example. If Brevo is down and `sendEmail`
+threw, the user would get a 500 error, but only for emails that **have** an account. That would tell strangers
+which emails are registered, and it would break the page. Logging the problem and moving on is safer.
+
+**About `devResetUrl` / `devCode`:** they stay. In demo mode (`npm run dev`) the reply still includes the link or
+code, so a live demo never depends on an email arriving in time. With `npm start` they're not sent, and the
+real email is the only way.
+
+### 19B.4 Test it
+
+```bash
+npm run typecheck
+npm run seed
+npm run dev
+```
+
+1. **Send yourself a reset email.** `npm run seed` resets the users, so first register an account with **your own
+   email** (STEP 18.6 step 4). Then send `POST /api/auth/forgot-password` with `{ "email": "<your email>" }`.
+   - The terminal should say: `Email sent with Brevo to <your email>: "Reset your QuickCart password"`
+   - Your inbox (**check Spam** the first time) should have the email from QuickCart with a clickable link.
+2. **Verification code:** log in as that account and send `POST /api/auth/send-verification`. A 6-digit code
+   arrives by email.
+3. **Ada's emails:** `ada.obi@example.com` isn't a real inbox. Brevo accepts the email but nobody receives it,
+   and it still counts toward the 300 a day. Use your own account for email tests.
+4. **The fallback:** put a `#` in front of `BREVO_API_KEY` in `.env` (that "comments it out") and restart
+   `npm run dev`. Forgot password still replies 200, and the email is printed in the terminal with
+   `(not sent: BREVO_API_KEY or EMAIL_FROM missing in .env)`. Remove the `#` afterwards.
+
+**If the terminal shows `Brevo refused the email (...)`, read Brevo's message after it:**
+
+| Brevo's message                                  | Fix                                                                                    |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `401 ... Key not found`                          | The API key in `.env` is wrong or incomplete. Copy it again, then restart `npm run dev`. |
+| `401 ... unrecognised IP address`                | Brevo → Settings → **Security → Authorised IPs**: turn the IP blocking off (or add yours). |
+| `400 ... sender ... not valid` / `not verified`  | `EMAIL_FROM` must be exactly the sender you verified in 19B.1 step 2.                  |
+| `403 ... account ... not activated`              | Finish activating your Brevo account (19B.1 step 4).                                   |
+
+I tested this exact `sendEmail` with no key, where it printed the email, and against Brevo's real API with a fake
+key. Brevo answered `401 {"message":"Key not found"}`, which shows the URL and header are right, and the code
+printed the email instead of crashing. I didn't have your key, so the first real email you send is the final test.
+
+**Spam:** emails "from" a free address like Gmail sent through Brevo often land in Spam. Gmail can't confirm Brevo
+is allowed to send for gmail.com. That's fine for a demo: open the first one from Spam and mark it "Not spam".
+
+### 19B.5 Commit
+
+Check that `.env` is **not** in the list before you commit (`git status`):
+
+```bash
+git add .
+git commit -m "STEP 19B: send emails with Brevo"
+git push
+```
+
+➡️ Then continue with **STEP 20** below.
 
 ---
 
 ## STEP 20: My Account (profile, change password, addresses, saved items)
-
-> **Before you start:** your STEP 19 code is correct, but it isn't committed yet. Do 19.7 first so each step is
-> its own commit:
-> `git add . && git commit -m "STEP 19: forgot/reset password and email verification" && git push`
 
 This step builds everything on the **My Account** screen that belongs to the user:
 
