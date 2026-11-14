@@ -2680,18 +2680,14 @@ A broken email setting never crashes "forgot password" or checkout.
 In `server/.env` (never on GitHub):
 
 ```
-BREVO_API_KEY=xkeysib-...your key...
-EMAIL_FROM=the-sender-email-you-verified@example.com
-EMAIL_FROM_NAME=QuickCart
+
 ```
 
 In `src/config/env.ts`, add these 3 lines inside the `env` object, after the Cloudinary ones:
 
 ```ts
   // Brevo sends the emails (see utils/sendEmail.ts). Empty = emails are printed in the terminal instead
-  brevoApiKey: process.env.BREVO_API_KEY || "",
-  emailFrom: process.env.EMAIL_FROM || "", // must be a sender you verified in Brevo
-  emailFromName: process.env.EMAIL_FROM_NAME || "QuickCart",
+
 ```
 
 ### 19B.3 Replace everything in `src/utils/sendEmail.ts`

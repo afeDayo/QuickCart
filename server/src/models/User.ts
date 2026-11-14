@@ -49,11 +49,23 @@ type UserModel = Model<IUser, {}, IUserMethods>;
 // An address is a "sub-document": it lives inside the user, not in its own collection
 const addressSchema = new Schema<IAddress>({
   label: { type: String, default: "Home", trim: true },
-  fullName: { type: String, required: true, trim: true },
-  phone: { type: String, required: true, trim: true },
-  street: { type: String, required: true, trim: true },
-  city: { type: String, required: true, trim: true },
-  state: { type: String, required: true, trim: true },
+  fullName: {
+    type: String,
+    required: [true, "Full name is required"],
+    trim: true,
+  },
+  phone: {
+    type: String,
+    required: [true, "Phone number is required"],
+    trim: true,
+  },
+  street: {
+    type: String,
+    required: [true, "Street address is required"],
+    trim: true,
+  },
+  city: { type: String, required: [true, "City is required"], trim: true },
+  state: { type: String, required: [true, "State is required"], trim: true },
   country: { type: String, default: "Nigeria", trim: true },
   instructions: { type: String, trim: true },
   isDefault: { type: Boolean, default: false },

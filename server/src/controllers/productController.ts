@@ -15,7 +15,7 @@ import { escapeRegex } from "../utils/escapeRegex";
 
 // The fields a product card needs. Leaving out the rest (description, specs...) keeps the list fast and small.
 // costPrice is NOT here on purpose: it's admin-only.
-const CARD_FIELDS =
+export const CARD_FIELDS =
   "name slug brand price oldPrice images ratings reviewCount badge tagline priceNote tags sold stock trackStock flashSaleStock colors category";
 
 // ?sort=... -> how MongoDB should order the results (1 = smallest first, -1 = biggest first)
