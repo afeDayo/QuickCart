@@ -8,7 +8,7 @@ import { IPromoCode, PromoCode } from "../models/PromoCode";
 import { AppError } from "./AppError";
 
 // 25000 -> "₦25,000" (toLocaleString adds the commas the Nigerian way)
-const naira = (amount: number) => `₦${amount.toLocaleString("en-NG")}`;
+export const naira = (amount: number) => `₦${amount.toLocaleString("en-NG")}`;
 
 // How much this code takes off this subtotal, in whole naira
 export const discountFor = (promo: IPromoCode, subtotal: number) => {

@@ -29,8 +29,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 19     | Forgot password, reset password, verify email                                       |
 | ✅   | 19B    | Real emails with Brevo (`sendEmail`)                                                |
 | ✅   | 20     | My Account: profile, change password, addresses, saved items                        |
-| ⬜   | **21** | **Promo codes (`QUICK25`, `QUICK10`)** ← you are here                               |
-| ⬜   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour                    |
+| ✅   | 21     | Promo codes (`QUICK25`, `QUICK10`) |
+| ⬜   | **22** | **Orders: checkout, my orders, order details, cancel within 1 hour** ← you are here |
 | ⬜   | 23     | Reviews (only buyers of delivered orders)                                           |
 | ⬜   | 24     | Newsletter sign-up                                                                  |
 | ⬜   | 25     | Admin: photo upload, products CRUD, categories CRUD                                 |
@@ -3549,3 +3549,990 @@ git push
 ➡️ **Next: STEP 22 (Orders: place an order at checkout with real prices from the database, delivery fee and promo
 code, order numbers like #QC-1042, my orders, order details, cancel within 1 hour, and a Brevo confirmation
 email).** Reply **NEXT** when 21.7 checks out.
+
+---
+
+## STEP 22: Orders (checkout, my orders, order details, cancel within 1 hour)
+
+This is the biggest step. It powers 4 designs:
+
+| Design                           | What it needs from the server                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------- |
+| **Checkout**                     | `POST /api/orders`: the **PLACE ORDER NOW** button                              |
+| **Order Confirmation & Receipt** | the reply of `POST /api/orders` (order number, items, payment, delivery window) |
+| **Full Order History & Filters** | `GET /api/orders` with the tabs, search and sort                                |
+| **Order Details & Tracking**     | `GET /api/orders/QC-1042` and **Cancel Order** (`PATCH .../cancel`)             |
+
+Plus `GET /api/orders/summary` for the numbers on **My Account**.
+
+**The rules (from the designs):**
+
+- **Prices come from the database, never from the website.** The website only sends "product X, quantity 2".
+  Someone who edits the price in their browser still pays the real price.
+- **Delivery:** Standard = **Free** (2–3 business days). Express Same-Day Dispatch = **₦2,500** (today, **Lagos only**).
+- **Payment:** Card (**pretend**: "Simulated environment for capstone UI") or **Pay on Delivery** (**Lagos only**).
+  We never save a card number or CVV, only the brand and the last 4 digits ("MASTERCARD •••• 4242").
+- **Promo code:** checked **again** with the same `applyPromo` from STEP 21. Its `usedCount` goes up by 1.
+- **Stock:** goes down when the order is placed, and back up if it's cancelled. Two people can't both buy the last one.
+- **Order numbers:** `QC-1042`, `QC-1043`, ... The first order after `npm run seed` is **#QC-1042**, like the designs.
+- **Statuses:** `processing` → `shipped` → `delivered` (or `cancelled`). The admin moves orders along in STEP 26.
+- **Cancel:** only while `processing` **and** within **1 hour** of placing it. The stock goes back and a card payment
+  is marked `refunded`.
+- **Emails (Brevo):** "Order #QC-1042 confirmed" and "Order #QC-1042 cancelled", both through `sendEmail` (STEP 19B).
+
+You'll make **5 new files** and change **5 small things** in files you already have.
+
+### 22.1 Three tiny changes so files can share code
+
+Each one adds the word `export` in front of something that already exists, so the order code can reuse it:
+
+1. `src/models/User.ts`: the order keeps a copy of the delivery address with the **same rules** as a saved address.
+
+   ```ts
+   export const addressSchema = new Schema<IAddress>({
+   ```
+
+   (was `const addressSchema = ...`)
+
+2. `src/controllers/accountController.ts`: the same "copy only the address fields" helper.
+
+   ```ts
+   export const pickAddress = (body: Record<string, unknown>) => {
+   ```
+
+3. `src/utils/promo.ts`: the confirmation email shows naira amounts.
+
+   ```ts
+   export const naira = (amount: number) => `₦${amount.toLocaleString("en-NG")}`;
+   ```
+
+### 22.2 `src/models/Counter.ts`: order numbers
+
+New file. Why not "count the orders and add 1"? Two orders placed at the same moment would both count 5 and both
+become #QC-1047. MongoDB's `$inc` adds 1 in **one step**, so every order gets its own number.
+
+```ts
+// Counter model server/src/models/Counter.ts
+// Hands out numbers one after another (1, 2, 3...), even when two orders are placed at the same moment.
+// Used for order numbers: #QC-1042, #QC-1043...
+
+// STEP 22 (part 1): A counter for order numbers
+
+import { model, Schema } from "mongoose";
+
+interface ICounter {
+  _id: string; // the counter's name, e.g. "order"
+  seq: number; // the last number handed out
+}
+
+const counterSchema = new Schema<ICounter>({
+  _id: { type: String, required: true },
+  seq: { type: Number, default: 0 },
+});
+
+export const Counter = model<ICounter>("Counter", counterSchema);
+
+// nextNumber("order") -> 1, then 2, then 3...
+// $inc adds 1 INSIDE MongoDB in one step, so two orders at the same time can never get the same number.
+// upsert: true = if the counter doesn't exist yet, create it (the first call gives 1).
+export const nextNumber = async (name: string) => {
+  const counter = await Counter.findOneAndUpdate(
+    { _id: name },
+    { $inc: { seq: 1 } },
+    { upsert: true, returnDocument: "after" },
+  );
+
+  return counter!.seq; // "!" = with upsert there is always a counter
+};
+```
+
+### 22.3 `src/models/Order.ts`
+
+New file.
+
+```ts
+// Order model server/src/models/Order.ts
+// One placed order: what was bought (at what price), where it goes, how it's paid, and where it is now.
+
+// STEP 22 (part 2): The Order model
+
+import { model, Schema, Types } from "mongoose";
+import { addressSchema, IAddress } from "./User";
+
+// processing = placed, being packed  ("In Progress" tab)
+// shipped    = with the courier      ("Shipped" tab; the tracker calls it "Dispatched")
+// delivered  = handed over           ("Delivered" tab)
+// cancelled  = cancelled             ("Cancelled" tab)
+export const ORDER_STATUSES = ["processing", "shipped", "delivered", "cancelled"] as const;
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+// One line of the order. Name, photo and price are COPIED from the product when the order is placed
+// (a "snapshot"): if the price changes next week, this order still shows what the customer paid.
+export interface IOrderItem {
+  product: Types.ObjectId; // the product (for "Buy Again" and reviews)
+  name: string;
+  image: string;
+  sku: string;
+  price: number; // the price of ONE, in naira, when the order was placed
+  quantity: number;
+  color?: string; // e.g. "Midnight Black"
+  lineTotal: number; // price x quantity
+}
+
+// One step of the tracker: "Order Placed Oct 24, 10:14 AM"
+export interface IStatusUpdate {
+  status: OrderStatus;
+  note: string; // e.g. "Order placed", "Cancelled by you"
+  at: Date;
+}
+
+// The "Payment Record" card. We NEVER store a full card number or CVV: only the brand and the last 4 digits.
+export interface IPayment {
+  method: "card" | "pay_on_delivery";
+  status: "paid" | "pending" | "refunded"; // pay on delivery stays "pending" until delivery
+  cardBrand?: string; // "Mastercard", "Visa", "Verve"
+  cardLast4?: string; // "4242"
+  reference?: string; // "PSTK-991204812"
+  paidAt?: Date;
+}
+
+export interface IOrder {
+  orderNumber: string; // "QC-1042" (the website shows it as #QC-1042)
+  user: Types.ObjectId; // who placed it
+  items: IOrderItem[];
+  contact: { firstName: string; lastName: string; email: string; phone: string };
+  shippingAddress: IAddress; // a COPY of the address: editing the saved address later doesn't move this order
+  deliveryMethod: "standard" | "express";
+  payment: IPayment;
+  subtotal: number; // all line totals added up
+  deliveryFee: number;
+  discount: number; // from the promo code (0 = none)
+  promoCode?: string; // "QUICK25"
+  total: number; // subtotal - discount + deliveryFee
+  status: OrderStatus;
+  statusHistory: IStatusUpdate[];
+  estimatedDelivery: { from: Date; to: Date }; // "Oct 26 - Oct 27"
+  courier?: string; // set when it's shipped (STEP 26), e.g. "QuickCart Express Freight"
+  waybill?: string; // e.g. "QCK-LOS-994821-NG"
+  deliveredAt?: Date;
+  cancelledAt?: Date;
+  cancelReason?: string;
+  createdAt: Date; // "Placed on ..." (added by timestamps)
+}
+
+const orderItemSchema = new Schema<IOrderItem>(
+  {
+    product: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+    name: { type: String, required: true },
+    image: { type: String, default: "" },
+    sku: { type: String, default: "" },
+    price: { type: Number, required: true, min: 0 },
+    quantity: { type: Number, required: true, min: 1 },
+    color: { type: String },
+    lineTotal: { type: Number, required: true, min: 0 },
+  },
+  { _id: false }, // the lines don't need their own ids
+);
+
+const orderSchema = new Schema<IOrder>(
+  {
+    orderNumber: { type: String, unique: true }, // set just before saving (see orderController)
+    user: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    items: [orderItemSchema],
+    contact: {
+      firstName: { type: String, required: [true, "First name is required"], trim: true },
+      lastName: { type: String, required: [true, "Last name is required"], trim: true },
+      email: { type: String, required: [true, "Email is required"], lowercase: true, trim: true },
+      phone: { type: String, required: [true, "Phone number is required"], trim: true },
+    },
+    // The SAME rules as a saved address (STEP 20.1): "Street address is required", ...
+    shippingAddress: { type: addressSchema, required: [true, "Please choose a delivery address."] },
+    deliveryMethod: { type: String, enum: ["standard", "express"], required: true },
+    payment: {
+      method: { type: String, enum: ["card", "pay_on_delivery"], required: true },
+      status: { type: String, enum: ["paid", "pending", "refunded"], required: true },
+      cardBrand: { type: String },
+      cardLast4: { type: String },
+      reference: { type: String },
+      paidAt: { type: Date },
+    },
+    subtotal: { type: Number, required: true, min: 0 },
+    deliveryFee: { type: Number, default: 0, min: 0 },
+    discount: { type: Number, default: 0, min: 0 },
+    promoCode: { type: String },
+    total: { type: Number, required: true, min: 0 },
+    status: { type: String, enum: ORDER_STATUSES, default: "processing" },
+    statusHistory: [
+      {
+        _id: false,
+        status: { type: String, enum: ORDER_STATUSES, required: true },
+        note: { type: String, default: "" },
+        at: { type: Date, default: Date.now },
+      },
+    ],
+    estimatedDelivery: { from: Date, to: Date },
+    courier: { type: String },
+    waybill: { type: String },
+    deliveredAt: { type: Date },
+    cancelledAt: { type: Date },
+    cancelReason: { type: String, trim: true },
+  },
+  { timestamps: true },
+);
+
+// "My orders" always searches by user, newest first: an index makes that fast
+orderSchema.index({ user: 1, createdAt: -1 });
+
+export const Order = model<IOrder>("Order", orderSchema);
+```
+
+**Why copy the name, photo and price into the order?** Products change. If the headphones go from ₦45,000 to
+₦50,000 next month, Ada's order must still say ₦45,000, because that's what she paid. The same goes for the
+address: if she edits her Home address later, an order that's already on its way doesn't change.
+
+### 22.4 `src/utils/orderRules.ts`: delivery, dates, cancel window, pretend card
+
+New file.
+
+```ts
+// orderRules.ts server/src/utils/orderRules.ts
+// The shop's order rules in one place: delivery prices, delivery dates, the 1-hour cancel window,
+// Lagos-only options and the pretend card payment.
+
+// STEP 22 (part 3): Order rules
+
+import { randomInt } from "crypto";
+import { AppError } from "./AppError";
+
+// The checkout's "Delivery Method" box
+export const DELIVERY_OPTIONS = {
+  standard: { label: "Standard Delivery", fee: 0, minDays: 2, maxDays: 3 }, // Free, 2-3 business days
+  express: { label: "Express Same-Day Dispatch", fee: 2500, minDays: 0, maxDays: 0 }, // ₦2,500, today (Lagos only)
+};
+
+export type DeliveryMethod = keyof typeof DELIVERY_OPTIONS; // "standard" | "express"
+
+export const CANCEL_WINDOW_MINUTES = 60; // "Free cancellation available within 1 hour of placement"
+
+// Express delivery and Pay on Delivery are "Lagos Metro Only" in the designs
+export const isLagos = (state: unknown) => /lagos/i.test(String(state ?? "")); // "Lagos State", "lagos" -> true
+
+// Monday + 2 business days = Wednesday. Friday + 2 = Tuesday (Saturday and Sunday are skipped).
+export const addBusinessDays = (start: Date, days: number) => {
+  const date = new Date(start);
+  let added = 0;
+
+  while (added < days) {
+    date.setDate(date.getDate() + 1); // the next day
+    const weekday = date.getDay(); // 0 = Sunday, 6 = Saturday
+    if (weekday !== 0 && weekday !== 6) added++;
+  }
+
+  return date;
+};
+
+// "Estimated Delivery: Oct 26 - Oct 27"
+export const estimateDelivery = (method: DeliveryMethod, placedAt: Date) => {
+  const option = DELIVERY_OPTIONS[method];
+  return {
+    from: addBusinessDays(placedAt, option.minDays),
+    to: addBusinessDays(placedAt, option.maxDays),
+  };
+};
+
+// The last moment the order can be cancelled: placed + 60 minutes
+export const cancelDeadline = (order: { createdAt: Date }) =>
+  new Date(order.createdAt.getTime() + CANCEL_WINDOW_MINUTES * 60 * 1000);
+
+// Shows or hides the "Cancel Order" button: still being packed AND within the hour
+export const canCancel = (order: { status: string; createdAt: Date }) =>
+  order.status === "processing" && Date.now() < cancelDeadline(order).getTime();
+
+// Oct 24, 2026 (for emails)
+export const formatDate = (date: Date) =>
+  date.toLocaleDateString("en-NG", { month: "short", day: "numeric", year: "numeric" });
+
+// "4..." Visa, "51-55..." or "22-27..." Mastercard, "506/507/650..." Verve
+const cardBrand = (digits: string) => {
+  if (/^4/.test(digits)) return "Visa";
+  if (/^(5[1-5]|2[2-7])/.test(digits)) return "Mastercard";
+  if (/^(506|507|650)/.test(digits)) return "Verve";
+  return "Card";
+};
+
+// A PRETEND card payment ("Simulated environment for capstone UI" in the checkout design).
+// It checks the card looks right, then "pays". No money moves and the card details are never saved.
+// Any card number ending in 0000 is declined, so you can demo a failed payment.
+export const chargeCard = (card: unknown) => {
+  const { number, expiry, cvv } = (card ?? {}) as Record<string, unknown>;
+
+  const digits = String(number ?? "").replace(/\D/g, ""); // "4242 4242 4242 4242" -> "4242424242424242"
+  if (digits.length < 12 || digits.length > 19) {
+    throw new AppError(400, "Please enter a valid card number.");
+  }
+
+  const match = /^(\d{2})\s*\/\s*(\d{2})$/.exec(String(expiry ?? "").trim()); // "08/28" -> ["08/28", "08", "28"]
+  const month = Number(match?.[1]);
+  if (!match || month < 1 || month > 12) {
+    throw new AppError(400, "Please enter the expiry date as MM/YY, e.g. 08/28.");
+  }
+
+  // A card that says 08/28 works until the END of August 2028, i.e. until 1 September 2028.
+  // (new Date(year, 8, 1) = 1 September, because JavaScript counts months from 0.)
+  const firstDayAfterExpiry = new Date(2000 + Number(match[2]), month, 1);
+  if (firstDayAfterExpiry.getTime() <= Date.now()) {
+    throw new AppError(400, "This card has expired.");
+  }
+
+  if (!/^\d{3,4}$/.test(String(cvv ?? ""))) {
+    throw new AppError(400, "Please enter the 3-digit CVV from the back of your card.");
+  }
+
+  if (digits.endsWith("0000")) {
+    throw new AppError(402, "Your card was declined. Please try another card."); // 402 = Payment Required
+  }
+
+  return {
+    cardBrand: cardBrand(digits),
+    cardLast4: digits.slice(-4), // the ONLY part of the number we keep
+    reference: `PSTK-${randomInt(100000000, 1000000000)}`, // "PSTK-991204812"
+    paidAt: new Date(),
+  };
+};
+```
+
+**Test cards:** `4242 4242 4242 4242` is Visa and `5399 4242 4242 4242` is Mastercard (any future expiry like
+`08/28`, any 3-digit CVV). `4000 0000 0000 0000` is **declined**.
+
+### 22.5 `src/controllers/orderController.ts`
+
+New file. It's long, but `placeOrder` is just numbered steps 1 to 11: read the cart → real prices → stock →
+delivery and payment → address → money → check → pay and take stock → number and save → email.
+
+```ts
+// orderController.ts server/src/controllers/orderController.ts
+// Checkout and the customer's own orders.
+
+// STEP 22 (part 4): Orders
+// (every route has protect, so req.user is always the logged-in user)
+// POST  /api/orders                      -> place an order (the "PLACE ORDER NOW" button)
+// GET   /api/orders                      -> my orders (?status=in-progress|shipped|delivered|cancelled, ?search=, ?sort=oldest)
+// GET   /api/orders/summary              -> the numbers and recent orders on My Account
+// GET   /api/orders/:orderNumber         -> one order (e.g. /api/orders/QC-1042)
+// PATCH /api/orders/:orderNumber/cancel  -> cancel it (only within 1 hour, while still processing)
+
+import { Request, Response } from "express";
+import { HydratedDocument, isValidObjectId, Types } from "mongoose";
+import { env } from "../config/env";
+import { nextNumber } from "../models/Counter";
+import { IOrder, IOrderItem, Order, OrderStatus } from "../models/Order";
+import { liveProducts, Product } from "../models/Product";
+import { PromoCode } from "../models/PromoCode";
+import { AppError } from "../utils/AppError";
+import { escapeRegex } from "../utils/escapeRegex";
+import {
+  cancelDeadline,
+  canCancel,
+  chargeCard,
+  DELIVERY_OPTIONS,
+  DeliveryMethod,
+  estimateDelivery,
+  formatDate,
+  isLagos,
+} from "../utils/orderRules";
+import { applyPromo, naira } from "../utils/promo";
+import { sendEmail } from "../utils/sendEmail";
+import { pickAddress } from "./accountController";
+
+const me = (req: Request) => req.user!;
+
+const MAX_QUANTITY = 10; // per cart line
+const FIRST_ORDER_NUMBER = 1042; // the first order is #QC-1042, like the designs
+
+// ===== Helpers =====
+
+// The body's "items" -> [{ productId, quantity, color }], or a 400 the checkout can show
+const readCart = (items: unknown) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new AppError(400, "Your cart is empty.");
+  }
+
+  return items.map((item) => {
+    const { productId, quantity, color } = (item ?? {}) as Record<string, unknown>;
+    const qty = Number(quantity);
+
+    if (!isValidObjectId(productId)) {
+      throw new AppError(400, "An item in your cart is no longer available. Please refresh your cart.");
+    }
+
+    // Number.isInteger: 2 yes; 1.5, "two", NaN no
+    if (!Number.isInteger(qty) || qty < 1 || qty > MAX_QUANTITY) {
+      throw new AppError(400, `Quantity must be a whole number from 1 to ${MAX_QUANTITY}.`);
+    }
+
+    return { productId: String(productId), quantity: qty, color: color ? String(color) : undefined };
+  });
+};
+
+// Take the stock: one update per product. "stock: { $gte: qty }" = only if there's still enough.
+// Two people buying the last one at the same moment: MongoDB lets only one update match, the other gets the 409.
+const reserveStock = async (wanted: Map<string, number>, products: Map<string, { name: string; trackStock: boolean }>) => {
+  const reserved: { product: string; quantity: number }[] = [];
+
+  for (const [id, quantity] of wanted) {
+    const product = products.get(id)!;
+
+    const result = product.trackStock
+      ? await Product.updateOne({ _id: id, stock: { $gte: quantity } }, { $inc: { stock: -quantity, sold: quantity } })
+      : await Product.updateOne({ _id: id }, { $inc: { sold: quantity } }); // made to order: stock isn't counted
+
+    if (result.modifiedCount === 0) {
+      await releaseStock(reserved); // give back what we already took for this order
+      throw new AppError(409, `Sorry, "${product.name}" just sold out. Please update your cart.`);
+    }
+
+    reserved.push({ product: id, quantity });
+  }
+};
+
+// Put stock back (a cancelled order, or a checkout that failed half-way)
+const releaseStock = async (lines: { product: Types.ObjectId | string; quantity: number }[]) => {
+  if (lines.length === 0) return; // bulkWrite refuses an empty list
+
+  await Product.bulkWrite(
+    lines.flatMap(({ product, quantity }) => [
+      { updateOne: { filter: { _id: product }, update: { $inc: { sold: -quantity } } } },
+      // only products that count their stock get it back
+      { updateOne: { filter: { _id: product, trackStock: true }, update: { $inc: { stock: quantity } } } },
+    ]),
+  );
+};
+
+// The confirmation email (plain text: sendEmail turns it into simple HTML)
+const confirmationEmail = (order: IOrder) => {
+  const delivery = DELIVERY_OPTIONS[order.deliveryMethod];
+  const address = order.shippingAddress;
+
+  const lines = [
+    `Hi ${order.contact.firstName},`,
+    "",
+    `Thank you for your order! We have received order #${order.orderNumber} and started preparing it for delivery.`,
+    "",
+    ...order.items.map(
+      (item) => `- ${item.name}${item.color ? ` (${item.color})` : ""} x ${item.quantity}: ${naira(item.lineTotal)}`,
+    ),
+    "",
+    `Subtotal: ${naira(order.subtotal)}`,
+    `Delivery (${delivery.label}): ${order.deliveryFee === 0 ? "FREE" : naira(order.deliveryFee)}`,
+  ];
+
+  if (order.discount > 0) {
+    lines.push(`Discount (${order.promoCode}): -${naira(order.discount)}`);
+  }
+
+  lines.push(
+    `Total: ${naira(order.total)}`,
+    "",
+    order.payment.method === "card"
+      ? `Payment: paid with ${order.payment.cardBrand} ending in ${order.payment.cardLast4}`
+      : "Payment: pay on delivery (cash or POS)",
+    `Delivering to: ${address.fullName}, ${address.street}, ${address.city}, ${address.state}`,
+    `Estimated delivery: ${formatDate(order.estimatedDelivery.from)} - ${formatDate(order.estimatedDelivery.to)}`,
+    "",
+    `Track your order: ${env.clientUrl}/account/orders/${order.orderNumber}`,
+    "",
+    "Changed your mind? You can cancel free of charge within 1 hour of placing your order.",
+    "",
+    "The QuickCart team",
+  );
+
+  return lines.join("\n");
+};
+
+// An order + what the "Cancel Order" button needs ("46 mins remaining")
+const withCancelInfo = (order: HydratedDocument<IOrder>) => ({
+  order,
+  canCancel: canCancel(order),
+  cancelDeadline: cancelDeadline(order),
+});
+
+// How many of MY orders are in each status: { processing: 1, delivered: 3, ... }
+const countByStatus = async (userId: Types.ObjectId) => {
+  const groups = await Order.aggregate<{ _id: OrderStatus; count: number }>([
+    { $match: { user: userId } },
+    { $group: { _id: "$status", count: { $sum: 1 } } }, // one group per status, counting the orders
+  ]);
+
+  const counts = { processing: 0, shipped: 0, delivered: 0, cancelled: 0 };
+  for (const group of groups) counts[group._id] = group.count;
+  return counts;
+};
+
+// Find one of MY orders from the URL: "QC-1042", "qc-1042" or "1042" all work. Someone else's order = 404.
+const findMyOrder = async (req: Request<{ orderNumber: string }>) => {
+  let orderNumber = req.params.orderNumber.trim().toUpperCase();
+  if (/^\d+$/.test(orderNumber)) orderNumber = `QC-${orderNumber}`; // "1042" -> "QC-1042"
+
+  const order = await Order.findOne({ orderNumber, user: me(req)._id });
+  if (!order) {
+    throw new AppError(404, "Order not found");
+  }
+
+  return order;
+};
+
+// ===== Place an order =====
+
+// POST /api/orders
+// {
+//   "items": [{ "productId": "...", "quantity": 2, "color": "Midnight Black" }],
+//   "contact": { "firstName", "lastName", "email", "phone" },   (optional: the account's details are used)
+//   "addressId": "..."  OR  "address": { "fullName", "phone", "street", "city", "state", "instructions"? },
+//   "deliveryMethod": "standard" | "express",
+//   "paymentMethod": "card" | "pay_on_delivery",
+//   "card": { "number": "4242 4242 4242 4242", "expiry": "08/28", "cvv": "987" },   (card only)
+//   "promoCode": "QUICK25"   (optional)
+// }
+export const placeOrder = async (req: Request, res: Response) => {
+  const user = me(req);
+  const body = req.body ?? {};
+
+  // 1. The cart lines
+  const cart = readCart(body.items);
+
+  // 2. Load the products. Prices come from the DATABASE, never from the website.
+  const ids = [...new Set(cart.map((line) => line.productId))];
+  const found = await Product.find({ $and: [{ _id: { $in: ids } }, liveProducts()] });
+  const products = new Map(found.map((product) => [String(product._id), product]));
+
+  if (products.size !== ids.length) {
+    throw new AppError(400, "An item in your cart is no longer available. Please refresh your cart.");
+  }
+
+  // 3. Build the lines (the price snapshot) and add up how many of each product are wanted
+  const wanted = new Map<string, number>(); // the same product in 2 colours = 2 lines, 1 stock check
+  const items: IOrderItem[] = cart.map((line) => {
+    const product = products.get(line.productId)!;
+    wanted.set(line.productId, (wanted.get(line.productId) ?? 0) + line.quantity);
+
+    return {
+      product: product._id,
+      name: product.name,
+      image: product.images[0] ?? "",
+      sku: product.sku,
+      price: product.price,
+      quantity: line.quantity,
+      color: line.color,
+      lineTotal: product.price * line.quantity,
+    };
+  });
+
+  // 4. Enough stock? (a friendly message now; reserveStock in step 9 makes it certain)
+  for (const [id, quantity] of wanted) {
+    const product = products.get(id)!;
+    if (product.trackStock && product.stock < quantity) {
+      throw new AppError(
+        400,
+        product.stock === 0
+          ? `"${product.name}" is sold out. Please remove it from your cart.`
+          : `Only ${product.stock} left of "${product.name}". Please lower the quantity.`,
+      );
+    }
+  }
+
+  // 5. Delivery and payment choices
+  const deliveryMethod: DeliveryMethod = body.deliveryMethod ?? "standard"; // not sent = standard
+  if (deliveryMethod !== "standard" && deliveryMethod !== "express") {
+    throw new AppError(400, "Please choose a delivery method.");
+  }
+
+  const paymentMethod = body.paymentMethod;
+  if (paymentMethod !== "card" && paymentMethod !== "pay_on_delivery") {
+    throw new AppError(400, "Please choose a payment method.");
+  }
+
+  // 6. The address: one of my saved ones (addressId), or one typed at checkout (address)
+  let shippingAddress;
+  if (body.addressId) {
+    const saved = user.addresses.find((a) => String(a._id) === String(body.addressId));
+    if (!saved) {
+      throw new AppError(404, "Address not found");
+    }
+    shippingAddress = pickAddress(saved as unknown as Record<string, unknown>); // a copy, without its _id
+  } else if (body.address && typeof body.address === "object") {
+    shippingAddress = pickAddress(body.address);
+  } else {
+    throw new AppError(400, "Please choose a delivery address.");
+  }
+
+  if (deliveryMethod === "express" && !isLagos(shippingAddress.state)) {
+    throw new AppError(400, "Express Same-Day Dispatch is only available in Lagos.");
+  }
+  if (paymentMethod === "pay_on_delivery" && !isLagos(shippingAddress.state)) {
+    throw new AppError(400, "Pay on Delivery is only available in Lagos.");
+  }
+
+  // 7. The money: subtotal from the database prices, the promo code checked AGAIN here, then delivery
+  const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+
+  let discount = 0;
+  let promoCode: string | undefined;
+  if (body.promoCode) {
+    const result = await applyPromo(body.promoCode, subtotal); // the same function as the Apply button
+    discount = result.discount;
+    promoCode = result.promo.code;
+  }
+
+  const deliveryFee = DELIVERY_OPTIONS[deliveryMethod].fee;
+  const total = subtotal - discount + deliveryFee;
+
+  // 8. Build the order and check it BEFORE touching stock or payment (missing street, phone... -> 400)
+  const contact = body.contact ?? {};
+  const placedAt = new Date();
+
+  const order = new Order({
+    user: user._id,
+    items,
+    contact: {
+      firstName: contact.firstName ?? user.firstName,
+      lastName: contact.lastName ?? user.lastName,
+      email: contact.email ?? user.email,
+      phone: contact.phone ?? user.phone,
+    },
+    shippingAddress,
+    deliveryMethod,
+    payment: { method: paymentMethod, status: "pending" },
+    subtotal,
+    deliveryFee,
+    discount,
+    promoCode,
+    total,
+    status: "processing",
+    statusHistory: [{ status: "processing", note: "Order placed", at: placedAt }],
+    estimatedDelivery: estimateDelivery(deliveryMethod, placedAt),
+  });
+
+  await order.validate(); // runs the model's rules now (save() would run them too, but that's after step 9)
+
+  // 9. Pay (pretend) and take the stock
+  if (paymentMethod === "card") {
+    Object.assign(order.payment, { status: "paid", ...chargeCard(body.card) }); // declined -> 402, nothing taken
+  }
+
+  await reserveStock(wanted, products); // sold out in the meantime -> 409, nothing taken
+
+  // 10. Give it a number and save. If saving fails, give the stock back before reporting the error.
+  try {
+    order.orderNumber = `QC-${FIRST_ORDER_NUMBER - 1 + (await nextNumber("order"))}`; // 1st order: 1041 + 1 = QC-1042
+    await order.save();
+  } catch (error) {
+    await releaseStock(items);
+    throw error;
+  }
+
+  // 11. Count the promo code use, and send the email (sendEmail never throws, so no await needed:
+  // the customer gets their reply straight away instead of waiting for Brevo)
+  if (promoCode) {
+    await PromoCode.updateOne({ code: promoCode }, { $inc: { usedCount: 1 } });
+  }
+  void sendEmail(order.contact.email, `Order #${order.orderNumber} confirmed`, confirmationEmail(order));
+
+  res.status(201).json({ message: "Your order has been placed!", ...withCancelInfo(order) });
+};
+
+// ===== My orders =====
+
+// The filter tabs on Order History -> the status saved in the database
+const STATUS_TABS = new Map<string, OrderStatus>([
+  ["in-progress", "processing"],
+  ["shipped", "shipped"],
+  ["delivered", "delivered"],
+  ["cancelled", "cancelled"],
+]);
+
+// GET /api/orders?status=delivered&search=QC-1042&sort=oldest
+export const getMyOrders = async (req: Request, res: Response) => {
+  const { status, search, sort } = req.query;
+  const filter: Record<string, unknown> = { user: me(req)._id }; // ONLY my orders
+
+  if (typeof status === "string" && STATUS_TABS.has(status)) {
+    filter.status = STATUS_TABS.get(status);
+  }
+
+  // "Search by order number (e.g. #QC-1042) or product name"
+  if (typeof search === "string" && search.trim()) {
+    const text = new RegExp(escapeRegex(search.trim().replace(/^#/, "")), "i"); // "#QC-1042" -> /QC-1042/i
+    filter.$or = [{ orderNumber: text }, { "items.name": text }];
+  }
+
+  const [orders, counts] = await Promise.all([
+    Order.find(filter).sort({ createdAt: sort === "oldest" ? 1 : -1 }),
+    countByStatus(me(req)._id),
+  ]);
+
+  res.json({
+    orders,
+    // the numbers on the tabs: "All Orders (5)", "In Progress (1)" ...
+    counts: {
+      all: counts.processing + counts.shipped + counts.delivered + counts.cancelled,
+      "in-progress": counts.processing,
+      shipped: counts.shipped,
+      delivered: counts.delivered,
+      cancelled: counts.cancelled,
+    },
+  });
+};
+
+// GET /api/orders/summary -> the My Account overview
+export const getOrderSummary = async (req: Request, res: Response) => {
+  const [counts, recentOrders] = await Promise.all([
+    countByStatus(me(req)._id),
+    Order.find({ user: me(req)._id }).sort({ createdAt: -1 }).limit(3),
+  ]);
+
+  res.json({
+    totalOrders: counts.processing + counts.shipped + counts.delivered + counts.cancelled,
+    inProgress: counts.processing + counts.shipped, // not delivered yet
+    delivered: counts.delivered,
+    recentOrders,
+  });
+};
+
+// GET /api/orders/:orderNumber
+export const getOrder = async (req: Request<{ orderNumber: string }>, res: Response) => {
+  res.json(withCancelInfo(await findMyOrder(req)));
+};
+
+// ===== Cancel =====
+
+// PATCH /api/orders/:orderNumber/cancel   { "reason"?: "Ordered the wrong colour" }
+export const cancelOrder = async (req: Request<{ orderNumber: string }>, res: Response) => {
+  const order = await findMyOrder(req);
+
+  if (order.status === "cancelled") {
+    throw new AppError(400, "This order is already cancelled.");
+  }
+  if (order.status !== "processing") {
+    throw new AppError(400, "This order has already left our warehouse, so it can't be cancelled. Please contact support.");
+  }
+  if (!canCancel(order)) {
+    throw new AppError(400, "Free cancellation is only available within 1 hour of placing your order. Please contact support.");
+  }
+
+  // Change it ONLY if it's still "processing" at this very moment. Pressing Cancel twice quickly would
+  // otherwise give the stock back twice: the second click finds nothing to change and gets the 400 below.
+  const now = new Date();
+  const cancelled = await Order.findOneAndUpdate(
+    { _id: order._id, status: "processing" },
+    {
+      $set: {
+        status: "cancelled",
+        cancelledAt: now,
+        cancelReason: String(req.body?.reason ?? "").trim() || undefined,
+        "payment.status": order.payment.status === "paid" ? "refunded" : order.payment.status,
+      },
+      $push: { statusHistory: { status: "cancelled", note: "Cancelled by you", at: now } },
+    },
+    { returnDocument: "after" },
+  );
+
+  if (!cancelled) {
+    throw new AppError(400, "This order is already cancelled.");
+  }
+
+  await releaseStock(cancelled.items); // the items go back on the shelf
+  if (cancelled.promoCode) {
+    await PromoCode.updateOne({ code: cancelled.promoCode }, { $inc: { usedCount: -1 } });
+  }
+
+  void sendEmail(
+    cancelled.contact.email,
+    `Order #${cancelled.orderNumber} cancelled`,
+    [
+      `Hi ${cancelled.contact.firstName},`,
+      "",
+      `Your order #${cancelled.orderNumber} has been cancelled.`,
+      cancelled.payment.status === "refunded"
+        ? `Your payment of ${naira(cancelled.total)} will be refunded to your ${cancelled.payment.cardBrand} card ending in ${cancelled.payment.cardLast4}.`
+        : "You have not been charged.",
+      "",
+      "The QuickCart team",
+    ].join("\n"),
+  );
+
+  res.json({ message: "Your order has been cancelled.", ...withCancelInfo(cancelled) });
+};
+```
+
+**Things worth understanding:**
+
+- **The order of steps 8 to 10 matters.** Everything that can be wrong with the **request** (missing street, bad
+  card, unknown promo code) is checked **before** stock is taken. Then nothing has to be undone when a shopper
+  mistypes their CVV.
+- **`stock: { $gte: quantity }` in `reserveStock`:** "take 1, but only if there's at least 1". If two people buy
+  the last one at the same moment, only one update matches. The other person gets *"just sold out"* (409), and the
+  stock can never go below 0.
+- **`findOneAndUpdate({ ..., status: "processing" })` in `cancelOrder`:** the same idea. Pressing Cancel twice very
+  fast must not put the stock back twice.
+- **`void sendEmail(...)`:** `void` means "start it, but don't wait". Brevo can take a second or two. The shopper
+  sees "Your order has been placed!" straight away, and `sendEmail` never throws (STEP 19B), so nothing can crash.
+- **Someone else's order gives 404, not 403.** `findMyOrder` searches by order number **and** `user: me`. A 403
+  would tell a stranger "this order number exists".
+- **The website's URL `/account/orders/:orderId`:** use the order number there, e.g. `/account/orders/QC-1042`,
+  and `/order-confirmation/QC-1042`. The `#` is only for display: `#` has a special meaning in URLs.
+
+### 22.6 `src/routes/orderRoutes.ts` and mount it
+
+New file:
+
+```ts
+// orderRoutes.ts server/src/routes/orderRoutes.ts
+// routes/index.ts puts these under /api/orders.
+
+// STEP 22 (part 5): Order routes
+
+import { Router } from "express";
+import { cancelOrder, getMyOrders, getOrder, getOrderSummary, placeOrder } from "../controllers/orderController";
+import { protect } from "../middleware/auth";
+
+const router = Router();
+
+router.use(protect); // you must be logged in to place or see orders
+
+router.post("/", placeOrder);
+router.get("/", getMyOrders);
+router.get("/summary", getOrderSummary); // BEFORE "/:orderNumber", or "summary" would be read as an order number
+router.get("/:orderNumber", getOrder);
+router.patch("/:orderNumber/cancel", cancelOrder);
+
+export default router;
+```
+
+In `src/routes/index.ts`:
+
+```ts
+import orderRoutes from "./orderRoutes";
+```
+
+```ts
+router.use("/orders", orderRoutes); // /api/orders...
+```
+
+### 22.7 `npm run seed` also clears the orders
+
+`npm run seed` creates the users again with **new ids**, so old orders would belong to nobody. In
+`src/data/seed.ts`:
+
+1. Add the imports:
+
+   ```ts
+   import { Order } from "../models/Order";
+   import { Counter } from "../models/Counter";
+   ```
+
+2. In step 1, add these two inside the `Promise.all([...])`, under `PromoCode.deleteMany({}),`:
+
+   ```ts
+       Order.deleteMany({}),
+       Counter.deleteMany({}), // so the next order is #QC-1042 again
+   ```
+
+(Demo orders for Ada, like the 5 in the Order History design, come with the demo panel in STEP 28.)
+
+### 22.8 Test it
+
+```bash
+npm run typecheck
+npm run seed
+npm run dev
+```
+
+**Get what you need first:**
+
+1. Log in as Ada (`POST /api/auth/login`) and copy the `token`. Every request below needs
+   `Authorization: Bearer <token>`.
+2. `GET /api/auth/me`: copy the `_id` of her **Home** address.
+3. `GET /api/products?limit=3`: copy 2 product `_id`s and note their `price` and `stock`.
+
+**Place an order:** `POST http://localhost:5000/api/orders`
+
+```json
+{
+  "items": [
+    { "productId": "<product 1 id>", "quantity": 2, "color": "Midnight Black" },
+    { "productId": "<product 2 id>", "quantity": 1 }
+  ],
+  "addressId": "<Home address id>",
+  "deliveryMethod": "standard",
+  "paymentMethod": "card",
+  "card": { "number": "4242 4242 4242 4242", "expiry": "08/28", "cvv": "987" },
+  "promoCode": "QUICK25"
+}
+```
+
+Expected **201**: `order.orderNumber: "QC-1042"`, `subtotal` = (price 1 × 2) + price 2, `discount: 2000`,
+`deliveryFee: 0`, `total` = subtotal − 2000, `payment: { status: "paid", cardBrand: "Visa", cardLast4: "4242",
+reference: "PSTK-..." }`, `canCancel: true`. The terminal shows the confirmation email (or says it was sent with
+Brevo). In Atlas: product 1's `stock` went down by 2 and `sold` up by 2, and QUICK25's `usedCount` is 1.
+
+Try adding `"price": 1` to an item: it's ignored, and the real price is used.
+
+**Now break it.** Change one thing in the body above each time (nothing is saved and no stock is taken for any of these):
+
+| Change                                                                              | Status | Message                                                       |
+| ----------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------- |
+| `"items": []`                                                                       | 400    | Your cart is empty.                                           |
+| `"quantity": 0` (or 11, or 1.5)                                                     | 400    | Quantity must be a whole number from 1 to 10.                 |
+| `"productId": "abc"`                                                                | 400    | An item in your cart is no longer available. ...              |
+| in Atlas, set product 2's `stock` to 1, then order 2 of it                        | 400    | Only N left of "...". Please lower the quantity.              |
+| card number `4000 0000 0000 0000`                                                   | 402    | Your card was declined. Please try another card.              |
+| `"expiry": "01/20"`                                                                 | 400    | This card has expired.                                        |
+| `"cvv": "12"`                                                                       | 400    | Please enter the 3-digit CVV from the back of your card.      |
+| `"promoCode": "FREEMONEY"`                                                          | 400    | "FREEMONEY" is not a valid promo code.                        |
+| `"paymentMethod": "bitcoin"`                                                        | 400    | Please choose a payment method.                               |
+| no `addressId` and no `address`                                                     | 400    | Please choose a delivery address.                             |
+| instead of `addressId`: `"address": { "fullName": "Ada", "phone": "1", "city": "Ikeja", "state": "Lagos" }` | 400 | Street address is required |
+| an Abuja `address` + `"deliveryMethod": "express"`                                  | 400    | Express Same-Day Dispatch is only available in Lagos.         |
+| an Abuja `address` + `"paymentMethod": "pay_on_delivery"`                           | 400    | Pay on Delivery is only available in Lagos.                   |
+| no token                                                                            | 401    | (from `protect`)                                              |
+
+**A second order:** `"deliveryMethod": "express"`, `"paymentMethod": "pay_on_delivery"`, no `card`, no
+`promoCode`. Expected 201: `QC-1043`, `deliveryFee: 2500`, `payment.status: "pending"`.
+
+**My orders:**
+
+| Request                                   | Expected                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------ |
+| `GET /api/orders`                         | both orders, newest first, and `counts: { all: 2, "in-progress": 2, ... }` |
+| `GET /api/orders?sort=oldest`             | QC-1042 first                                                            |
+| `GET /api/orders?search=%23QC-1043`       | only QC-1043 (`%23` is how `#` is written in a URL)                     |
+| `GET /api/orders?search=<part of a product name>` | the orders with that product                                    |
+| `GET /api/orders?status=delivered`        | `orders: []` (nothing delivered yet)                                    |
+| `GET /api/orders/summary`                 | `totalOrders: 2, inProgress: 2, delivered: 0, recentOrders: [...]`       |
+| `GET /api/orders/QC-1042` (or `qc-1042`, or `1042`) | the order + `canCancel: true` + `cancelDeadline`               |
+| `GET /api/orders/QC-1042` with the **admin's** token | 404 (it's not the admin's order)                              |
+
+**Cancel:** `PATCH /api/orders/QC-1042/cancel` with `{ "reason": "Ordered the wrong colour" }`
+
+- 200: `status: "cancelled"`, `payment.status: "refunded"`, `canCancel: false`, 2 entries in `statusHistory`
+- In Atlas, product 1's stock is back to what it was, and QUICK25's `usedCount` is back to 0
+- The same request again: 400, "This order is already cancelled."
+- **After the hour:** in Atlas, change QC-1043's `createdAt` to yesterday, then cancel it. You get 400, "Free
+  cancellation is only available within 1 hour ...".
+- **Already shipped:** set an order's `status` to `shipped` in Atlas, then cancel it. You get 400, "This order has
+  already left our warehouse ...".
+
+I ran all of this against a throwaway database: **72 checks, all passed**. They include two people buying the last
+item at the same moment (one gets it, the other gets "just sold out", and the stock ends at 0), pressing Cancel
+twice at the same moment (the stock goes back only once), and `npm run seed` starting the numbers at QC-1042 again.
+
+### 22.9 Commit
+
+```bash
+git add .
+git commit -m "STEP 22: orders (checkout, my orders, order details, cancel)"
+git push
+```
+
+➡️ **Next: STEP 23 (Reviews: only customers whose order was delivered can review a product, and the product's
+star rating updates).** Reply **NEXT** when 22.8 checks out.

@@ -13,6 +13,8 @@ import { connectDB } from "../config/database";
 import { User } from "../models/User";
 import { PromoCode } from "../models/PromoCode";
 import { promoCodes } from "./promoCodes";
+import { Order } from "../models/Order";
+import { Counter } from "../models/Counter";
 
 // STEP 13: The seed command
 // seedDatabase() does the work and is exported, so the demo panel can reuse it.
@@ -25,6 +27,8 @@ export const seedDatabase = async () => {
     Product.deleteMany({}),
     User.deleteMany({}),
     PromoCode.deleteMany({}),
+    Order.deleteMany({}),
+    Counter.deleteMany({}),
   ]);
 
   //   2. Save the categories, then remember each ones id by slug: "electronics" -> ObjectId(...)
