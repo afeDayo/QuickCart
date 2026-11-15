@@ -31,8 +31,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 20     | My Account: profile, change password, addresses, saved items                        |
 | ✅   | 21     | Promo codes (`QUICK25`, `QUICK10`) |
 | ✅   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour |
-| ⬜   | **23** | **Reviews (only buyers of delivered orders)** ← you are here |
-| ⬜   | 24     | Newsletter sign-up                                                                  |
+| ✅   | 23     | Reviews (only buyers of delivered orders) |
+| ⬜   | **24** | **Newsletter sign-up (Brevo contacts)** ← you are here |
 | ⬜   | 25     | Admin: photo upload, products CRUD, categories CRUD                                 |
 | ⬜   | 26     | Admin: orders management, customers list                                            |
 | ⬜   | 27     | Admin: dashboard stats (sales, chart, top sellers, low stock)                       |
@@ -5043,3 +5043,371 @@ git push
 
 ➡️ **Next: STEP 24 (Newsletter: the "Subscribe to QuickCart VIP Drops" box in the footer, saved as Brevo
 contacts).** Reply **NEXT** when 23.6 checks out.
+
+---
+
+## STEP 24: Newsletter ("Subscribe to QuickCart VIP Drops")
+
+The footer has **"Subscribe to QuickCart VIP Drops: Receive early access alerts, flash deals, and exclusive coupons
+right in your inbox"** with an email box and a **Subscribe** button. This step:
+
+- saves each subscriber in **our** database (a `subscribers` collection), so the admin can count them later
+- copies them to your **Brevo contacts**, so you can send real newsletters from Brevo's website (free plan)
+- sends a **welcome email** with a coupon (QUICK10, from STEP 21) and an **unsubscribe link**
+- the unsubscribe link opens a small "You're unsubscribed" page and tells Brevo never to email them again
+
+| Request                                    | Login? | What it's for                              |
+| ------------------------------------------ | ------ | ------------------------------------------ |
+| `POST /api/newsletter/subscribe`           | no     | the footer's Subscribe button              |
+| `GET /api/newsletter/unsubscribe/:token`   | no     | the link at the bottom of the welcome email |
+
+Like `sendEmail`, the Brevo part **never crashes** the request. No key, or Brevo is down? The subscriber is still
+saved, and the problem is logged in the terminal.
+
+### 24.1 (Optional) Make a contact list in Brevo
+
+In Brevo: **CRM -> Contacts → Lists → Create a list**, name it `QuickCart VIP Drops` create a folder and call it "Quickcart news letter". Open it and note its **ID** (a small
+number like `3`, shown in the list table and in the page address).
+
+Add it to `server/.env`:
+
+```
+BREVO_LIST_ID=3
+```
+
+Without it, subscribers are still added to your Brevo contacts, just not to a list.
+
+In `src/config/env.ts`, add this line under `emailFromName`:
+
+```ts
+  brevoListId: Number(process.env.BREVO_LIST_ID) || undefined, // the Brevo contact list for the newsletter, e.g. 3
+```
+
+(`Number("")` is `0` and `Number(undefined)` is `NaN`. Both are "falsy", so `|| undefined` turns "not set" into
+`undefined`.)
+
+### 24.2 `src/models/Subscriber.ts`
+
+New file.
+
+```ts
+// Subscriber model server/src/models/Subscriber.ts
+// An email address from the footer's "Subscribe to QuickCart VIP Drops" box.
+// We keep our own list (so the admin can count subscribers) AND copy each one to Brevo (to send newsletters).
+
+// STEP 24 (part 1): The Subscriber model
+
+import { model, Schema } from "mongoose";
+
+export interface ISubscriber {
+  email: string;
+  isSubscribed: boolean; // false = they clicked "unsubscribe" (we keep the row so we know not to email them)
+  unsubscribeToken: string; // the HASH of the secret in their unsubscribe link (like the reset token, STEP 19)
+  subscribedAt: Date;
+  unsubscribedAt?: Date;
+}
+
+const subscriberSchema = new Schema<ISubscriber>(
+  {
+    email: {
+      type: String,
+      required: [true, "Please enter your email address."],
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^\S+@\S+\.\S+$/, "Please enter a valid email address."],
+    },
+    isSubscribed: { type: Boolean, default: true },
+    unsubscribeToken: { type: String, required: true, select: false }, // never sent back to the website
+    subscribedAt: { type: Date, default: Date.now },
+    unsubscribedAt: { type: Date },
+  },
+  { timestamps: true },
+);
+
+export const Subscriber = model<ISubscriber>("Subscriber", subscriberSchema);
+```
+
+### 24.3 `src/utils/brevoContacts.ts`
+
+New file. It talks to Brevo's **contacts** API, the same way `sendEmail` talks to its email API.
+
+```ts
+// brevoContacts.ts server/src/utils/brevoContacts.ts
+// Adds newsletter subscribers to (and removes them from) your Brevo contacts.
+// Then you can send them a newsletter from Brevo's website: Campaigns -> Create an email campaign.
+
+// STEP 24 (part 2): Brevo contacts
+
+import { env } from "../config/env";
+
+const BREVO_CONTACTS_URL = "https://api.brevo.com/v3/contacts";
+
+// One request to Brevo's contacts API. Like sendEmail, it NEVER throws: if Brevo is down or not set up,
+// the subscriber is still saved in OUR database, and the problem is only logged.
+const brevoContacts = async (method: "POST" | "PUT", url: string, body: object) => {
+  if (!env.brevoApiKey) {
+    console.log(`(Brevo contacts skipped: no BREVO_API_KEY in .env) ${method} ${url}`);
+    return;
+  }
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: { "api-key": env.brevoApiKey, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    // 201 = created, 204 = updated: both are fine
+    if (!response.ok) {
+      console.error(`Brevo contacts refused (${response.status}):`, await response.text());
+    }
+  } catch (error) {
+    console.error("Could not reach Brevo:", (error as Error).message);
+  }
+};
+
+// The list in Brevo, e.g. 3 (from BREVO_LIST_ID). No list = the contact is saved without a list.
+const listIds = () => (env.brevoListId ? [env.brevoListId] : undefined);
+
+// Subscribe: create the contact, or update it if it already exists (updateEnabled), and allow emails again
+export const addContact = (email: string) =>
+  brevoContacts("POST", BREVO_CONTACTS_URL, {
+    email,
+    listIds: listIds(),
+    updateEnabled: true, // already a contact? fine, just update it (no "duplicate" error)
+    emailBlacklisted: false, // someone who unsubscribed and subscribes again can get emails again
+  });
+
+// Unsubscribe: "blacklisted" = Brevo will never send this contact a campaign
+// encodeURIComponent: "ada+news@example.com" -> "ada%2Bnews%40example.com" (safe inside a URL)
+export const removeContact = (email: string) =>
+  brevoContacts("PUT", `${BREVO_CONTACTS_URL}/${encodeURIComponent(email)}`, { emailBlacklisted: true });
+```
+
+### 24.4 `src/controllers/newsletterController.ts`
+
+New file.
+
+```ts
+// newsletterController.ts server/src/controllers/newsletterController.ts
+// The footer's "Subscribe to QuickCart VIP Drops" box, and the unsubscribe link in the emails.
+
+// STEP 24 (part 3): Newsletter
+// POST /api/newsletter/subscribe            { "email": "ada.obi@example.com" }
+// GET  /api/newsletter/unsubscribe/:token   (the link in the welcome email: opens a small "You're unsubscribed" page)
+
+import { Request, Response } from "express";
+import { env } from "../config/env";
+import { Subscriber } from "../models/Subscriber";
+import { AppError } from "../utils/AppError";
+import { addContact, removeContact } from "../utils/brevoContacts";
+import { hashSecret, makeResetToken } from "../utils/secrets";
+import { sendEmail } from "../utils/sendEmail";
+
+const EMAIL_RULE = /^\S+@\S+\.\S+$/; // the same rule as the User model
+
+// The address of THIS server as the browser sees it, e.g. "http://localhost:5000"
+// (the unsubscribe link must point at the API, because the website has no unsubscribe page)
+const apiAddress = (req: Request) => `${req.protocol}://${req.get("host")}`;
+
+// The welcome email, with a code (the footer promises "exclusive coupons") and the unsubscribe link
+const welcomeEmail = (unsubscribeLink: string) =>
+  [
+    "Welcome to QuickCart VIP Drops!",
+    "",
+    "You'll be the first to hear about flash deals, new arrivals and members-only coupons.",
+    "",
+    "Here's a welcome gift: use the code QUICK10 at checkout for 10% off orders of ₦10,000 or more (up to ₦5,000).",
+    "",
+    `Shop now: ${env.clientUrl}/shop`,
+    "",
+    "The QuickCart team",
+    "",
+    `Don't want these emails? Unsubscribe: ${unsubscribeLink}`,
+  ].join("\n");
+
+// The email rule above allows "<b>@x.co", so text from the database must be made safe before it goes in HTML.
+// Otherwise someone could subscribe with an "email" that runs code on our page.
+const escapeHtml = (text: string) =>
+  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+// A tiny web page for the unsubscribe link (the person clicked a link in an email, so they expect a page, not JSON)
+const page = (title: string, text: string) => `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title></head>
+<body style="font-family:Arial,sans-serif;background:#f4f6fb;margin:0;padding:48px 16px;text-align:center">
+  <div style="max-width:440px;margin:auto;background:#fff;border-radius:16px;padding:32px">
+    <h1 style="font-size:22px;color:#111827">${title}</h1>
+    <p style="color:#4b5563;line-height:1.6">${text}</p>
+    <a href="${env.clientUrl}" style="display:inline-block;margin-top:12px;background:#3730d6;color:#fff;padding:12px 20px;border-radius:10px;text-decoration:none">Back to QuickCart</a>
+  </div>
+</body></html>`;
+
+// POST /api/newsletter/subscribe   { "email": "..." }
+export const subscribe = async (req: Request, res: Response) => {
+  const email = String(req.body?.email ?? "").toLowerCase().trim();
+
+  if (!email) {
+    throw new AppError(400, "Please enter your email address.");
+  }
+  if (!EMAIL_RULE.test(email)) {
+    throw new AppError(400, "Please enter a valid email address.");
+  }
+
+  const existing = await Subscriber.findOne({ email });
+
+  // Already on the list: same happy reply, but no second welcome email
+  if (existing?.isSubscribed) {
+    return res.json({ message: "You're already subscribed to QuickCart VIP Drops." });
+  }
+
+  // A fresh unsubscribe secret: the real one goes in the email, the hash goes in the database
+  const { token, hashed } = makeResetToken();
+
+  if (existing) {
+    // They unsubscribed before and are coming back
+    existing.isSubscribed = true;
+    existing.subscribedAt = new Date();
+    existing.unsubscribedAt = undefined;
+    existing.unsubscribeToken = hashed;
+    await existing.save();
+  } else {
+    try {
+      await Subscriber.create({ email, unsubscribeToken: hashed });
+    } catch (error) {
+      // The same email sent twice at the same moment: the unique index stops the second one. That's fine.
+      if ((error as { code?: number }).code === 11000) {
+        return res.json({ message: "You're already subscribed to QuickCart VIP Drops." });
+      }
+      throw error;
+    }
+  }
+
+  // Copy them to Brevo and send the welcome email. Neither ever throws, and we don't wait for them.
+  void addContact(email);
+  void sendEmail(
+    email,
+    "Welcome to QuickCart VIP Drops 🎉",
+    welcomeEmail(`${apiAddress(req)}/api/newsletter/unsubscribe/${token}`),
+  );
+
+  res.status(201).json({ message: "Thanks for subscribing! Check your inbox for a welcome gift." });
+};
+
+// GET /api/newsletter/unsubscribe/:token
+export const unsubscribe = async (req: Request<{ token: string }>, res: Response) => {
+  const subscriber = await Subscriber.findOne({ unsubscribeToken: hashSecret(req.params.token) });
+
+  if (!subscriber) {
+    return res
+      .status(404)
+      .send(page("Link not valid", "This unsubscribe link is not valid. It may be from an older email."));
+  }
+
+  // Clicking the link twice is fine: the second click just shows the same page
+  if (subscriber.isSubscribed) {
+    subscriber.isSubscribed = false;
+    subscriber.unsubscribedAt = new Date();
+    await subscriber.save();
+    void removeContact(subscriber.email);
+  }
+
+  res.send(page("You're unsubscribed", `${escapeHtml(subscriber.email)} will no longer receive QuickCart VIP Drops emails.`));
+};
+```
+
+**Things worth understanding:**
+
+- **The unsubscribe token works like the reset token (STEP 19).** The email gets the real 64-character secret;
+  the database keeps only its hash. Someone who could read the database still couldn't unsubscribe people.
+- **Subscribing again gives a new token,** so the link in an older email stops working.
+- **`escapeHtml`:** the email rule (`something@something.something`) allows `<b>x</b>@evil.co`. Without escaping,
+  the unsubscribe page would turn that into real HTML. With a `<script>` instead of `<b>`, it would run someone
+  else's code on our page. Any text from users that goes into HTML must be escaped. (React does this for you on
+  the website, but here we build the HTML ourselves.)
+- **Why the link points at the API (`http://localhost:5000/api/...`) and not the website:** the website has no
+  unsubscribe page. `req.protocol` and `req.get("host")` give the address the request came in on, so it's
+  `localhost:5000` while developing and your real API address once it's online.
+- **`npm run seed` doesn't touch subscribers.** They're real people's emails, not demo data.
+
+### 24.5 `src/routes/newsletterRoutes.ts` and mount it
+
+New file:
+
+```ts
+// newsletterRoutes.ts server/src/routes/newsletterRoutes.ts
+// routes/index.ts puts these under /api/newsletter.
+
+// STEP 24 (part 4): Newsletter routes
+
+import { Router } from "express";
+import { subscribe, unsubscribe } from "../controllers/newsletterController";
+
+const router = Router();
+
+// No login: anyone visiting the shop can subscribe from the footer
+router.post("/subscribe", subscribe);
+router.get("/unsubscribe/:token", unsubscribe); // a GET, because it's a link clicked in an email
+
+export default router;
+```
+
+In `src/routes/index.ts`:
+
+```ts
+import newsletterRoutes from "./newsletterRoutes";
+```
+
+```ts
+router.use("/newsletter", newsletterRoutes); // /api/newsletter...
+```
+
+### 24.6 Test it
+
+```bash
+npm run typecheck
+npm run dev
+```
+
+Use **your own email** for the first one, so you can see the welcome email arrive (check Spam the first time).
+
+| Request (no token needed)                                              | Status | Reply                                                          |
+| ---------------------------------------------------------------------- | ------ | -------------------------------------------------------------- |
+| `POST /api/newsletter/subscribe` `{ "email": "<your email>" }`         | 201    | Thanks for subscribing! Check your inbox for a welcome gift.  |
+| the same again                                                         | 200    | You're already subscribed to QuickCart VIP Drops. (no 2nd email) |
+| `{ "email": "" }` (or no body)                                         | 400    | Please enter your email address.                               |
+| `{ "email": "not-an-email" }`                                          | 400    | Please enter a valid email address.                            |
+
+Then check:
+
+1. **Your inbox:** "Welcome to QuickCart VIP Drops 🎉" with the QUICK10 code and an unsubscribe link at the bottom.
+   (No Brevo key? The terminal prints the email, and you can copy the link from there.)
+2. **Atlas:** a new **subscribers** collection with your email and `isSubscribed: true`.
+3. **Brevo → Contacts:** your email is there (in the `QuickCart VIP Drops` list if you did 24.1).
+4. **Click the unsubscribe link** (or paste it into the browser). You see the "You're unsubscribed" page with a
+   **Back to QuickCart** button. In Atlas, `isSubscribed` is now `false`. In Brevo, the contact shows as
+   **blacklisted** (unsubscribed). Clicking the link again shows the same page.
+5. Open `http://localhost:5000/api/newsletter/unsubscribe/abc`: you see "Link not valid" (404).
+6. Subscribe again with the same email: 201 and a **new** welcome email. The old link now says "Link not valid".
+
+**If the terminal shows `Brevo contacts refused (...)`:** it's the same error table as 19B.4 (wrong key, IP
+blocking...). The subscriber is still saved in Atlas either way.
+
+I ran all of this against a throwaway database (with real emails switched off): **28 checks, all passed**. They
+include a capitalised email with spaces (saved as `ada.obi@example.com`), two subscribes at the same moment
+(one 201, one 200, one row), the `<b>x</b>@evil.co` email (shown as text, not HTML), and a **fake Brevo key**:
+Brevo's real API answered `401 Key not found` for both subscribe and unsubscribe, which shows the address and
+headers are right, and the requests still succeeded. I didn't use your key, so your Brevo contacts are the final test.
+
+### 24.7 Commit
+
+```bash
+git add .
+git commit -m "STEP 24: newsletter with Brevo contacts"
+git push
+```
+
+(`.env` with `BREVO_LIST_ID` stays off GitHub: check `git status` doesn't list it.)
+
+➡️ **Next: STEP 25 (Admin: upload product photos to Cloudinary, and create / edit / delete products and
+categories, the first time `adminOnly` is used).** Reply **NEXT** when 24.6 checks out.
