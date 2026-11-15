@@ -31,11 +31,13 @@ import {
   getAdminOrders,
   updateOrderStatus,
 } from "../controllers/adminOrderController";
+import { getDashboard } from "../controllers/adminDashboardController";
 
 const router = Router();
 
 // One line guards EVERY route below: logged in (protect), and an admin (adminOnly). Order matters.
 router.use(protect, adminOnly);
+router.get("/dashboard", getDashboard);
 
 // Photos: uploadPhotos (multer) reads the files first, then the controller sends them to Cloudinary
 router.post("/uploads", uploadPhotos, uploadProductPhotos);
