@@ -22,6 +22,15 @@ import {
 } from "../controllers/adminProductController";
 import { adminOnly, protect } from "../middleware/auth";
 import { uploadPhotos } from "../middleware/upload";
+import {
+  getCustomer,
+  getCustomers,
+} from "../controllers/adminCustomerController";
+import {
+  getAdminOrder,
+  getAdminOrders,
+  updateOrderStatus,
+} from "../controllers/adminOrderController";
 
 const router = Router();
 
@@ -44,5 +53,14 @@ router.get("/categories", getAdminCategories);
 router.post("/categories", createCategory);
 router.patch("/categories/:id", updateCategory);
 router.delete("/categories/:id", deleteCategory);
+
+// Orders (STEP 26)
+router.get("/orders", getAdminOrders);
+router.get("/orders/:orderNumber", getAdminOrder);
+router.patch("/orders/:orderNumber/status", updateOrderStatus);
+
+// Customers (STEP 26)
+router.get("/customers", getCustomers);
+router.get("/customers/:id", getCustomer);
 
 export default router;

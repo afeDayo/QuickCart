@@ -106,7 +106,7 @@ const reserveStock = async (
 };
 
 // Put stock back (a cancelled order, or a checkout that failed half-way)
-const releaseStock = async (
+export const releaseStock = async (
   lines: { product: Types.ObjectId | string; quantity: number }[],
 ) => {
   if (lines.length === 0) return; // bulkWrite refuses an empty list
