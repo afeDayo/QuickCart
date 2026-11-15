@@ -27,9 +27,9 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 17     | User model (password hashing, roles, addresses, saved items)                        |
 | ✅   | 18     | Auth: register, login, me, logout + `protect` / `adminOnly`                         |
 | ✅   | 19     | Forgot password, reset password, verify email                                       |
-| ⬜   | **19B** | **Real emails with Brevo (`sendEmail`)** ← you are here                             |
-| ⬜   | 20     | My Account: profile, change password, addresses, saved items                        |
-| ⬜   | 21     | Promo codes (`QUICK25`, `QUICK10`)                                                  |
+| ✅   | 19B    | Real emails with Brevo (`sendEmail`)                                                |
+| ✅   | 20     | My Account: profile, change password, addresses, saved items                        |
+| ⬜   | **21** | **Promo codes (`QUICK25`, `QUICK10`)** ← you are here                               |
 | ⬜   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour                    |
 | ⬜   | 23     | Reviews (only buyers of delivered orders)                                           |
 | ⬜   | 24     | Newsletter sign-up                                                                  |
@@ -3240,3 +3240,312 @@ git push
 
 ➡️ **Next: STEP 21 (Promo codes: `QUICK25` and `QUICK10`, and the "Apply" button in the cart).** Reply **NEXT**
 when 20.6 checks out.
+
+---
+
+## STEP 21: Promo codes (`QUICK25`, `QUICK10`)
+
+The cart has a **Discount Voucher** box ("Promo code (try QUICK10)" + **Apply**), and checkout shows
+**"QUICK25 Applied · Save ₦2,000"** with a "Discount Promo −₦2,000" line. This step adds:
+
+- a **PromoCode** model, so codes live in the database (not hard-coded) and can be switched off or given an expiry date
+- the 2 demo codes, created by `npm run seed`:
+
+  | Code      | What it gives                         | Minimum order | Example                       |
+  | --------- | ------------------------------------- | ------------- | ----------------------------- |
+  | `QUICK25` | **₦2,000 off**                        | ₦25,000       | ₦117,500 → ₦115,500 (the design) |
+  | `QUICK10` | **10% off**, at most ₦5,000           | ₦10,000       | ₦18,500 → ₦16,650             |
+
+- `applyPromo()`: one function that checks a code and works out the discount. The **Apply** button uses it now,
+  and checkout (STEP 22) will use the **same** function, so the cart and the order can never disagree.
+- `POST /api/promo-codes/check`: the **Apply** button
+
+The discount comes off the **items subtotal** only, never off delivery.
+
+### 21.1 `src/models/PromoCode.ts`
+
+New file.
+
+```ts
+// PromoCode model server/src/models/PromoCode.ts
+// A discount code typed in the cart, e.g. QUICK25 = ₦2,000 off, QUICK10 = 10% off.
+
+// STEP 21 (part 1): The PromoCode model
+
+import { model, Schema } from "mongoose";
+
+export interface IPromoCode {
+  code: string; // always saved in CAPITALS, e.g. "QUICK25"
+  description: string; // shown to the shopper, e.g. "₦2,000 off orders of ₦25,000 or more"
+  type: "fixed" | "percent"; // fixed = a naira amount off; percent = a % of the subtotal off
+  value: number; // 2000 (naira) for fixed, 10 (%) for percent
+  maxDiscount?: number; // the most a percent code can take off, e.g. 5000
+  minSubtotal: number; // the smallest order it works on, in naira
+  isActive: boolean; // false = switched off
+  expiresAt?: Date; // after this date the code stops working (no date = never expires)
+  usedCount: number; // how many orders used it (counted in STEP 22)
+}
+
+const promoCodeSchema = new Schema<IPromoCode>(
+  {
+    code: { type: String, required: true, unique: true, uppercase: true, trim: true },
+    description: { type: String, default: "" },
+    type: { type: String, enum: ["fixed", "percent"], required: true },
+    value: { type: Number, required: true, min: 0 },
+    maxDiscount: { type: Number, min: 0 },
+    minSubtotal: { type: Number, default: 0, min: 0 },
+    isActive: { type: Boolean, default: true },
+    expiresAt: { type: Date },
+    usedCount: { type: Number, default: 0 },
+  },
+  { timestamps: true },
+);
+
+export const PromoCode = model<IPromoCode>("PromoCode", promoCodeSchema);
+```
+
+### 21.2 `src/data/promoCodes.ts`: the demo codes
+
+New file.
+
+```ts
+// promoCodes.ts server/src/data/promoCodes.ts
+// The demo promo codes. npm run seed saves them.
+
+// STEP 21 (part 2): Demo promo codes
+
+import type { IPromoCode } from "../models/PromoCode";
+
+// Pick = only these fields (usedCount starts at 0 by itself)
+export type DemoPromoCode = Pick<
+  IPromoCode,
+  "code" | "description" | "type" | "value" | "maxDiscount" | "minSubtotal"
+>;
+
+export const promoCodes: DemoPromoCode[] = [
+  {
+    code: "QUICK25",
+    description: "₦2,000 off orders of ₦25,000 or more",
+    type: "fixed",
+    value: 2000,
+    minSubtotal: 25000,
+  },
+  {
+    code: "QUICK10",
+    description: "10% off orders of ₦10,000 or more (up to ₦5,000)",
+    type: "percent",
+    value: 10,
+    maxDiscount: 5000,
+    minSubtotal: 10000,
+  },
+];
+```
+
+### 21.3 Seed the codes in `src/data/seed.ts`
+
+1. Add the imports:
+
+   ```ts
+   import { PromoCode } from "../models/PromoCode";
+   import { promoCodes } from "./promoCodes";
+   ```
+
+2. In step 1, add `PromoCode.deleteMany({}),` inside the `Promise.all([...])`, under `User.deleteMany({}),`.
+
+3. After step 6 (the users), add:
+
+   ```ts
+   // 7. Save the promo codes (insertMany is fine here: promo codes have no save hooks)
+   const savedPromoCodes = await PromoCode.insertMany(promoCodes);
+   ```
+
+   Rename the summary comment to `// 8. A summary ...`, and add this to the returned object:
+
+   ```ts
+   promoCodes: savedPromoCodes.length,
+   ```
+
+4. In `runSeed`, update the message:
+
+   ```ts
+   console.log(
+     `Seeded ${result.categories} categories, ${result.products} products, ${result.users} users and ${result.promoCodes} promo codes`,
+   );
+   ```
+
+### 21.4 `src/utils/promo.ts`: check a code and work out the discount
+
+New file. Checkout (STEP 22) imports `applyPromo` from here too.
+
+```ts
+// promo.ts server/src/utils/promo.ts
+// Checks a promo code and works out its discount. Used by the cart's Apply button AND by checkout (STEP 22),
+// so both always agree.
+
+// STEP 21 (part 3): Promo code rules
+
+import { IPromoCode, PromoCode } from "../models/PromoCode";
+import { AppError } from "./AppError";
+
+// 25000 -> "₦25,000" (toLocaleString adds the commas the Nigerian way)
+const naira = (amount: number) => `₦${amount.toLocaleString("en-NG")}`;
+
+// How much this code takes off this subtotal, in whole naira
+export const discountFor = (promo: IPromoCode, subtotal: number) => {
+  // fixed: the value itself (2000). percent: that % of the subtotal (10% of 18500 = 1850)
+  let discount = promo.type === "percent" ? (subtotal * promo.value) / 100 : promo.value;
+
+  if (promo.maxDiscount !== undefined) {
+    discount = Math.min(discount, promo.maxDiscount); // QUICK10 never takes off more than ₦5,000
+  }
+
+  discount = Math.min(discount, subtotal); // never more than the order itself (no negative totals)
+
+  return Math.round(discount); // naira, no kobo: 1234.5 -> 1235
+};
+
+// applyPromo("quick25", 117500) -> { promo, discount: 2000 }
+// Throws a 400 with a message the cart can show if the code can't be used.
+export const applyPromo = async (code: unknown, subtotal: number) => {
+  const cleanCode = String(code ?? "").toUpperCase().trim(); // " quick25 " -> "QUICK25"
+
+  if (!cleanCode) {
+    throw new AppError(400, "Please enter a promo code.");
+  }
+
+  const promo = await PromoCode.findOne({ code: cleanCode });
+
+  // Doesn't exist, switched off, or expired: the shopper doesn't need to know which
+  if (!promo || !promo.isActive || (promo.expiresAt && promo.expiresAt.getTime() < Date.now())) {
+    throw new AppError(400, `"${cleanCode}" is not a valid promo code.`);
+  }
+
+  // Too small an order? Tell them how much more to add (that sells more!)
+  if (subtotal < promo.minSubtotal) {
+    throw new AppError(
+      400,
+      `${promo.code} needs an order of at least ${naira(promo.minSubtotal)}. Add ${naira(promo.minSubtotal - subtotal)} more to use it.`,
+    );
+  }
+
+  return { promo, discount: discountFor(promo, subtotal) };
+};
+```
+
+### 21.5 `src/controllers/promoController.ts`
+
+New file.
+
+```ts
+// promoController.ts server/src/controllers/promoController.ts
+// The cart's "Apply" button.
+
+// STEP 21 (part 4): Check a promo code
+// POST /api/promo-codes/check   { "code": "QUICK25", "subtotal": 117500 }
+
+import { Request, Response } from "express";
+import { AppError } from "../utils/AppError";
+import { applyPromo } from "../utils/promo";
+
+export const checkPromoCode = async (req: Request, res: Response) => {
+  const { code, subtotal } = req.body ?? {};
+  const amount = Number(subtotal); // "20000" (text) -> 20000; nonsense -> NaN
+
+  // Number.isFinite is false for NaN, so this catches missing, text and 0 or less
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new AppError(400, "Your cart is empty.");
+  }
+
+  const { promo, discount } = await applyPromo(code, amount);
+
+  res.json({
+    code: promo.code,
+    description: promo.description,
+    discount, // "Save ₦2,000" / "Discount Promo −₦2,000"
+    subtotalAfterDiscount: amount - discount,
+  });
+};
+```
+
+**Is it safe that the website sends the subtotal?** For a **preview**, yes. Someone could send a fake subtotal, but
+all they get back is a number on their own screen. When an order is **placed** (STEP 22), the server adds up the
+real prices from the database and runs `applyPromo` again itself. It never trusts the website's total.
+
+### 21.6 `src/routes/promoRoutes.ts` and mount it
+
+New file:
+
+```ts
+// promoRoutes.ts server/src/routes/promoRoutes.ts
+// routes/index.ts puts these under /api/promo-codes.
+
+// STEP 21 (part 5): Promo code routes
+
+import { Router } from "express";
+import { checkPromoCode } from "../controllers/promoController";
+
+const router = Router();
+
+// No protect: shoppers who aren't logged in can try a code in their cart too
+router.post("/check", checkPromoCode);
+
+export default router;
+```
+
+In `src/routes/index.ts`:
+
+```ts
+import promoRoutes from "./promoRoutes";
+```
+
+```ts
+router.use("/promo-codes", promoRoutes); // /api/promo-codes...
+```
+
+### 21.7 Test it
+
+```bash
+npm run typecheck
+npm run seed
+```
+
+Expected: `Seeded 8 categories, 40 products, 2 users and 2 promo codes`. In Atlas there's a new **promocodes**
+collection with QUICK25 and QUICK10, each with `usedCount: 0`.
+
+```bash
+npm run dev
+```
+
+Send `POST http://localhost:5000/api/promo-codes/check` (no token needed) with these bodies:
+
+| Body                                               | Status | Reply                                                                    |
+| -------------------------------------------------- | ------ | ------------------------------------------------------------------------ |
+| `{ "code": "QUICK25", "subtotal": 117500 }`        | 200    | `discount: 2000`, `subtotalAfterDiscount: 115500` (the checkout design)  |
+| `{ "code": "  quick25 ", "subtotal": 117500 }`     | 200    | the same (capitals and spaces don't matter)                              |
+| `{ "code": "QUICK25", "subtotal": 18500 }`         | 400    | QUICK25 needs an order of at least ₦25,000. Add ₦6,500 more to use it.   |
+| `{ "code": "QUICK10", "subtotal": 18500 }`         | 200    | `discount: 1850`, `subtotalAfterDiscount: 16650`                         |
+| `{ "code": "QUICK10", "subtotal": 117500 }`        | 200    | `discount: 5000` (10% would be 11,750, but the cap is ₦5,000)            |
+| `{ "code": "QUICK10", "subtotal": 9000 }`          | 400    | QUICK10 needs an order of at least ₦10,000. Add ₦1,000 more to use it.   |
+| `{ "code": "QUICK10", "subtotal": 12345 }`         | 200    | `discount: 1235` (1234.5 rounded)                                        |
+| `{ "code": "FREEMONEY", "subtotal": 50000 }`       | 400    | "FREEMONEY" is not a valid promo code.                                   |
+| `{ "code": "", "subtotal": 50000 }`                | 400    | Please enter a promo code.                                               |
+| `{ "code": "QUICK10" }`                            | 400    | Your cart is empty.                                                      |
+
+**Expired and switched-off codes:** in Atlas, edit QUICK10 and set `isActive` to `false`. The QUICK10 rows now give
+"not a valid promo code". Set it back to `true` (or just run `npm run seed`). An `expiresAt` date in the past does
+the same.
+
+I ran this exact code against a throwaway database, and every row above passed. I also tested an expired code, a
+switched-off code, a subtotal sent as text (`"20000"`, which works) and a request with no body at all (400).
+
+### 21.8 Commit
+
+```bash
+git add .
+git commit -m "STEP 21: promo codes (QUICK25, QUICK10)"
+git push
+```
+
+➡️ **Next: STEP 22 (Orders: place an order at checkout with real prices from the database, delivery fee and promo
+code, order numbers like #QC-1042, my orders, order details, cancel within 1 hour, and a Brevo confirmation
+email).** Reply **NEXT** when 21.7 checks out.
