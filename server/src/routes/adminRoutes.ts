@@ -5,6 +5,7 @@
 // STEP 25 (part 4): Admin routes
 
 import { Router } from "express";
+import { env } from "../config/env";
 import {
   createCategory,
   deleteCategory,
@@ -32,6 +33,7 @@ import {
   updateOrderStatus,
 } from "../controllers/adminOrderController";
 import { getDashboard } from "../controllers/adminDashboardController";
+import { advanceOrders, resetDemo } from "../controllers/demoController";
 
 const router = Router();
 
@@ -64,5 +66,12 @@ router.patch("/orders/:orderNumber/status", updateOrderStatus);
 // Customers (STEP 26)
 router.get("/customers", getCustomers);
 router.get("/customers/:id", getCustomer);
+
+// Demo panel (STEP 28). Only when demo mode is on (env.ts): on while developing, OFF on the built, online
+// server unless DEMO_MODE=true. When it's off these routes don't exist, so they answer 404 like any unknown URL.
+if (env.demoMode) {
+  router.post("/demo/reset", resetDemo);
+  router.post("/demo/advance-orders", advanceOrders);
+}
 
 export default router;

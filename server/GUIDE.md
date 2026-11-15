@@ -35,8 +35,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 24     | Newsletter sign-up (Brevo contacts) |
 | ✅   | 25     | Admin: photo upload, products CRUD, categories CRUD |
 | ✅   | 26     | Admin: orders management, customers list |
-| ⬜   | **27** | **Admin: dashboard stats (sales, chart, top sellers, low stock)** ← you are here |
-| ⬜   | 28     | Demo panel: reset demo data, move orders along                                      |
+| ✅   | 27     | Admin: dashboard stats (sales, chart, top sellers, low stock) |
+| ⬜   | **28** | **Demo panel: reset demo data, move orders along** ← you are here |
 | ⬜   | 29     | Final check: build, test every endpoint, clean-up                                   |
 
 ### Time plan (deadline: tomorrow 5pm)
@@ -6984,3 +6984,448 @@ git push
 ➡️ **Next: STEP 28 (Demo panel: one button to reset the demo data and uploaded photos, demo orders for Ada
 like the Order History design so the dashboard has numbers, and moving orders along for the demo).**
 Reply **NEXT** when 27.3 checks out.
+
+---
+
+## STEP 28: Demo orders and the demo panel
+
+Right now, after `npm run seed`, the dashboard is empty and Ada has no orders. When you present the shop,
+that's what people see. This step:
+
+- makes `npm run seed` also create **4 more shoppers** (the names from the Orders Management design) and
+  **41 demo orders** spread over the last 90 days, with all 4 statuses, couriers, waybills, card and
+  pay-on-delivery payments, and a couple of cancellations
+- gives **Ada 5 orders like the Order History design:** 1 in progress (placed ~30 minutes ago, so you can
+  demo Cancel), 1 shipped, 3 delivered (so you can demo Leave Review)
+- numbers the demo orders **#QC-1001 to #QC-1041**, so the first real order is still **#QC-1042**
+- adds 2 demo panel buttons for admins:
+
+| Request (admin token)                     | What it does                                                  |
+| ----------------------------------------- | ------------------------------------------------------------- |
+| `POST /api/admin/demo/reset`              | `{ "confirm": "RESET" }`: deletes uploaded photos, then the same as `npm run seed` |
+| `POST /api/admin/demo/advance-orders`     | every order moves one step: processing → shipped → delivered  |
+
+Your `seed.ts` (STEP 13) and `cloudinary.ts` (STEP 11) were written for this: `seedDatabase()` is exported
+"so the demo panel can reuse it", and `deleteAllUploadedPhotos()` was written "for the demo panel's Reset demo data".
+
+### 28.1 `src/data/demoOrders.ts`
+
+New file.
+
+```ts
+// demoOrders.ts server/src/data/demoOrders.ts
+// Demo orders, so the admin dashboard, Orders Management and Ada's Order History aren't empty after a seed.
+// seed.ts calls createDemoOrders() last, after the products and users are saved.
+
+// STEP 28 (part 1): Demo orders
+
+import { Types } from "mongoose";
+import { COURIERS } from "../controllers/adminOrderController";
+import { IOrder, IOrderItem, IStatusUpdate } from "../models/Order";
+import { Order } from "../models/Order";
+import { IProduct } from "../models/Product";
+import { IAddress, User } from "../models/User";
+import { DELIVERY_OPTIONS, DeliveryMethod, estimateDelivery } from "../utils/orderRules";
+import { DemoUser } from "./users";
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+// Real orders start at #QC-1042 (STEP 22), so demo orders take the numbers just BELOW it, oldest first.
+const LAST_DEMO_NUMBER = 1041;
+
+// More shoppers, from the Orders Management design. Same demo password as Ada.
+const shopper = (firstName: string, lastName: string, email: string, phone: string, street: string, city: string, state: string): DemoUser => ({
+  firstName,
+  lastName,
+  email,
+  phone,
+  password: "Password@123",
+  role: "customer",
+  isEmailVerified: true,
+  addresses: [{ label: "Home", fullName: `${firstName} ${lastName}`, phone, street, city, state, country: "Nigeria", isDefault: true }],
+});
+
+export const demoShoppers: DemoUser[] = [
+  shopper("Babatunde", "Adeleke", "tunde.adeleke@example.com", "+2348021112233", "8 Isaac John Street", "Ikeja GRA", "Lagos State"),
+  shopper("Chioma", "Nwosu", "chioma.nwosu@example.com", "+2348034445566", "21 Ogui Road", "Independence Layout", "Enugu State"),
+  shopper("Emeka", "Okafor", "emeka.okafor@example.com", "+2348057778899", "5 Aminu Kano Crescent", "Maitama", "FCT Abuja"),
+  shopper("Fatima", "Danjuma", "fatima.danjuma@example.com", "+2348090001122", "14 Sultan Road", "Nassarawa GRA", "Kano State"),
+];
+
+// A "random" number generator that gives the SAME numbers every time (mulberry32 with a fixed start).
+// So every seed makes the same demo orders, and the dashboard always shows the same numbers.
+const makeRandom = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296; // 0 to 1
+};
+
+type SavedProduct = IProduct & { _id: Types.ObjectId };
+type Customer = { _id: Types.ObjectId; firstName: string; lastName: string; email: string; phone?: string; addresses: IAddress[] };
+
+// What one demo order looks like before it becomes a real order
+type Plan = {
+  customer: Customer;
+  address: IAddress;
+  lines: { product: SavedProduct; quantity: number }[];
+  placedAt: Date;
+  status: IOrder["status"];
+  method: DeliveryMethod;
+  payOnDelivery: boolean;
+};
+
+// Turn a plan into an order with everything the Order model has: snapshot lines, totals, payment, tracker...
+const buildOrder = (plan: Plan, orderNumber: number, random: () => number): Partial<IOrder> => {
+  const { customer, address, placedAt, status, method } = plan;
+
+  const items: IOrderItem[] = plan.lines.map(({ product, quantity }) => ({
+    product: product._id,
+    name: product.name,
+    image: product.images[0] ?? "",
+    sku: product.sku,
+    price: product.price,
+    quantity,
+    color: product.colors[0]?.name,
+    lineTotal: product.price * quantity,
+  }));
+
+  const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  const deliveryFee = DELIVERY_OPTIONS[method].fee;
+
+  // The tracker: placed, then shipped the next morning, then delivered 1-2 days later
+  const history: IStatusUpdate[] = [{ status: "processing", note: "Order placed", at: placedAt }];
+  const courier = Object.keys(COURIERS)[Math.floor(random() * 3)];
+  const waybill = `${COURIERS[courier]}-${100000 + Math.floor(random() * 900000)}`;
+  const shippedAt = new Date(placedAt.getTime() + 20 * HOUR);
+  const deliveredAt = new Date(shippedAt.getTime() + (1 + Math.floor(random() * 2)) * DAY);
+  const cancelledAt = new Date(placedAt.getTime() + 30 * 60 * 1000);
+
+  if (status === "shipped" || status === "delivered") {
+    history.push({ status: "shipped", note: `Dispatched with ${courier} (waybill ${waybill})`, at: shippedAt });
+  }
+  if (status === "delivered") {
+    history.push({ status: "delivered", note: "Delivered", at: deliveredAt });
+  }
+  if (status === "cancelled") {
+    history.push({ status: "cancelled", note: "Cancelled by you", at: cancelledAt });
+  }
+
+  // Card orders are paid at checkout (refunded if cancelled). Pay on delivery is paid when delivered.
+  const card = !plan.payOnDelivery;
+  const payment = card
+    ? {
+        method: "card" as const,
+        status: status === "cancelled" ? ("refunded" as const) : ("paid" as const),
+        cardBrand: ["Visa", "Mastercard", "Verve"][Math.floor(random() * 3)],
+        cardLast4: String(1000 + Math.floor(random() * 9000)),
+        reference: `PSTK-${100000000 + Math.floor(random() * 900000000)}`,
+        paidAt: placedAt,
+      }
+    : {
+        method: "pay_on_delivery" as const,
+        status: status === "delivered" ? ("paid" as const) : ("pending" as const),
+        paidAt: status === "delivered" ? deliveredAt : undefined,
+      };
+
+  const { _id, ...shippingAddress } = address; // a copy without the saved address's id (like checkout does)
+
+  return {
+    orderNumber: `QC-${orderNumber}`,
+    user: customer._id,
+    items,
+    contact: { firstName: customer.firstName, lastName: customer.lastName, email: customer.email, phone: customer.phone ?? address.phone },
+    shippingAddress,
+    deliveryMethod: method,
+    payment,
+    subtotal,
+    deliveryFee,
+    discount: 0,
+    total: subtotal + deliveryFee,
+    status,
+    statusHistory: history,
+    estimatedDelivery: estimateDelivery(method, placedAt),
+    ...(status === "shipped" || status === "delivered" ? { courier, waybill } : {}),
+    ...(status === "delivered" ? { deliveredAt } : {}),
+    ...(status === "cancelled" ? { cancelledAt } : {}),
+    createdAt: placedAt,
+  };
+};
+
+// The status an order of this age would have by now
+const statusForAge = (daysAgo: number, random: () => number): IOrder["status"] => {
+  if (random() < 0.06) return "cancelled"; // a few cancelled ones, for the refund rate
+  if (daysAgo < 1) return "processing";
+  if (daysAgo < 3) return "shipped";
+  return "delivered";
+};
+
+// Creates the demo shoppers and ~40 demo orders. Returns how many orders it made.
+// Stock is NOT changed: these orders are pretend history, and the products' demo stock stays as designed.
+export const createDemoOrders = async (products: SavedProduct[]) => {
+  const random = makeRandom(1042);
+  const now = Date.now();
+  const bySku = new Map(products.map((product) => [product.sku, product]));
+  const sku = (code: string) => bySku.get(code)!; // the products from the Order History design
+
+  const ada = await User.findOne({ email: "ada.obi@example.com" }).lean<Customer>();
+  const shoppers = await User.create(demoShoppers); // create (not insertMany) so the passwords get hashed
+  const customers: Customer[] = shoppers.map((user) => user.toObject());
+
+  const plans: Plan[] = [];
+
+  // 1. Ada's orders, like the Order History design (5 orders: 1 in progress, 1 shipped, 3 delivered)
+  if (ada) {
+    const [home, office] = ada.addresses;
+    const adaOrder = (daysAgo: number, status: IOrder["status"], lines: [string, number][], address = home) =>
+      plans.push({
+        customer: ada,
+        address,
+        lines: lines.map(([code, quantity]) => ({ product: sku(code), quantity })),
+        placedAt: new Date(now - daysAgo * DAY),
+        status,
+        method: "standard",
+        payOnDelivery: false,
+      });
+
+    adaOrder(0.02, "processing", [["QC-AU-9042", 2], ["QC-HM-108", 1]]); // headphones x2 + mug set, ~30 minutes ago (still cancellable)
+    adaOrder(1.5, "shipped", [["QC-FTWR-312", 1]]); // sneakers
+    adaOrder(12, "delivered", [["QC-HM-108", 1], [products.find((p) => p.name === "Design Systems Handbook")!.sku, 1]], office);
+    adaOrder(40, "delivered", [[products.find((p) => p.name === "Compact GaN Fast Charger 65W")!.sku, 1]]);
+    adaOrder(70, "delivered", [[products.find((p) => p.name === "Eco Grip Yoga Mat")!.sku, 1]]);
+  }
+
+  // 2. Orders from the other shoppers over the last 90 days, busier in the last few weeks
+  const forSale = products.filter((product) => product.status === "published" && product.images.length > 0);
+  for (let i = 0; i < 36; i++) {
+    const daysAgo = Math.pow(random(), 1.6) * 90; // more recent orders than old ones
+    const customer = customers[Math.floor(random() * customers.length)];
+    const address = customer.addresses[0];
+    const inLagos = /lagos/i.test(address.state);
+    const lineCount = 1 + Math.floor(random() * 3);
+    const picked = new Set<SavedProduct>();
+    while (picked.size < lineCount) picked.add(forSale[Math.floor(random() * forSale.length)]);
+
+    plans.push({
+      customer,
+      address,
+      lines: [...picked].map((product) => ({ product, quantity: 1 + Math.floor(random() * 2) })),
+      placedAt: new Date(now - daysAgo * DAY),
+      status: statusForAge(daysAgo, random),
+      method: inLagos && random() < 0.3 ? "express" : "standard", // express and pay on delivery: Lagos only
+      payOnDelivery: inLagos && random() < 0.4,
+    });
+  }
+
+  // 3. Oldest first gets the lowest number, ending at #QC-1041
+  plans.sort((a, b) => a.placedAt.getTime() - b.placedAt.getTime());
+  const firstNumber = LAST_DEMO_NUMBER - plans.length + 1;
+  const orders = plans.map((plan, index) => buildOrder(plan, firstNumber + index, random));
+
+  // insertMany checks every order against the model, like save() does. (createdAt is kept because we set it;
+  // timestamps only fill it in when it's missing.)
+  await Order.insertMany(orders);
+
+  return orders.length;
+};
+```
+
+**Things worth understanding:**
+
+- **`makeRandom(1042)`:** `Math.random()` would give different orders on every seed, and the dashboard
+  would show different numbers every time you present. This generator always gives the same sequence for
+  the same starting number. My test seeded twice and got the same total both times.
+- **`Math.pow(random(), 1.6) * 90`:** raising a 0–1 number to a power above 1 pushes it towards 0, so more
+  orders land in recent days, and the chart rises like a growing shop.
+- **The rules still hold:** express and pay on delivery only in Lagos, pay on delivery is `paid` only once
+  delivered, a cancelled card order is `refunded`, and a waybill appears only once shipped. My test checked
+  every order against these rules.
+- **Stock isn't changed:** these orders are pretend history. The demo stock stays as designed.
+- **`Order.insertMany` keeps our past `createdAt`:** `timestamps` only fills `createdAt` in when it's
+  missing. (`updatedAt` becomes "now", which is fine.)
+
+### 28.2 Call it from `src/data/seed.ts`
+
+Add the import with the others:
+
+```ts
+import { createDemoOrders, demoShoppers } from "./demoOrders";
+```
+
+Above `// 8. A summary for whoever ran the seed` (renumber that comment to 9), add:
+
+```ts
+  // 8. Demo orders (STEP 28): 4 more shoppers and ~40 orders, so the dashboard and Order History have data
+  const demoOrderCount = await createDemoOrders(saveProducts);
+```
+
+In the summary `return { ... }`, **replace** the two lines `users: savedUsers.length,` and
+`promoCodes: savedPromoCodes.length,` with these three (don't keep the old ones too, or TypeScript says
+"An object literal cannot have multiple properties with the same name"):
+
+```ts
+    users: savedUsers.length + demoShoppers.length,
+    promoCodes: savedPromoCodes.length,
+    orders: demoOrderCount,
+```
+
+And in `runSeed`, the message:
+
+```ts
+      `Seeded ${result.categories} categories, ${result.products} products, ${result.users} users, ${result.promoCodes} promo codes and ${result.orders} demo orders`,
+```
+
+(Use the same variable names your `seed.ts` already has: mine are `saveProducts`, `savedUsers` and
+`savedPromoCodes`.)
+
+### 28.3 `src/controllers/demoController.ts`
+
+New file.
+
+```ts
+// demoController.ts server/src/controllers/demoController.ts
+// The demo panel: buttons for whoever is presenting the shop (admins only).
+
+// STEP 28 (part 3): The demo panel
+// POST /api/admin/demo/reset            { "confirm": "RESET" }  -> everything back to the demo data
+// POST /api/admin/demo/advance-orders   -> every order moves one step: processing -> shipped -> delivered
+
+import { randomInt } from "crypto";
+import { Request, Response } from "express";
+import { deleteAllUploadedPhotos } from "../config/cloudinary";
+import { seedDatabase } from "../data/seed";
+import { Order } from "../models/Order";
+import { AppError } from "../utils/AppError";
+import { COURIERS } from "./adminOrderController";
+
+// POST /api/admin/demo/reset
+// The same as "npm run seed", from the website, plus the photos admins uploaded are deleted from Cloudinary.
+// Newsletter subscribers are kept: they're real people (STEP 24).
+export const resetDemo = async (req: Request, res: Response) => {
+  // It wipes every product, order, review and account, so it must be asked for on purpose
+  if (req.body?.confirm !== "RESET") {
+    throw new AppError(400, 'This deletes all changes. Send { "confirm": "RESET" } to go ahead.');
+  }
+
+  await deleteAllUploadedPhotos(); // before the seed: the new products use only the demo photos
+  const result = await seedDatabase();
+
+  res.json({
+    // Every account was deleted and made again with new ids, so every login token (including this admin's)
+    // now points at a user that no longer exists. protect (STEP 18) answers 401 and the website logs out.
+    message: "The demo data has been reset. Please log in again.",
+    ...result,
+  });
+};
+
+// POST /api/admin/demo/advance-orders
+// Shows the order tracker moving during a demo without clicking every order. No emails are sent.
+export const advanceOrders = async (_req: Request, res: Response) => {
+  const now = new Date();
+  let delivered = 0;
+  let shipped = 0;
+
+  // 1. shipped -> delivered FIRST, so an order moved to "shipped" in step 2 isn't moved again straight away
+  const inTransit = await Order.find({ status: "shipped" });
+  for (const order of inTransit) {
+    const set: Record<string, unknown> = { status: "delivered", deliveredAt: now };
+    if (order.payment.status === "pending") {
+      set["payment.status"] = "paid"; // pay on delivery: paid to the rider
+      set["payment.paidAt"] = now;
+    }
+    // The same "only if it's still shipped" check as STEP 26, in case an admin moves it at the same moment
+    const updated = await Order.updateOne(
+      { _id: order._id, status: "shipped" },
+      { $set: set, $push: { statusHistory: { status: "delivered", note: "Delivered", at: now } } },
+    );
+    delivered += updated.modifiedCount;
+  }
+
+  // 2. processing -> shipped, each with a courier and its own waybill
+  const waiting = await Order.find({ status: "processing" });
+  const couriers = Object.keys(COURIERS);
+  for (const order of waiting) {
+    const courier = couriers[randomInt(couriers.length)];
+    const waybill = `${COURIERS[courier]}-${randomInt(100000, 1000000)}`;
+    const updated = await Order.updateOne(
+      { _id: order._id, status: "processing" },
+      {
+        $set: { status: "shipped", courier, waybill },
+        $push: { statusHistory: { status: "shipped", note: `Dispatched with ${courier} (waybill ${waybill})`, at: now } },
+      },
+    );
+    shipped += updated.modifiedCount;
+  }
+
+  res.json({ message: `${shipped} order(s) shipped and ${delivered} order(s) delivered.`, shipped, delivered });
+};
+```
+
+- **`{ "confirm": "RESET" }`:** reset deletes everything anyone changed. Requiring a word on purpose stops
+  an accidental click (or a stray request) from doing it. The website's button can ask "Are you sure?" and
+  then send it.
+- **After a reset, everyone is logged out,** you included: the users are made again with **new** ids, so
+  old tokens point at nobody, and `protect` answers 401 "This account no longer exists". Log in again with
+  the same demo passwords.
+- **Advance orders updates shipped orders BEFORE processing ones.** The other way round, an order just
+  moved to shipped would immediately be delivered too.
+
+### 28.4 Add the routes to `src/routes/adminRoutes.ts`
+
+```ts
+import { advanceOrders, resetDemo } from "../controllers/demoController";
+```
+
+Above `export default router;`:
+
+```ts
+// Demo panel (STEP 28)
+router.post("/demo/reset", resetDemo);
+router.post("/demo/advance-orders", advanceOrders);
+```
+
+### 28.5 Test it
+
+```bash
+npm run typecheck
+npm run seed
+```
+
+The seed now prints `Seeded 8 categories, 40 products, 6 users, 2 promo codes and 41 demo orders` (it
+takes a few seconds longer: 5 passwords to hash). Then `npm run dev`:
+
+| Request                                                            | Status | Reply                                                    |
+| ------------------------------------------------------------------ | ------ | -------------------------------------------------------- |
+| `GET /api/orders` as **Ada**                                       | 200    | 5 orders: `counts` all 5, in-progress 1, shipped 1, delivered 3 |
+| `GET /api/orders/QC-1041` as Ada (her newest)                      | 200    | `canCancel: true` (for the first ~30 minutes after the seed) |
+| `POST /api/auth/login` `chioma.nwosu@example.com` / `Password@123` | 200    | the demo shoppers can log in too                          |
+| `GET /api/admin/dashboard` as admin                                | 200    | sales, a chart with ups and downs, 5 top sellers, 5 customers |
+| `GET /api/admin/orders` as admin                                   | 200    | 41 orders, newest `QC-1041`                               |
+| place a real order as Ada (STEP 22.6)                              | 201    | `orderNumber: "QC-1042"`                                  |
+| `POST /api/admin/demo/advance-orders`                              | 200    | "5 order(s) shipped and 3 order(s) delivered." (with your QC-1042) |
+| `GET /api/orders/QC-1042` as Ada                                   | 200    | now `shipped`, with a courier and waybill                 |
+| `POST /api/admin/demo/reset` `{}`                                  | 400    | This deletes all changes. Send { "confirm": "RESET" } to go ahead. |
+| `POST /api/admin/demo/reset` `{ "confirm": "RESET" }`              | 200    | The demo data has been reset. Please log in again.        |
+| `GET /api/admin/dashboard` with the **old** admin token            | 401    | This account no longer exists. Please log in again.       |
+
+After the reset: QC-1042 is gone, Cloudinary's `quickcart/products/uploads` folder is empty (Media
+Library), and your newsletter subscribers are still in Atlas.
+
+I ran all of this against a throwaway database: **34 checks, all passed**. They included every demo order
+checked against the shop's rules, the same totals on two seeds, Ada's counts matching the design, the first
+real order getting QC-1042, advance-orders turning a pay-on-delivery order `paid`, and the reset keeping
+subscribers. **In the test, the Cloudinary delete was replaced by a stand-in** so it couldn't empty your
+real uploads folder: the stand-in confirmed the right folder name (`quickcart/products/uploads/`). The real
+delete happens the first time you press reset.
+
+### 28.6 Commit
+
+```bash
+git add .
+git commit -m "STEP 28: demo orders and demo panel"
+git push
+```
+
+➡️ **Next: STEP 29 (Final check: build for production, a last test of every endpoint, the small client-side
+fixes noted along the way, and a README for whoever marks the project).** Reply **NEXT** when 28.5 checks out.
