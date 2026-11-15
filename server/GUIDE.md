@@ -30,8 +30,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 19B    | Real emails with Brevo (`sendEmail`)                                                |
 | ✅   | 20     | My Account: profile, change password, addresses, saved items                        |
 | ✅   | 21     | Promo codes (`QUICK25`, `QUICK10`) |
-| ⬜   | **22** | **Orders: checkout, my orders, order details, cancel within 1 hour** ← you are here |
-| ⬜   | 23     | Reviews (only buyers of delivered orders)                                           |
+| ✅   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour |
+| ⬜   | **23** | **Reviews (only buyers of delivered orders)** ← you are here |
 | ⬜   | 24     | Newsletter sign-up                                                                  |
 | ⬜   | 25     | Admin: photo upload, products CRUD, categories CRUD                                 |
 | ⬜   | 26     | Admin: orders management, customers list                                            |
@@ -4536,3 +4536,510 @@ git push
 
 ➡️ **Next: STEP 23 (Reviews: only customers whose order was delivered can review a product, and the product's
 star rating updates).** Reply **NEXT** when 22.8 checks out.
+
+---
+
+## STEP 23: Reviews (only customers who received the product)
+
+The product page has a **Customer Reviews (248)** tab with the stars and the 5★–1★ bars, and Order History has a
+**Leave Review** button on delivered orders. This step adds:
+
+- a **Review** model: stars (1–5), an optional title, a comment, and the shopper's name as "Ada O."
+- **The rule:** you can review a product only if one of **your delivered orders** has it. Ordering isn't enough:
+  an order that's still on its way doesn't count. One review per customer per product, which they can edit or delete.
+- **The product's stars update** when a review is written, edited or deleted: `ratings`, `reviewCount` and the
+  5 bars (`ratingCounts`).
+
+| Request                                   | Login? | What it's for                                                  |
+| ----------------------------------------- | ------ | -------------------------------------------------------------- |
+| `GET /api/reviews/product/:idOrSlug`      | no     | the Customer Reviews tab (stars summary + a page of reviews)   |
+| `GET /api/reviews/mine`                   | yes    | which products I've reviewed (Order History's Leave Review)    |
+| `GET /api/reviews/can-review/:productId`  | yes    | show or hide "Write a review" on the product page              |
+| `POST /api/reviews`                       | yes    | write a review                                                 |
+| `PATCH /api/reviews/:reviewId`            | yes    | edit my review                                                 |
+| `DELETE /api/reviews/:reviewId`           | yes    | delete my review (an admin can delete any review)              |
+
+### 23.0 First: fix `RATING_SHARE` in `src/data/demoData.ts` (STEP 12)
+
+Your last two rows say `minRating: 4.7`, and two of the shares are different from the guide:
+
+```ts
+  { minRating: 4.7, shares: [50, 20, 12, 6, 4] },   // ❌
+  { minRating: 4.7, shares: [35, 30, 10, 10, 7] },  // ❌
+```
+
+Change them to:
+
+```ts
+  { minRating: 4.0, shares: [50, 28, 12, 6, 4] },
+  { minRating: 0, shares: [35, 30, 18, 10, 7] },
+```
+
+**Why it matters:** `.find(...)!` promises "there's always a match". With 4.7 / 4.4 / 4.7 / 4.7, a product rated
+**4.2** matches no row, and `npm run seed` crashes with *"Cannot destructure property 'shares' ... as it is
+undefined"*. It works today only because your one 4.2 product has its own `ratingCounts`. Each row's shares
+should also add up to 100 (yours add up to 92). The last row has `minRating: 0`, so **every** rating matches
+something. I ran both versions: before the fix, 4.2 and 3.1 crash; after, they give `[50, 28, 12, 6, 4]` and
+`[35, 30, 18, 10, 7]`.
+
+### 23.1 Two tiny `export`s in `src/controllers/productController.ts`
+
+The reviews code reads `?page=` and `?limit=` and "id or slug" the same way as the products API:
+
+```ts
+export const wholeNumber = (value: unknown, fallback: number) => {
+```
+
+```ts
+export const OBJECT_ID = /^[a-f0-9]{24}$/i;
+```
+
+(Both were `const ...` before.)
+
+### 23.2 `src/models/Review.ts`
+
+New file.
+
+```ts
+// Review model server/src/models/Review.ts
+// A customer's star rating and comment on a product they bought AND received.
+
+// STEP 23 (part 1): The Review model
+
+import { model, Schema, Types } from "mongoose";
+
+export interface IReview {
+  product: Types.ObjectId;
+  user: Types.ObjectId;
+  order: Types.ObjectId; // the delivered order that proves they bought it ("Verified Purchase")
+  name: string; // shown on the review, e.g. "Ada O." (never the email)
+  rating: number; // 1 to 5 stars
+  title?: string; // e.g. "Best headphones I've owned"
+  comment: string;
+  createdAt: Date;
+}
+
+const reviewSchema = new Schema<IReview>(
+  {
+    product: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+    user: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    order: { type: Schema.Types.ObjectId, ref: "Order", required: true },
+    name: { type: String, required: true },
+    rating: {
+      type: Number,
+      required: [true, "Please choose a star rating."],
+      cast: "Rating must be a whole number from 1 to 5.", // "abc" -> this message instead of "Cast to Number failed"
+      min: [1, "Rating must be a whole number from 1 to 5."],
+      max: [5, "Rating must be a whole number from 1 to 5."],
+      validate: { validator: Number.isInteger, message: "Rating must be a whole number from 1 to 5." }, // no 4.5
+    },
+    title: { type: String, trim: true, maxlength: [100, "The title can be at most 100 characters."] },
+    comment: {
+      type: String,
+      required: [true, "Please write a few words about the product."],
+      trim: true,
+      maxlength: [1000, "Your review can be at most 1,000 characters."],
+    },
+  },
+  { timestamps: true },
+);
+
+// One review per customer per product. (MongoDB refuses a second one even if two requests arrive together.)
+reviewSchema.index({ product: 1, user: 1 }, { unique: true });
+
+// The product page lists a product's reviews, newest first: this index makes that fast
+reviewSchema.index({ product: 1, createdAt: -1 });
+
+export const Review = model<IReview>("Review", reviewSchema);
+```
+
+### 23.3 `src/controllers/reviewController.ts`
+
+New file.
+
+```ts
+// reviewController.ts server/src/controllers/reviewController.ts
+// Product reviews. Only customers who bought a product AND received it (a delivered order) can review it.
+
+// STEP 23 (part 2): Reviews
+// GET    /api/reviews/product/:idOrSlug     -> a product's reviews (public), ?rating=5&sort=highest&page=2
+// GET    /api/reviews/mine                  -> my reviews (the "Leave Review" buttons on Order History)
+// GET    /api/reviews/can-review/:productId -> may I review this product? (shows or hides "Write a review")
+// POST   /api/reviews                       -> write a review
+// PATCH  /api/reviews/:reviewId             -> edit my review
+// DELETE /api/reviews/:reviewId             -> delete my review (an admin can delete any review)
+
+import { Request, Response } from "express";
+import { isValidObjectId, Types } from "mongoose";
+import { Order } from "../models/Order";
+import { liveProducts, Product } from "../models/Product";
+import { Review } from "../models/Review";
+import { AppError } from "../utils/AppError";
+import { OBJECT_ID, wholeNumber } from "./productController";
+
+const me = (req: Request) => req.user!;
+
+// What a shopper sees on a review (no user id, no order id)
+const PUBLIC_FIELDS = "name rating title comment createdAt";
+
+// ===== Helpers =====
+
+// The product's stars change when a review is written (add), deleted (remove) or its stars are edited (both).
+// The demo products already have made-up ratings (e.g. 4.8 from 248 reviews), so we ADJUST those numbers
+// instead of recalculating from the reviews in the database (that would wipe out the demo numbers).
+const updateProductRating = async (productId: Types.ObjectId, change: { add?: number; remove?: number }) => {
+  const product = await Product.findById(productId).select("ratings reviewCount ratingCounts");
+  if (!product) return; // the product was deleted: nothing to update
+
+  const counts = [0, 1, 2, 3, 4].map((i) => product.ratingCounts[i] ?? 0); // always 5 bars: [5★, 4★, 3★, 2★, 1★]
+  let starsTotal = product.ratings * product.reviewCount; // 4.8 x 248 = all the stars added up
+  let reviewCount = product.reviewCount;
+
+  if (change.remove) {
+    counts[5 - change.remove] = Math.max(0, counts[5 - change.remove] - 1); // 5★ is counts[0], 1★ is counts[4]
+    starsTotal -= change.remove;
+    reviewCount -= 1;
+  }
+
+  if (change.add) {
+    counts[5 - change.add] += 1;
+    starsTotal += change.add;
+    reviewCount += 1;
+  }
+
+  reviewCount = Math.max(0, reviewCount);
+  const average = reviewCount > 0 ? starsTotal / reviewCount : 0;
+
+  await Product.updateOne(
+    { _id: productId },
+    {
+      $set: {
+        ratingCounts: counts,
+        reviewCount,
+        ratings: Math.min(5, Math.max(0, Math.round(average * 100) / 100)), // 4.8008 -> 4.8, always 0 to 5
+      },
+    },
+  );
+};
+
+// "Ada Obi" -> "Ada O.", "bola tinubu" -> "Bola T." (enough to feel real, without showing the full name)
+const displayName = (user: { firstName: string; lastName: string }) => {
+  const first = user.firstName.charAt(0).toUpperCase() + user.firstName.slice(1);
+  return `${first} ${user.lastName.charAt(0).toUpperCase()}.`;
+};
+
+// One of my delivered orders that has this product in it (or null)
+const deliveredOrderWith = (userId: Types.ObjectId, productId: string) =>
+  Order.findOne({ user: userId, status: "delivered", "items.product": productId }).select("_id orderNumber");
+
+// One of MY reviews from the URL. Someone else's review = 404.
+const findMyReview = async (req: Request<{ reviewId: string }>) => {
+  const review = isValidObjectId(req.params.reviewId)
+    ? await Review.findOne({ _id: req.params.reviewId, user: me(req)._id })
+    : null;
+
+  if (!review) {
+    throw new AppError(404, "Review not found");
+  }
+
+  return review;
+};
+
+// ===== Public =====
+
+// How the reviews can be sorted
+const SORTS = new Map<string, Record<string, 1 | -1>>([
+  ["newest", { createdAt: -1 }],
+  ["oldest", { createdAt: 1 }],
+  ["highest", { rating: -1, createdAt: -1 }],
+  ["lowest", { rating: 1, createdAt: -1 }],
+]);
+
+// GET /api/reviews/product/smart-watch-ultra?rating=5&sort=highest&page=1&limit=10
+export const getProductReviews = async (req: Request<{ idOrSlug: string }>, res: Response) => {
+  const { idOrSlug } = req.params;
+  const which = OBJECT_ID.test(idOrSlug) ? { _id: idOrSlug } : { slug: idOrSlug.toLowerCase() };
+
+  const product = await Product.findOne({ $and: [which, liveProducts()] }).select("ratings reviewCount ratingCounts");
+  if (!product) {
+    throw new AppError(404, "Product not found");
+  }
+
+  const filter: Record<string, unknown> = { product: product._id };
+
+  // ?rating=5: clicking the "5 star" bar shows only 5-star reviews
+  const rating = Number(req.query.rating);
+  if (Number.isInteger(rating) && rating >= 1 && rating <= 5) {
+    filter.rating = rating;
+  }
+
+  const sort = SORTS.get(String(req.query.sort)) ?? SORTS.get("newest")!;
+  const limit = Math.min(wholeNumber(req.query.limit, 10), 50);
+  const page = wholeNumber(req.query.page, 1);
+
+  const [reviews, total] = await Promise.all([
+    Review.find(filter)
+      .select(PUBLIC_FIELDS)
+      .sort(sort)
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Review.countDocuments(filter),
+  ]);
+
+  res.json({
+    // the stars and bars at the top: "4.8 ★ (248)", 5★ ████████ 199 ...
+    summary: { ratings: product.ratings, reviewCount: product.reviewCount, ratingCounts: product.ratingCounts },
+    reviews,
+    total,
+    page,
+    pages: Math.ceil(total / limit),
+  });
+};
+
+// ===== Logged in =====
+
+// GET /api/reviews/mine -> all my reviews (with the product's name, slug and photo)
+export const getMyReviews = async (req: Request, res: Response) => {
+  const reviews = await Review.find({ user: me(req)._id })
+    .select(`${PUBLIC_FIELDS} product`)
+    .populate("product", "name slug images")
+    .sort({ createdAt: -1 });
+
+  res.json({ reviews });
+};
+
+// GET /api/reviews/can-review/:productId -> { canReview, reason, review }
+export const canReviewProduct = async (req: Request<{ productId: string }>, res: Response) => {
+  const { productId } = req.params;
+  if (!isValidObjectId(productId)) {
+    throw new AppError(404, "Product not found");
+  }
+
+  const review = await Review.findOne({ product: productId, user: me(req)._id });
+  if (review) {
+    return res.json({ canReview: false, reason: "You have already reviewed this product.", review });
+  }
+
+  const order = await deliveredOrderWith(me(req)._id, productId);
+  res.json({
+    canReview: Boolean(order),
+    reason: order ? null : "Only customers who have received this product can review it.",
+    review: null,
+  });
+};
+
+// POST /api/reviews   { "productId", "rating": 5, "title"?: "...", "comment": "..." }
+export const createReview = async (req: Request, res: Response) => {
+  const user = me(req);
+  const { productId, rating, title, comment } = req.body ?? {};
+
+  if (!isValidObjectId(productId) || !(await Product.exists({ $and: [{ _id: productId }, liveProducts()] }))) {
+    throw new AppError(404, "Product not found");
+  }
+
+  if (await Review.exists({ product: productId, user: user._id })) {
+    throw new AppError(409, "You have already reviewed this product. You can edit your review instead.");
+  }
+
+  // The rule: you must have RECEIVED it. Not just ordered: an order that's still on its way doesn't count.
+  const order = await deliveredOrderWith(user._id, productId);
+  if (!order) {
+    throw new AppError(403, "Only customers who have received this product can review it.");
+  }
+
+  let review;
+  try {
+    review = await Review.create({
+      product: productId,
+      user: user._id,
+      order: order._id,
+      name: displayName(user),
+      rating,
+      title,
+      comment,
+    }); // no stars, no comment, 6 stars -> the model's messages (400)
+  } catch (error) {
+    // Two clicks at the same moment: both passed the check above, the unique index stops the second one
+    if ((error as { code?: number }).code === 11000) {
+      throw new AppError(409, "You have already reviewed this product. You can edit your review instead.");
+    }
+    throw error;
+  }
+
+  await updateProductRating(review.product, { add: review.rating });
+
+  res.status(201).json({ message: "Thank you for your review!", review });
+};
+
+// PATCH /api/reviews/:reviewId   { "rating"?, "title"?, "comment"? }
+export const updateReview = async (req: Request<{ reviewId: string }>, res: Response) => {
+  const review = await findMyReview(req);
+  const oldRating = review.rating;
+  const { rating, title, comment } = req.body ?? {};
+
+  if (rating !== undefined) review.rating = rating;
+  if (title !== undefined) review.title = title;
+  if (comment !== undefined) review.comment = comment;
+
+  await review.save(); // the same rules as a new review
+
+  // 4 stars -> 5 stars: take the 4 out of the product's rating and put the 5 in
+  if (review.rating !== oldRating) {
+    await updateProductRating(review.product, { remove: oldRating, add: review.rating });
+  }
+
+  res.json({ message: "Your review has been updated.", review });
+};
+
+// DELETE /api/reviews/:reviewId
+export const deleteReview = async (req: Request<{ reviewId: string }>, res: Response) => {
+  const user = me(req);
+  if (!isValidObjectId(req.params.reviewId)) {
+    throw new AppError(404, "Review not found");
+  }
+
+  // Customers delete their own reviews. An admin can delete any review (e.g. a rude one).
+  const filter = user.role === "admin" ? { _id: req.params.reviewId } : { _id: req.params.reviewId, user: user._id };
+
+  // findOneAndDelete finds AND deletes in one step: deleting twice can't take the stars off twice
+  const review = await Review.findOneAndDelete(filter);
+  if (!review) {
+    throw new AppError(404, "Review not found");
+  }
+
+  await updateProductRating(review.product, { remove: review.rating });
+
+  res.json({ message: "The review has been deleted." });
+};
+```
+
+**Things worth understanding:**
+
+- **Why adjust the stars instead of recalculating them?** The demo products already say "4.8 from 248 reviews",
+  but those 248 reviews don't exist in the database. If we recalculated from the `reviews` collection, the first real
+  review would turn 4.8 (248) into, say, 4.0 (1). So we **add one rating to** (or take one out of) the numbers that
+  are already there: (4.8 × 248 + 4) ÷ 249 = 4.7968 → **4.8 (249)**.
+- **The `ratingCounts` order is [5★, 4★, 3★, 2★, 1★]** (the same as STEP 12), so a 5-star rating is
+  `counts[5 - 5] = counts[0]` and a 1-star rating is `counts[5 - 1] = counts[4]`.
+- **403 vs 404 vs 409:** 404 = no such product or review (or it isn't yours). 403 = it exists, but you're not
+  allowed (you haven't received it). 409 = you already reviewed it.
+- **`findOneAndDelete` and the unique index** stop double clicks from counting twice, like `cancelOrder` in STEP 22.
+- **The list says 248 but shows no reviews?** That's right for the demo products: the 248 are made-up numbers from
+  the demo data. The website should show "Customer Reviews (248)" from the product and list whatever real reviews come back.
+
+### 23.4 `src/routes/reviewRoutes.ts` and mount it
+
+New file:
+
+```ts
+// reviewRoutes.ts server/src/routes/reviewRoutes.ts
+// routes/index.ts puts these under /api/reviews.
+
+// STEP 23 (part 3): Review routes
+
+import { Router } from "express";
+import {
+  canReviewProduct,
+  createReview,
+  deleteReview,
+  getMyReviews,
+  getProductReviews,
+  updateReview,
+} from "../controllers/reviewController";
+import { protect } from "../middleware/auth";
+
+const router = Router();
+
+// Anyone can READ reviews
+router.get("/product/:idOrSlug", getProductReviews);
+
+// Everything else needs a login (protect on each route, because the route above must stay public)
+router.get("/mine", protect, getMyReviews);
+router.get("/can-review/:productId", protect, canReviewProduct);
+router.post("/", protect, createReview);
+router.patch("/:reviewId", protect, updateReview);
+router.delete("/:reviewId", protect, deleteReview);
+
+export default router;
+```
+
+In `src/routes/index.ts`:
+
+```ts
+import reviewRoutes from "./reviewRoutes";
+```
+
+```ts
+router.use("/reviews", reviewRoutes); // /api/reviews...
+```
+
+### 23.5 `npm run seed` also clears the reviews
+
+In `src/data/seed.ts`, add the import:
+
+```ts
+import { Review } from "../models/Review";
+```
+
+and in step 1, under `Counter.deleteMany({}),`:
+
+```ts
+    Review.deleteMany({}),
+```
+
+### 23.6 Test it
+
+```bash
+npm run typecheck
+npm run seed
+npm run dev
+```
+
+**Get ready (as Ada, with her token):**
+
+1. `GET /api/products/wireless-noise-cancelling-headphones` (or any product): note its `_id`, `ratings` (4.8),
+   `reviewCount` (248) and `ratingCounts` (`[203, 30, 10, 3, 2]`).
+2. Place an order with that product (STEP 22.8) and note its order number.
+
+| Request (Ada's token unless it says otherwise)                                              | Status | Reply                                                                  |
+| ------------------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------- |
+| `GET /api/reviews/product/wireless-noise-cancelling-headphones` (no token)                  | 200    | `summary: { ratings: 4.8, reviewCount: 248, ... }`, `reviews: []`      |
+| `GET /api/reviews/can-review/<product id>`                                                  | 200    | `canReview: false`, "Only customers who have received this product..." |
+| `POST /api/reviews` `{ "productId": "<id>", "rating": 5, "comment": "Great" }`              | 403    | Only customers who have received this product can review it.           |
+
+**Now "deliver" the order:** in Atlas, open the order and change `status` from `processing` to `delivered`.
+(The admin does this properly in STEP 26.)
+
+| Request                                                                                      | Status | Reply                                                     |
+| -------------------------------------------------------------------------------------------- | ------ | --------------------------------------------------------- |
+| `GET /api/reviews/can-review/<product id>`                                                   | 200    | `canReview: true`                                         |
+| `POST /api/reviews` with `"rating": 6` (or 0, or 4.5, or "abc")                              | 400    | Rating must be a whole number from 1 to 5.                |
+| `POST /api/reviews` with `"comment": ""`                                                     | 400    | Please write a few words about the product.               |
+| `POST /api/reviews` `{ "productId": "<id>", "rating": 4, "title": "Solid", "comment": "Great sound, very comfy." }` | 201 | `review.name: "Ada O."`, `rating: 4` |
+| the same `POST` again                                                                        | 409    | You have already reviewed this product. ...               |
+| `GET /api/products/<slug>`                                                                   | 200    | `reviewCount: 249`, `ratingCounts: [203, 31, 10, 3, 2]`, `ratings: 4.8` |
+| `GET /api/reviews/product/<slug>` (no token)                                                 | 200    | `reviews: [Ada's review]`, `total: 1` (no user id or order id in it) |
+| `GET /api/reviews/product/<slug>?rating=5`                                                   | 200    | `reviews: []` (Ada gave 4)                               |
+| `GET /api/reviews/mine`                                                                      | 200    | Ada's review, with the product's name, slug and photos   |
+| `PATCH /api/reviews/<review id>` `{ "rating": 5 }`                                           | 200    | `rating: 5`; the product's `ratingCounts` → `[204, 30, 10, 3, 2]` |
+| `PATCH /api/reviews/<review id>` with the **admin's** token                                  | 404    | Review not found (it's not the admin's review)           |
+| `DELETE /api/reviews/<review id>`                                                            | 200    | The review has been deleted.                              |
+| `GET /api/products/<slug>`                                                                   | 200    | back to 4.8, 248, `[203, 30, 10, 3, 2]`                  |
+
+An admin **can** `DELETE` anyone's review (for rude reviews): write it again, then delete it with the admin's token.
+
+I ran all of this against a throwaway database: **49 checks, all passed**. They include two "submit" clicks at the
+same moment (one 201, one 409, the count goes up once), two deletes at the same moment (the stars come off once),
+a brand-new product with no ratings (`[]` becomes `[0, 0, 0, 1, 0]` and `ratings: 2`, then back to 0), paging
+and sorting, and a name typed in small letters ("bola tinubu" shows as "Bola T.").
+
+### 23.7 Commit
+
+```bash
+git add .
+git commit -m "STEP 23: reviews (delivered buyers only) + fix RATING_SHARE"
+git push
+```
+
+➡️ **Next: STEP 24 (Newsletter: the "Subscribe to QuickCart VIP Drops" box in the footer, saved as Brevo
+contacts).** Reply **NEXT** when 23.6 checks out.

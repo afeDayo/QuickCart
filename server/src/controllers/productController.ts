@@ -43,7 +43,7 @@ const toNumber = (value: unknown) => {
 };
 
 // For page and limit: a whole number above 0, otherwise the fallback ("abc", "-3", "0" -> fallback)
-const wholeNumber = (value: unknown, fallback: number) => {
+export const wholeNumber = (value: unknown, fallback: number) => {
   const number = Math.floor(Number(text(value)));
   return number > 0 ? number : fallback;
 };
@@ -117,7 +117,7 @@ export const getProducts = async (req: Request, res: Response) => {
 };
 
 // A MongoDB id is exactly 24 characters of 0-9 and a-f
-const OBJECT_ID = /^[a-f0-9]{24}$/i;
+export const OBJECT_ID = /^[a-f0-9]{24}$/i;
 
 // GET /api/products/:idOrSlug
 export const getProduct = async (
