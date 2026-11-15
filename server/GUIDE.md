@@ -32,8 +32,8 @@ When a step is done and tested, reply **NEXT** and the next step will be added a
 | ✅   | 21     | Promo codes (`QUICK25`, `QUICK10`) |
 | ✅   | 22     | Orders: checkout, my orders, order details, cancel within 1 hour |
 | ✅   | 23     | Reviews (only buyers of delivered orders) |
-| ⬜   | **24** | **Newsletter sign-up (Brevo contacts)** ← you are here |
-| ⬜   | 25     | Admin: photo upload, products CRUD, categories CRUD                                 |
+| ✅   | 24     | Newsletter sign-up (Brevo contacts) |
+| ⬜   | **25** | **Admin: photo upload, products CRUD, categories CRUD** ← you are here |
 | ⬜   | 26     | Admin: orders management, customers list                                            |
 | ⬜   | 27     | Admin: dashboard stats (sales, chart, top sellers, low stock)                       |
 | ⬜   | 28     | Demo panel: reset demo data, move orders along                                      |
@@ -5411,3 +5411,729 @@ git push
 
 ➡️ **Next: STEP 25 (Admin: upload product photos to Cloudinary, and create / edit / delete products and
 categories, the first time `adminOnly` is used).** Reply **NEXT** when 24.6 checks out.
+
+---
+
+## STEP 25: Admin products, photos and categories
+
+This is the first step behind `adminOnly` (STEP 18). It powers three admin screens:
+
+- **Products Management**: the table, the tabs (All / In Stock / Low Stock / Out of Stock / Drafts) with their
+  numbers, search by name or SKU, the category and price filters, sorting, and 8 rows per page
+- **Add / Edit Product**: create and edit every field on the form, plus the SKU **Regenerate** button, the
+  Published / Draft / Scheduled choice, and **Add Image** (photos go to your Cloudinary)
+- **Categories**: add, rename or change the icon, delete
+
+| Request (admin token)                         | What it's for                                         |
+| --------------------------------------------- | ----------------------------------------------------- |
+| `POST /api/admin/uploads`                     | Add Image: send photos, get their Cloudinary addresses back |
+| `GET /api/admin/products`                     | the products table (`?tab=&search=&category=&minPrice=&maxPrice=&sort=&page=&limit=`) |
+| `GET /api/admin/products/new-sku`             | the SKU "Regenerate" button (`?category=<id>`)         |
+| `GET /api/admin/products/:id`                 | open the edit form (drafts and `costPrice` included)   |
+| `POST /api/admin/products`                    | Save & Publish a new product                           |
+| `PATCH /api/admin/products/:id`               | save changes (only the fields you send)                |
+| `DELETE /api/admin/products/:id`              | delete a product                                       |
+| `GET/POST /api/admin/categories`, `PATCH/DELETE /api/admin/categories/:id` | the Categories page      |
+
+**How photos work (2 requests):** the form first sends the files to `POST /api/admin/uploads`. The server
+sends them to Cloudinary (folder `quickcart/products/uploads`) and replies with their addresses. The form puts
+those addresses in `images` / `gallery` and saves the product as normal JSON. Your `config/cloudinary.ts`
+(STEP 11) already has every helper this needs: `uploadPhoto`, `photoUrl`, `isOurPhoto`, `uploadedPhotoId`
+and `deletePhoto`.
+
+`multer` (already installed) reads the files. JSON bodies are read by `express.json()`; files arrive as
+**multipart/form-data**, which only multer understands.
+
+### 25.1 `src/middleware/upload.ts`
+
+New file.
+
+```ts
+// upload.ts server/src/middleware/upload.ts
+// Reads the photos the admin picks with "Add Image" (a multipart/form-data request, not JSON).
+//   router.post("/uploads", uploadPhotos, uploadProductPhotos)
+
+// STEP 25 (part 1): Read uploaded photos with multer
+
+import multer from "multer";
+import { AppError } from "../utils/AppError";
+
+export const MAX_PHOTO_MB = 5; // the design says "Max 5MB"
+export const MAX_PHOTOS = 5; // the design has 5 photo slots ("4 / 5 Slots Active")
+
+// The picture types browsers can show. (No SVG: an SVG file can contain code.)
+const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif"];
+
+const upload = multer({
+  // memoryStorage: keep each file's bytes in memory (req.files[i].buffer) instead of saving it on our disk.
+  // We send the bytes straight to Cloudinary, so nothing is left behind on the server.
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PHOTO_MB * 1024 * 1024, files: MAX_PHOTOS },
+  fileFilter: (_req, file, accept) => {
+    if (!PHOTO_TYPES.includes(file.mimetype)) {
+      return accept(new AppError(400, "Photos must be JPG, PNG, WebP or AVIF images."));
+    }
+    accept(null, true);
+  },
+});
+
+// The form field must be called "photos" (several files allowed). The files end up in req.files.
+export const uploadPhotos = upload.array("photos", MAX_PHOTOS);
+```
+
+### 25.2 Friendly upload errors in `src/middleware/errorHandler.ts`
+
+When a file is too big, multer throws a `MulterError` with a code like `LIMIT_FILE_SIZE`. Without this, the
+admin would get "Something went wrong on our side" (500).
+
+Add two imports under `import mongoose from "mongoose";`:
+
+```ts
+import multer from "multer";
+import { MAX_PHOTO_MB, MAX_PHOTOS } from "./upload";
+```
+
+Then add this block **between rule 1 (AppError) and rule 2 (ValidationError)**:
+
+```ts
+  // 1b. multer refused an upload (STEP 25): a file too big, too many files, or the wrong field name
+  if (error instanceof multer.MulterError) {
+    const messages: Partial<Record<string, string>> = {
+      LIMIT_FILE_SIZE: `Each photo must be ${MAX_PHOTO_MB}MB or smaller.`,
+      LIMIT_FILE_COUNT: `You can upload up to ${MAX_PHOTOS} photos at a time.`,
+      LIMIT_UNEXPECTED_FILE: `Send the photos in a field called "photos" (up to ${MAX_PHOTOS} at a time).`,
+    };
+    return res.status(400).json({ message: messages[error.code] ?? error.message });
+  }
+```
+
+(`LIMIT_UNEXPECTED_FILE` also happens when more than 5 files are sent to `upload.array("photos", 5)`.)
+
+### 25.3 `src/controllers/adminProductController.ts`
+
+New file. It's the longest one, so type it section by section (photos, table, create/edit, delete) and
+run `npm run typecheck` after each.
+
+```ts
+// adminProductController.ts server/src/controllers/adminProductController.ts
+// The admin's Products pages: the products table (tabs, search, filters), the Add / Edit Product form,
+// photo uploads to Cloudinary, and deleting products.
+
+// STEP 25 (part 2): Admin products
+// POST   /api/admin/uploads          (form-data, field "photos") -> { urls: [...] } to put in images / gallery
+// GET    /api/admin/products         ?tab=low-stock&search=...&category=electronics&sort=price-asc&page=1
+// GET    /api/admin/products/:id     -> everything, including costPrice and drafts
+// POST   /api/admin/products         -> create
+// PATCH  /api/admin/products/:id     -> change only the fields sent
+// DELETE /api/admin/products/:id
+
+import crypto from "crypto";
+import { Request, Response } from "express";
+import { SortOrder } from "mongoose";
+import {
+  CLOUDINARY_MISSING,
+  deletePhoto,
+  isCloudinaryReady,
+  isOurPhoto,
+  photoUrl,
+  UPLOAD_FOLDER,
+  uploadedPhotoId,
+  uploadPhoto,
+} from "../config/cloudinary";
+import { Category } from "../models/Category";
+import { Order } from "../models/Order";
+import { Product } from "../models/Product";
+import { Review } from "../models/Review";
+import { User } from "../models/User";
+import { AppError } from "../utils/AppError";
+import { escapeRegex } from "../utils/escapeRegex";
+import { slugify } from "../utils/slugify";
+import { OBJECT_ID, wholeNumber } from "./productController";
+
+// ---- Photos -----------------------------------------------------------------------------
+
+// POST /api/admin/uploads
+// The form uploads photos FIRST and gets their addresses back, then sends those addresses with the product.
+export const uploadProductPhotos = async (req: Request, res: Response) => {
+  if (!isCloudinaryReady) {
+    throw new AppError(503, `Photo uploads are not set up. ${CLOUDINARY_MISSING}`);
+  }
+
+  const files = (req.files ?? []) as Express.Multer.File[];
+  if (files.length === 0) {
+    throw new AppError(400, "Please choose at least one photo.");
+  }
+
+  // A random name for each photo, e.g. "quickcart/products/uploads/3f9a1c...". Random, so two uploads never
+  // overwrite each other. All uploads go in the "uploads" folder, so "Reset demo data" can delete them.
+  const ids = await Promise.all(
+    files.map((file) => uploadPhoto(file.buffer, `${UPLOAD_FOLDER}/${crypto.randomBytes(12).toString("hex")}`)),
+  );
+
+  res.status(201).json({ urls: ids.map(photoUrl) });
+};
+
+// Delete uploaded photos that nothing uses any more (after an edit removed them, or a product was deleted).
+// Kept: demo photos (uploadedPhotoId gives null), photos another product uses, and photos in past orders
+// (an order keeps the photo address it was placed with, so "My Orders" must still show it).
+const deleteUnusedPhotos = async (urls: string[]) => {
+  for (const url of new Set(urls)) {
+    const publicId = uploadedPhotoId(url);
+    if (!publicId) {
+      continue;
+    }
+
+    const [usedByProduct, usedByOrder] = await Promise.all([
+      Product.exists({ $or: [{ images: url }, { gallery: url }] }),
+      Order.exists({ "items.image": url }),
+    ]);
+
+    if (!usedByProduct && !usedByOrder) {
+      await deletePhoto(publicId);
+    }
+  }
+};
+
+// ---- The products table -----------------------------------------------------------------
+
+// The tabs above the table. "Low" = 1 to lowStockThreshold units left; products with trackStock: false never run out.
+// $expr compares two fields of the same product (stock and lowStockThreshold).
+const TABS: Record<string, Record<string, unknown>> = {
+  all: {},
+  "in-stock": { $or: [{ trackStock: false }, { $expr: { $gt: ["$stock", "$lowStockThreshold"] } }] },
+  "low-stock": { trackStock: true, stock: { $gt: 0 }, $expr: { $lte: ["$stock", "$lowStockThreshold"] } },
+  "out-of-stock": { trackStock: true, stock: 0 },
+  drafts: { status: "draft" },
+};
+
+// The "Last Updated" sort button and friends
+const SORTS: Record<string, Record<string, SortOrder>> = {
+  updated: { updatedAt: -1, _id: -1 },
+  name: { name: 1, _id: 1 },
+  "price-asc": { price: 1, _id: 1 },
+  "price-desc": { price: -1, _id: 1 },
+  "stock-asc": { stock: 1, _id: 1 },
+};
+
+// The columns of the table (name, SKU, category, price, stock...), plus status for the "Unpublished draft" note
+const TABLE_FIELDS =
+  "name slug sku brand category price oldPrice costPrice images trackStock stock lowStockThreshold status publishAt badge updatedAt";
+
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+// GET /api/admin/products
+export const getAdminProducts = async (req: Request, res: Response) => {
+  const tab = text(req.query.tab) || "all";
+  if (!TABS[tab]) {
+    throw new AppError(400, `Unknown tab: ${tab}. Use one of: ${Object.keys(TABS).join(", ")}.`);
+  }
+
+  const conditions: Record<string, unknown>[] = [TABS[tab]];
+
+  // "Search products by name, SKU, or barcode..." (we have no barcodes, so name and SKU)
+  const search = text(req.query.search);
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), "i");
+    conditions.push({ $or: [{ name: pattern }, { sku: pattern }] });
+  }
+
+  // "All Categories" dropdown: the category slug
+  const categorySlug = text(req.query.category).toLowerCase();
+  if (categorySlug) {
+    const category = await Category.findOne({ slug: categorySlug });
+    conditions.push({ category: category?._id ?? null }); // unknown category -> no products
+  }
+
+  // "All Prices" dropdown: ?minPrice=10000&maxPrice=50000
+  const minPrice = Number(text(req.query.minPrice));
+  const maxPrice = Number(text(req.query.maxPrice));
+  if (text(req.query.minPrice) && Number.isFinite(minPrice)) {
+    conditions.push({ price: { $gte: minPrice } });
+  }
+  if (text(req.query.maxPrice) && Number.isFinite(maxPrice)) {
+    conditions.push({ price: { $lte: maxPrice } });
+  }
+
+  const sort = SORTS[text(req.query.sort)] ?? SORTS.updated;
+  const limit = Math.min(wholeNumber(req.query.limit, 8), 100); // "Rows per page: 8 per page"
+  const page = wholeNumber(req.query.page, 1);
+  const filter = { $and: conditions };
+
+  // The page of products, the total for "Showing 1-8 of 148", and the number on every tab, all at once
+  const [products, total, ...tabCounts] = await Promise.all([
+    Product.find(filter)
+      .select(TABLE_FIELDS)
+      .populate("category", "name slug")
+      .sort(sort)
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean(),
+    Product.countDocuments(filter),
+    ...Object.values(TABS).map((condition) => Product.countDocuments(condition)),
+  ]);
+
+  // { all: 52, "in-stock": 47, "low-stock": 3, "out-of-stock": 2, drafts: 0 } for the tabs and the 4 cards
+  const counts = Object.fromEntries(Object.keys(TABS).map((name, index) => [name, tabCounts[index]]));
+
+  res.json({ products, total, page, pages: Math.ceil(total / limit), counts });
+};
+
+// Find a product by its id (any status: admins see drafts too)
+const findProduct = async (id: string) => {
+  const product = OBJECT_ID.test(id) ? await Product.findById(id) : null;
+  if (!product) {
+    throw new AppError(404, "Product not found");
+  }
+  return product;
+};
+
+// GET /api/admin/products/:id: everything the edit form needs (category, bundle and related stay as ids)
+export const getAdminProduct = async (req: Request<{ id: string }>, res: Response) => {
+  const product = await findProduct(req.params.id);
+  res.json({ product });
+};
+
+// ---- Create and edit ----------------------------------------------------------------------
+
+// The fields the form may set. Everything else is left alone on purpose:
+//   slug (fixed when created, because links use it), ratings / reviewCount / ratingCounts (reviews set them),
+//   sold (orders set it).
+const EDITABLE_FIELDS = [
+  "name", "description", "tagline", "priceNote", "features", "specs", "category", "brand", "sku",
+  "price", "oldPrice", "costPrice", "trackStock", "stock", "lowStockThreshold", "images", "gallery",
+  "colors", "tags", "badge", "highlights", "flashSaleStock", "bundleProducts", "relatedProducts",
+  "status", "publishAt",
+] as const;
+
+// Copy only the allowed fields that were actually sent. (Never Product.create(req.body): someone could send
+// "ratings": 5 or "sold": 99999.) null is kept: it means "remove this", e.g. "oldPrice": null ends a sale.
+const pickEditableFields = (body: Record<string, unknown> = {}) =>
+  Object.fromEntries(EDITABLE_FIELDS.filter((field) => body[field] !== undefined).map((field) => [field, body[field]]));
+
+// A slug nobody uses yet: "smart-watch-ultra", then "smart-watch-ultra-2", "-3"...
+const uniqueSlug = async (name: string) => {
+  const base = slugify(name) || "product";
+  let slug = base;
+  for (let n = 2; await Product.exists({ slug }); n++) {
+    slug = `${base}-${n}`;
+  }
+  return slug;
+};
+
+// "Regenerate" next to the SKU: QC + the first 2 letters of the category + 4 random digits, e.g. "QC-EL-4821"
+const newSku = async (categoryName: string) => {
+  const letters = categoryName.replace(/[^a-z]/gi, "").slice(0, 2).toUpperCase() || "GN";
+  let sku: string;
+  do {
+    sku = `QC-${letters}-${crypto.randomInt(1000, 10000)}`;
+  } while (await Product.exists({ sku }));
+  return sku;
+};
+
+// Rules that involve more than one field, or other collections, checked before saving.
+// (Single-field rules like "price can't be below 0" are already in the model.)
+type ProductDoc = Awaited<ReturnType<typeof findProduct>>;
+
+const checkProduct = async (product: ProductDoc) => {
+  if (!product.name?.trim()) {
+    throw new AppError(400, "Please enter the product title.");
+  }
+
+  // (check it was sent first: exists({ _id: undefined }) would match ANY category)
+  if (!product.category || !(await Category.exists({ _id: product.category }))) {
+    throw new AppError(400, "Please choose a category.");
+  }
+
+  // In our model, price = what the customer pays and oldPrice = the crossed-out price.
+  // The form's "Regular Price" is oldPrice and "Sale Price" is price, when the product is on sale.
+  if (product.oldPrice != null && product.oldPrice <= product.price) {
+    throw new AppError(400, "The regular price must be higher than the sale price.");
+  }
+
+  if (product.status === "scheduled" && !product.publishAt) {
+    throw new AppError(400, "Please pick the date and time a scheduled product goes live.");
+  }
+
+  // Only photos uploaded with POST /api/admin/uploads (or the demo photos). No addresses from other websites.
+  for (const url of [...product.images, ...product.gallery]) {
+    if (!isOurPhoto(url)) {
+      throw new AppError(400, "Please add photos with the Add Image button.");
+    }
+  }
+
+  // Tags are matched exactly by the Home page (?tag=flash-deal), so keep them tidy: "Flash Deal " -> "flash-deal"
+  product.tags = [...new Set(product.tags.map(slugify).filter(Boolean))];
+};
+
+// POST /api/admin/products
+export const createProduct = async (req: Request, res: Response) => {
+  const product = new Product(pickEditableFields(req.body)); // new Product() builds it without saving yet
+  await checkProduct(product);
+
+  product.slug = await uniqueSlug(product.name);
+
+  if (!product.sku?.trim()) {
+    const category = await Category.findById(product.category);
+    product.sku = await newSku(category!.name);
+  }
+
+  await product.save(); // the model's rules run here; a broken rule -> errorHandler -> 400, a used SKU -> 409
+
+  res.status(201).json({ message: `'${product.name}' has been created.`, product });
+};
+
+// PATCH /api/admin/products/:id
+export const updateProduct = async (req: Request<{ id: string }>, res: Response) => {
+  const product = await findProduct(req.params.id);
+  const photosBefore = [...product.images, ...product.gallery];
+
+  product.set(pickEditableFields(req.body)); // only the fields that were sent change
+  await checkProduct(product);
+  await product.save();
+
+  // Photos removed in this edit
+  const photosNow = [...product.images, ...product.gallery];
+  await deleteUnusedPhotos(photosBefore.filter((url) => !photosNow.includes(url)));
+
+  // "Product updated successfully. 'Wireless Noise-Cancelling Headphones' is live" (from the design)
+  const where = product.status === "published" ? "is live" : product.status === "draft" ? "is saved as a draft" : "is scheduled";
+  res.json({ message: `'${product.name}' ${where}.`, product });
+};
+
+// GET /api/admin/products/new-sku?category=<category id>   (the "Regenerate" button)
+export const generateSku = async (req: Request, res: Response) => {
+  const id = text(req.query.category);
+  const category = OBJECT_ID.test(id) ? await Category.findById(id) : null;
+  res.json({ sku: await newSku(category?.name ?? "") });
+};
+
+// ---- Delete --------------------------------------------------------------------------------
+
+// DELETE /api/admin/products/:id
+// Past orders are NOT changed: they keep their own copy of the name, price and photo (STEP 22).
+export const deleteProduct = async (req: Request<{ id: string }>, res: Response) => {
+  const product = await findProduct(req.params.id);
+
+  await product.deleteOne();
+
+  // Clean up everything that pointed at it
+  await Promise.all([
+    Review.deleteMany({ product: product._id }),
+    User.updateMany({ savedItems: product._id }, { $pull: { savedItems: product._id } }), // $pull = remove from the list
+    Product.updateMany(
+      { $or: [{ bundleProducts: product._id }, { relatedProducts: product._id }] },
+      { $pull: { bundleProducts: product._id, relatedProducts: product._id } },
+    ),
+  ]);
+
+  await deleteUnusedPhotos([...product.images, ...product.gallery]);
+
+  res.json({ message: `'${product.name}' has been deleted.` });
+};
+```
+
+**Things worth understanding:**
+
+- **`pickEditableFields` is a security rule.** `Product.create(req.body)` would let anyone with an admin token
+  (or a bug in the website) send `"ratings": 5, "sold": 99999` or change the slug. Only the listed fields
+  get through. My test sent `ratings`, `reviewCount`, `sold` and `slug`, and all four were ignored.
+- **Regular price and sale price:** the design's form has "Regular Price ₦45,000" and "Sale Price ₦33,750".
+  In our model, `price` is what the customer pays and `oldPrice` is the crossed-out one. So when there's a
+  sale, **Sale Price → `price`** and **Regular Price → `oldPrice`**. With no sale, send only `price` (and
+  `"oldPrice": null` to end a sale).
+- **`new Product(...)` then `save()`** instead of `Product.create(...)`: we can run our own checks
+  (`checkProduct`) on the unsaved product first, then add the slug and SKU, then save.
+- **The slug never changes** after creating, even when the name does. Links people shared, and the Home page,
+  keep working. The SKU can be changed (the form has a field for it), but it must stay unique: the model's
+  `unique: true` plus the errorHandler's 11000 rule give `409 That sku is already in use.`
+- **`isOurPhoto`:** `images` only accepts addresses in your own Cloudinary folder, so nobody can put a
+  photo from another website on your shop.
+- **Photos are deleted only when nothing uses them.** Demo photos are never deleted (`uploadedPhotoId` gives
+  `null` for them). Uploaded photos are kept if another product or **a past order** still shows them,
+  because an order keeps its own copy of the photo address (STEP 22).
+- **Deleting a product cleans up after it:** its reviews, the "saved items" of every customer, and other
+  products' "Frequently Bought Together" / "Related" lists (`$pull`). Past orders are left alone: they keep
+  their own name, price and photo.
+- **The tabs use `$expr`** to compare two fields of the same product (`stock` vs `lowStockThreshold`). A
+  normal filter can only compare a field with a fixed value.
+
+### 25.4 `src/controllers/adminCategoryController.ts`
+
+New file.
+
+```ts
+// adminCategoryController.ts server/src/controllers/adminCategoryController.ts
+// The admin's Categories page: list, add, rename / change icon, delete.
+
+// STEP 25 (part 3): Admin categories
+// GET    /api/admin/categories        -> every category with ALL its products counted (drafts too)
+// POST   /api/admin/categories        { "name": "Toys & Games", "icon": "toys" }
+// PATCH  /api/admin/categories/:id    { "name": "...", "icon": "..." }
+// DELETE /api/admin/categories/:id    (only when no product uses it)
+
+import { Request, Response } from "express";
+import { Types } from "mongoose";
+import { Category } from "../models/Category";
+import { Product } from "../models/Product";
+import { AppError } from "../utils/AppError";
+import { slugify } from "../utils/slugify";
+import { OBJECT_ID } from "./productController";
+
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
+// Material icon names are lowercase words joined by "_", e.g. "fitness_center", "menu_book"
+const ICON_RULE = /^[a-z0-9_]*$/;
+
+const findCategory = async (id: string) => {
+  const category = OBJECT_ID.test(id) ? await Category.findById(id) : null;
+  if (!category) {
+    throw new AppError(404, "Category not found");
+  }
+  return category;
+};
+
+const checkIcon = (icon: string) => {
+  if (!ICON_RULE.test(icon)) {
+    throw new AppError(400, 'The icon must be a Material icon name, e.g. "fitness_center".');
+  }
+};
+
+// GET /api/admin/categories
+export const getAdminCategories = async (_req: Request, res: Response) => {
+  const [categories, rows] = await Promise.all([
+    Category.find().select("-__v").sort({ _id: 1 }).lean(),
+    // Like the public list (STEP 15), but counting every product, not only the live ones
+    Product.aggregate<{ _id: Types.ObjectId; count: number }>([{ $group: { _id: "$category", count: { $sum: 1 } } }]),
+  ]);
+
+  const counts = new Map(rows.map((row) => [String(row._id), row.count]));
+
+  res.json({
+    categories: categories.map((category) => ({ ...category, productCount: counts.get(String(category._id)) ?? 0 })),
+  });
+};
+
+// POST /api/admin/categories
+export const createCategory = async (req: Request, res: Response) => {
+  const name = text(req.body?.name);
+  const icon = text(req.body?.icon).toLowerCase();
+
+  if (!name) {
+    throw new AppError(400, "Please enter the category name.");
+  }
+  checkIcon(icon);
+
+  const slug = slugify(name);
+  if (!slug) {
+    throw new AppError(400, "The category name needs at least one letter or number.");
+  }
+
+  // "Home & Living" and "home living" both become "home-living", so check the slug too, not only the name
+  if (await Category.exists({ slug })) {
+    throw new AppError(409, `There is already a category called '${name}'.`);
+  }
+
+  const category = await Category.create({ name, slug, icon }); // a race that slips past -> 11000 -> 409
+
+  res.status(201).json({ message: `'${category.name}' has been added.`, category });
+};
+
+// PATCH /api/admin/categories/:id
+// The slug never changes: the website's links (e.g. /shop?category=home-living) keep working after a rename.
+export const updateCategory = async (req: Request<{ id: string }>, res: Response) => {
+  const category = await findCategory(req.params.id);
+
+  if (req.body?.name !== undefined) {
+    const name = text(req.body.name);
+    if (!name) {
+      throw new AppError(400, "Please enter the category name.");
+    }
+    category.name = name;
+  }
+
+  if (req.body?.icon !== undefined) {
+    const icon = text(req.body.icon).toLowerCase();
+    checkIcon(icon);
+    category.icon = icon;
+  }
+
+  await category.save(); // a name another category already has -> 11000 -> 409 "That name is already in use."
+
+  res.json({ message: `'${category.name}' has been updated.`, category });
+};
+
+// DELETE /api/admin/categories/:id
+export const deleteCategory = async (req: Request<{ id: string }>, res: Response) => {
+  const category = await findCategory(req.params.id);
+
+  // Every product MUST have a category (the model says required), so we can't leave products without one
+  const productCount = await Product.countDocuments({ category: category._id });
+  if (productCount > 0) {
+    throw new AppError(
+      409,
+      `'${category.name}' still has ${productCount} product${productCount === 1 ? "" : "s"}. Move or delete them first.`,
+    );
+  }
+
+  await category.deleteOne();
+
+  res.json({ message: `'${category.name}' has been deleted.` });
+};
+```
+
+- **The slug is checked, not only the name:** "Toys & Games" and "toys games" are different names but the same
+  slug (`toys-games`). Without the check, the second one would crash on the slug's unique index.
+- **A category with products can't be deleted.** Every product must have a category (the model says
+  `required`). Move the products first (PATCH the product's `category`), then delete.
+- **Renaming keeps the slug,** like products.
+
+### 25.5 `src/routes/adminRoutes.ts` and mount it
+
+New file:
+
+```ts
+// adminRoutes.ts server/src/routes/adminRoutes.ts
+// Everything the admin panel calls. routes/index.ts puts these under /api/admin.
+// STEP 26 and 27 add orders, customers and the dashboard to this same file.
+
+// STEP 25 (part 4): Admin routes
+
+import { Router } from "express";
+import {
+  createCategory,
+  deleteCategory,
+  getAdminCategories,
+  updateCategory,
+} from "../controllers/adminCategoryController";
+import {
+  createProduct,
+  deleteProduct,
+  generateSku,
+  getAdminProduct,
+  getAdminProducts,
+  updateProduct,
+  uploadProductPhotos,
+} from "../controllers/adminProductController";
+import { adminOnly, protect } from "../middleware/auth";
+import { uploadPhotos } from "../middleware/upload";
+
+const router = Router();
+
+// One line guards EVERY route below: logged in (protect), and an admin (adminOnly). Order matters.
+router.use(protect, adminOnly);
+
+// Photos: uploadPhotos (multer) reads the files first, then the controller sends them to Cloudinary
+router.post("/uploads", uploadPhotos, uploadProductPhotos);
+
+// Products ("/products/new-sku" must come BEFORE "/products/:id", or "new-sku" would be taken as an id)
+router.get("/products", getAdminProducts);
+router.get("/products/new-sku", generateSku);
+router.get("/products/:id", getAdminProduct);
+router.post("/products", createProduct);
+router.patch("/products/:id", updateProduct);
+router.delete("/products/:id", deleteProduct);
+
+// Categories
+router.get("/categories", getAdminCategories);
+router.post("/categories", createCategory);
+router.patch("/categories/:id", updateCategory);
+router.delete("/categories/:id", deleteCategory);
+
+export default router;
+```
+
+In `src/routes/index.ts`:
+
+```ts
+import adminRoutes from "./adminRoutes";
+```
+
+```ts
+router.use("/admin", adminRoutes); // /api/admin... (admins only)
+```
+
+`router.use(protect, adminOnly)` at the top guards every route in the file. STEPs 26 and 27 add their admin
+routes here and get the guard for free.
+
+### 25.6 Test it
+
+```bash
+npm run typecheck
+npm run dev
+```
+
+Log in as the admin first (`POST /api/auth/login` with `admin@quickcart.ng` / `Admin@12345`) and use that
+token for everything below. Use Ada's token once to see the guard.
+
+**Uploading in Postman:** Body → **form-data** → key `photos`, change its type from *Text* to **File**, pick a
+photo. Add more rows with the same key `photos` for more photos. (Don't set a Content-Type header yourself:
+Postman adds the right one.)
+
+| Request                                                                   | Status | Reply                                                       |
+| ------------------------------------------------------------------------- | ------ | ----------------------------------------------------------- |
+| `GET /api/admin/products` with **Ada's** token                            | 403    | Only admins can do this.                                     |
+| `GET /api/admin/products`                                                 | 200    | 8 products, `total`, `pages`, `counts: { all, in-stock, low-stock, out-of-stock, drafts }` |
+| `GET /api/admin/products?tab=low-stock`                                   | 200    | only products with 1 to `lowStockThreshold` left             |
+| `GET /api/admin/products?search=qc-au-9042`                               | 200    | 1 product (the headphones)                                   |
+| `GET /api/admin/products?tab=bogus`                                       | 400    | Unknown tab: bogus. Use one of: ...                          |
+| `POST /api/admin/uploads` with 1–2 photos                                 | 201    | `{ "urls": ["https://res.cloudinary.com/.../uploads/3f9a..."] }` |
+| `POST /api/admin/uploads` with a `.txt` file                              | 400    | Photos must be JPG, PNG, WebP or AVIF images.                |
+| `POST /api/admin/uploads` with a photo over 5MB                           | 400    | Each photo must be 5MB or smaller.                           |
+| `GET /api/admin/products/new-sku?category=<electronics id>`               | 200    | `{ "sku": "QC-EL-4821" }` (random digits)                    |
+| `POST /api/admin/products` (body below)                                   | 201    | 'Test Speaker Mini' has been created. (`slug`, `sku` filled in) |
+| the same again                                                            | 201    | slug `test-speaker-mini-2`                                    |
+| `POST` with `"sku": "QC-AU-9042"`                                         | 409    | That sku is already in use.                                  |
+| `POST` with `"oldPrice": 20000` (same as price)                           | 400    | The regular price must be higher than the sale price.        |
+| `POST` with `"images": ["https://example.com/x.png"]`                     | 400    | Please add photos with the Add Image button.                 |
+| `POST` with no `category`                                                 | 400    | Please choose a category.                                    |
+| `GET /api/products/test-speaker-mini` (no token)                          | 404    | it's a draft, shoppers can't see it                          |
+| `PATCH /api/admin/products/<id>` `{ "status": "published" }`              | 200    | 'Test Speaker Mini' is live.                                 |
+| `GET /api/products/test-speaker-mini` (no token)                          | 200    | now it's in the shop (and no `costPrice`)                    |
+| `PATCH` `{ "images": [] }`                                                | 200    | and the photo disappears from Cloudinary → Media Library     |
+| `DELETE /api/admin/products/<id>`                                         | 200    | 'Test Speaker Mini' has been deleted.                        |
+| `GET /api/admin/categories`                                               | 200    | 8 categories, `productCount` counts drafts too               |
+| `POST /api/admin/categories` `{ "name": "Toys & Games", "icon": "toys" }` | 201    | slug `toys-games`                                            |
+| `POST` `{ "name": "toys games" }`                                         | 409    | There is already a category called 'toys games'.             |
+| `PATCH /api/admin/categories/<toys id>` `{ "name": "Fashion" }`           | 409    | That name is already in use.                                 |
+| `DELETE /api/admin/categories/<electronics id>`                           | 409    | 'Electronics' still has 15 products. Move or delete them first. |
+| `DELETE /api/admin/categories/<toys id>`                                  | 200    | 'Toys & Games' has been deleted.                             |
+
+The body for creating (put a `url` from your upload in `images`, and the Electronics `_id` from
+`GET /api/categories/electronics` in `category`):
+
+```json
+{
+  "name": "Test Speaker Mini",
+  "description": "A small speaker.",
+  "category": "<electronics _id>",
+  "price": 20000,
+  "oldPrice": 25000,
+  "costPrice": 12000,
+  "stock": 5,
+  "status": "draft",
+  "tags": ["New Arrival", "Flash Deal"],
+  "images": ["<url from the upload>"]
+}
+```
+
+The tags come back as `["new-arrival", "flash-deal"]`, the same form the Home page sections look for.
+
+**When you're done:** run `npm run seed` to put the demo products back the way they were. Photos you uploaded
+and didn't delete stay in Cloudinary's `quickcart/products/uploads` folder. STEP 28's "Reset demo data"
+button empties that folder.
+
+I ran all of this against a throwaway database: **70 checks, all passed**. That includes real uploads to
+Cloudinary (2 tiny test photos, both deleted afterwards), a photo kept because an order still showed it,
+deleting a demo product (its reviews, saved items and bundle links were cleaned up), a 6th photo, a wrong
+field name, an SVG, and a future scheduled product staying hidden.
+
+### 25.7 Commit
+
+```bash
+git add .
+git commit -m "STEP 25: admin products, photo uploads, categories"
+git push
+```
+
+➡️ **Next: STEP 26 (Admin: orders management, moving orders along processing → shipped → delivered with a
+courier and waybill, and the customers list).** Reply **NEXT** when 25.6 checks out.
