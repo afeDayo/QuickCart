@@ -98,7 +98,6 @@ const HeroSection = () => {
             Over 1,200 essentials in stock
           </p>
         </div>
-        qa
       </div>
     </section>
   );
