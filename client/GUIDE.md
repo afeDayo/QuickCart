@@ -38,8 +38,8 @@ then the admin.
 | ---- | ------ | ----------------------------------------------------------------------------------- |
 | ✅   | 30     | Connect the client to the server: real categories on the Home page |
 | ✅   | 31     | Logged-in user: AuthContext, Login and Register pages, protected routes |
-| ⬜   | **32** | **The cart (saved in the browser), toasts, product cards, Featured products** ← you are here |
-| ⬜   | 33     | The rest of the Home page sections |
+| ✅   | 32     | The cart (saved in the browser), toasts, product cards, Featured products |
+| ⬜   | **33** | **The rest of the Home page sections** ← you are here |
 | ⬜   | 34     | Shop page (filters, search, sort, pages) and Categories page                        |
 | ⬜   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
 | ⬜   | 36     | Cart page: items, promo code, summary, empty state                                  |
@@ -2498,3 +2498,883 @@ git push
 ➡️ **Next: STEP 33 (The rest of the Home page: the flash sale with its countdown, Today's Deals, Best Sellers,
 the promo banner, New Arrivals, Recommended for You, Recently Viewed, Testimonials and the newsletter box that
 uses your STEP 24 endpoint).** Reply **NEXT** when 32.11 works.
+
+---
+
+## STEP 33: The rest of the Home page
+
+Every placeholder on the Home page becomes the real section from the design, using real products from your
+database:
+
+| Section (design)                         | Which products                                    | File                         |
+| ---------------------------------------- | ------------------------------------------------- | ---------------------------- |
+| **Flash super sale** with the countdown  | tag `flash-deal` (4)                              | `FlashSale.tsx` + `product/FlashDealCard.tsx` |
+| **Today's Deals** (scrolls sideways)     | tag `deal` (5)                                    | `TodaysDeal.tsx`             |
+| **Best Sellers in Nigeria** (#1–#4)      | `?sort=best-selling` (most `sold`)                | `BestSellers.tsx`            |
+| **Mega Tech & Home Upgrade** banner       | the real **QUICK25** code, with Copy Code          | `PromoBanner.tsx`            |
+| **New Arrivals**                         | tag `new-arrival` (4)                             | `NewArrivals.tsx`            |
+| **Recommended for You**                  | tag `recommended` (4)                             | `RecommendedForYou.tsx`      |
+| **Loved by 25,000 shoppers**             | 3 written quotes                                  | `Testimonials.tsx`           |
+| **Join QuickCart Club**                  | your newsletter endpoint (server STEP 24)          | `NewsletterBanner.tsx`       |
+
+The tags were put on the products in `server/src/data/products.ts` (server STEP 10) exactly for these rows.
+
+**"Recently Viewed"** (in the design, above the testimonials) needs to know which product pages you opened.
+It's built with the Product Details page in STEP 35.
+
+**Honest numbers:** a few texts in the design don't match what the server really does, so they're changed:
+
+- the promo banner says "Save up to ₦25,000", but QUICK25 is **₦2,000 off orders of ₦25,000 or more**
+- the newsletter box says "₦2,000 off your first order", but the welcome email sends **QUICK10** (10% off)
+- "Match: 98%" on Recommended for You: we don't calculate matches, so it's left out
+
+A marker who tries the code from the banner will see exactly what the banner promised.
+
+### 33.1 Tidy-up: the "..." in the Footer
+
+In `src/components/layout/Footer.tsx`, the `<p role="status" ...>` next to the social buttons contains `...`, which
+shows on every page. Delete the 3 dots (keep the empty `<p>`): its `empty:hidden` class hides it while it's empty.
+
+### 33.2 `src/components/product/ProductCard.tsx`: an optional badge and detail line
+
+Best Sellers shows "#1 BEST SELLER" and "(1,420+ sold)", New Arrivals shows "NEW" and a short description, Today's Deals
+shows "Save ₦12,000". Instead of 4 copies of the card, the card gets 2 optional props.
+
+1. Under the comment at the top, add:
+
+   ```tsx
+   // Other Home rows change the badge and the line under the name (STEP 33):
+   //   <ProductCard product={product} badge={{ label: "NEW", className: "bg-primary text-white" }} details={<p>...</p>} />
+   ```
+
+2. Add this import at the top:
+
+   ```tsx
+   import type { ReactNode } from "react";
+   ```
+
+3. Replace `const ProductCard = ({ product }: { product: ProductSummary }) => {` with:
+
+   ```tsx
+   type ProductCardProps = {
+     product: ProductSummary;
+     badge?: { label: string; className: string }; // replaces the product's own badge, e.g. "#1 BEST SELLER" (STEP 33)
+     details?: ReactNode; // replaces the stars line under the name (STEP 33)
+   };
+
+   const ProductCard = ({ product, badge, details }: ProductCardProps) => {
+   ```
+
+4. Under `const link = ...`, add:
+
+   ```tsx
+     // The badge to show: the one given by the row, or the product's own (SALE, TOP SELLER...), or none
+     const shownBadge = badge ?? (product.badge ? { label: product.badge, className: badgeColor(product.badge) } : null);
+   ```
+
+5. Replace the badge `{product.badge && ( <span ...>{product.badge}</span> )}` with:
+
+   ```tsx
+           {shownBadge && (
+             <span className={`absolute top-3 left-3 rounded-full px-2.5 py-1 text-[11px] leading-3.5 font-bold uppercase ${shownBadge.className}`}>
+               {shownBadge.label}
+             </span>
+           )}
+   ```
+
+6. Replace the `<div className="mt-1.5"> <RatingStars ... /> </div>` with:
+
+   ```tsx
+           <div className="mt-1.5">{details ?? <RatingStars rating={product.ratings} count={product.reviewCount} size={15} />}</div>
+   ```
+
+`??` means "use the left side, unless it's missing": no `details` given → the stars, like before. The Featured
+row (STEP 32) doesn't pass either prop, so it doesn't change.
+
+### 33.3 `src/components/home/ProductSection.tsx`
+
+New file: everything the product rows share (header, loading, grey boxes, hiding when empty).
+
+```tsx
+// ProductSection.tsx client/src/components/home/ProductSection.tsx
+// What every product row on the Home page has in common: the header, loading the products from the server,
+// the grey boxes while loading, and hiding itself if there's nothing to show. Each row only says WHICH products
+// and HOW to draw a card:
+//   <ProductSection eyebrow="Just in catalog" title="New Arrivals" titleId="new-title"
+//     query="tag=new-arrival&limit=4" renderCard={(product) => <ProductCard product={product} />} />
+
+// STEP 33 (part 1): A shared product row
+
+import type { ReactNode } from "react";
+import type { IconType } from "react-icons";
+import { MdArrowForward } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useApi } from "../../hooks/useApi";
+import type { ProductSummary, ProductsResponse } from "../../types/api";
+import SectionHeader from "../common/SectionHeader";
+
+type ProductSectionProps = {
+  eyebrow: string;
+  eyebrowIcon?: IconType;
+  title: string;
+  titleId: string;
+  query: string; // the part after "?" in GET /api/products?...
+  link?: { to: string; label: string }; // "View all ->" on the right
+  aside?: ReactNode; // anything else on the right of the header (instead of the link)
+  renderCard: (product: ProductSummary, index: number) => ReactNode;
+  className?: string; // e.g. a background panel for "Recommended for You"
+};
+
+const ProductSection = ({ eyebrow, eyebrowIcon, title, titleId, query, link, aside, renderCard, className = "" }: ProductSectionProps) => {
+  const { data, error, loading } = useApi<ProductsResponse>(`/products?${query}`);
+
+  // An error or no products: hide the row (the categories row already shows "Try again" if the server is off)
+  if (error || (!loading && !data?.products.length)) {
+    return null;
+  }
+
+  return (
+    <section aria-labelledby={titleId} className={className}>
+      <SectionHeader eyebrow={eyebrow} eyebrowIcon={eyebrowIcon} title={title} titleId={titleId}>
+        {aside ??
+          (link && (
+            <Link to={link.to} className="flex shrink-0 items-center gap-1 text-sm font-semibold text-primary-hover hover:underline">
+              {link.label} <MdArrowForward size={16} aria-hidden="true" />
+            </Link>
+          ))}
+      </SectionHeader>
+
+      <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        {loading
+          ? Array.from({ length: 4 }, (_, index) => (
+              <li key={index} aria-hidden="true" className="h-105 animate-pulse rounded-3xl bg-surface shadow-card" />
+            ))
+          : data?.products.map((product, index) => (
+              <li key={product._id} className="flex">
+                {renderCard(product, index)}
+              </li>
+            ))}
+      </ul>
+    </section>
+  );
+};
+
+export default ProductSection;
+```
+
+- **`renderCard`** is a function passed as a prop: the section loads the products, and asks the row "how do I
+  draw this one?". It's called a *render prop*. That's how Best Sellers can number its cards (`index + 1`).
+- Best Sellers, New Arrivals and Recommended for You use it, so each of those files is only ~25 lines.
+
+### 33.4 The flash sale: `src/hooks/useCountdown.ts`, `src/components/product/FlashDealCard.tsx`, `src/components/home/FlashSale.tsx`
+
+```ts
+// useCountdown.ts client/src/hooks/useCountdown.ts
+// Counts down to a moment, updating every second:
+//   const { hours, minutes, seconds } = useCountdown(endOfToday);
+
+// STEP 33 (part 2): A countdown hook
+
+import { useEffect, useState } from "react";
+
+export const useCountdown = (target: Date) => {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    // Every second, remember the new time; React re-draws with the new numbers
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer); // stop the timer when the component disappears
+  }, []);
+
+  const left = Math.max(0, target.getTime() - now); // milliseconds left, never below 0
+  const totalSeconds = Math.floor(left / 1000);
+
+  return {
+    hours: Math.floor(totalSeconds / 3600),
+    minutes: Math.floor((totalSeconds % 3600) / 60),
+    seconds: totalSeconds % 60,
+    finished: left === 0,
+  };
+};
+```
+
+```tsx
+// FlashDealCard.tsx client/src/components/product/FlashDealCard.tsx
+// A flash sale card: "-45% OFF", a red price, the "Claimed: 82%" bar, "Only 6 left" and a big Quick Add button.
+
+// STEP 33 (part 3): The flash sale card
+
+import { MdBolt, MdOutlineAddShoppingCart } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useCart } from "../../context/CartContext";
+import { useToast } from "../../context/ToastContext";
+import type { ProductSummary } from "../../types/api";
+import { naira } from "../../utils/format";
+
+const FlashDealCard = ({ product }: { product: ProductSummary }) => {
+  const { addItem } = useCart();
+  const { showToast } = useToast();
+
+  // -45% OFF: how much cheaper than the old price
+  const percentOff = product.oldPrice ? Math.round((1 - product.price / product.oldPrice) * 100) : 0;
+
+  // "Claimed: 82%": of the units offered in the sale (flashSaleStock, server STEP 8), how many are gone.
+  // 33 offered, 6 left -> 27 claimed -> 82%.
+  const offered = product.flashSaleStock ?? 0;
+  const claimed = offered > 0 ? Math.min(100, Math.round(((offered - product.stock) / offered) * 100)) : 0;
+  const soldOut = product.trackStock && product.stock === 0;
+  const fewLeft = product.stock <= 6;
+  const link = `/product/${product.slug}`;
+
+  const handleAdd = () => {
+    const result = addItem(product, { color: product.colors[0]?.name });
+    if (!result.ok) showToast({ type: "error", title: "Couldn't add to cart", message: result.message });
+  };
+
+  return (
+    <article className="flex w-full flex-col rounded-3xl bg-surface p-4 shadow-card">
+      <Link to={link} className="relative mb-4 block overflow-hidden rounded-2xl bg-field">
+        <img src={product.images[0]} alt={product.name} loading="lazy" className="aspect-square w-full object-cover" />
+        {percentOff > 0 && (
+          <span className="absolute top-3 left-3 rounded-full bg-danger px-2.5 py-1 text-[11px] font-bold text-white">
+            -{percentOff}% OFF
+          </span>
+        )}
+        {product.tags.includes("fast-deal") && (
+          <span className="absolute top-3 right-3 flex items-center gap-0.5 rounded-full bg-ink/60 px-2 py-0.5 text-[11px] font-medium text-white">
+            <MdBolt size={13} aria-hidden="true" /> Fast Deal
+          </span>
+        )}
+      </Link>
+
+      <p className="text-[11px] font-semibold tracking-wider text-muted uppercase">{product.category.name}</p>
+      <h3 className="mt-1 text-lg leading-6 font-semibold text-ink">
+        <Link to={link} className="hover:text-primary">
+          {product.name}
+        </Link>
+      </h3>
+
+      <p className="mt-1 flex items-baseline gap-2">
+        <span className="text-lg font-bold text-danger">{naira(product.price)}</span>
+        {product.oldPrice && <del className="text-[13px] text-muted">{naira(product.oldPrice)}</del>}
+      </p>
+
+      {/* The bar: a background track, and a red part as wide as the claimed % */}
+      <div
+        role="progressbar"
+        aria-valuenow={claimed}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Claimed"
+        className="mt-3 h-2 overflow-hidden rounded-full bg-info-light"
+      >
+        <div className="h-full origin-left animate-grow-x rounded-full bg-danger" style={{ width: `${claimed}%` }} />
+      </div>
+      <p className="mt-1.5 flex justify-between text-xs">
+        <span className="text-muted">Claimed: {claimed}%</span>
+        <span className="font-semibold text-danger">{soldOut ? "Sold out" : fewLeft ? `Only ${product.stock} left` : `${product.stock} left`}</span>
+      </p>
+
+      <button
+        type="button"
+        onClick={handleAdd}
+        disabled={soldOut}
+        className="mt-4 flex h-11 items-center justify-center gap-2 rounded-xl bg-navy text-base font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
+      >
+        <MdOutlineAddShoppingCart size={18} aria-hidden="true" />
+        {soldOut ? "Sold out" : "Quick Add"}
+      </button>
+    </article>
+  );
+};
+
+export default FlashDealCard;
+```
+
+```tsx
+// FlashSale.tsx client/src/components/home/FlashSale.tsx
+// "FLASH SUPER SALE · ENDING SOON / Limited Rush Deals": the blue banner with a countdown to midnight,
+// and the products tagged "flash-deal".
+
+// STEP 33 (part 4): The flash sale
+
+import { MdBolt } from "react-icons/md";
+import { useApi } from "../../hooks/useApi";
+import { useCountdown } from "../../hooks/useCountdown";
+import type { ProductsResponse } from "../../types/api";
+import FlashDealCard from "../product/FlashDealCard";
+
+// The sale "ends" at midnight tonight (the shopper's time). Worked out once, when the file loads.
+const midnight = new Date();
+midnight.setHours(24, 0, 0, 0); // 24:00 today = 00:00 tomorrow
+
+// 7 -> "07"
+const twoDigits = (value: number) => String(value).padStart(2, "0");
+
+const FlashSale = () => {
+  const { data, error, loading } = useApi<ProductsResponse>("/products?tag=flash-deal&limit=4");
+  const { hours, minutes, seconds } = useCountdown(midnight);
+
+  if (error || (!loading && !data?.products.length)) return null;
+
+  const units = [
+    { value: hours, label: "Hours" },
+    { value: minutes, label: "Mins" },
+    { value: seconds, label: "Secs" },
+  ];
+
+  return (
+    // id="flash-sale": the footer's "Daily Flash Deals" link jumps here (/#flash-sale)
+    <section id="flash-sale" aria-labelledby="flash-title" className="scroll-mt-28">
+      <div className="mb-6 flex flex-col gap-6 overflow-hidden rounded-3xl bg-linear-to-r from-primary to-primary-hover p-8 text-white shadow-banner md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="mb-3 flex w-fit items-center gap-1 rounded-full bg-white/15 px-3 py-1 text-[11px] font-bold tracking-wide uppercase">
+            <MdBolt size={14} aria-hidden="true" className="text-mint" /> Flash super sale · Ending soon
+          </p>
+          <h2 id="flash-title" className="text-3xl leading-9 font-bold tracking-tight">
+            Limited Rush Deals — Save Up to 50%
+          </h2>
+          <p className="mt-2 max-w-100 text-[15px] leading-6 text-white/80">
+            Genuine items in strictly limited stock. Prices reset immediately after the countdown ends.
+          </p>
+        </div>
+
+        {/* role="timer" + aria-live="off": screen readers don't read it out every second */}
+        <div role="timer" aria-live="off" aria-label={`Ends in ${hours} hours ${minutes} minutes`} className="flex items-center gap-2">
+          {units.map((unit, index) => (
+            <div key={unit.label} className="flex items-center gap-2">
+              {index > 0 && <span aria-hidden="true" className="text-xl font-bold">:</span>}
+              <span className="flex w-17 flex-col items-center rounded-xl bg-ink/30 py-2.5">
+                {/* key={value}: each new number is a new element, so the "tick" animation plays */}
+                <span key={unit.value} className="animate-tick text-xl leading-6 font-bold">
+                  {twoDigits(unit.value)}
+                </span>
+                <span className="text-[10px] tracking-wide text-white/70 uppercase">{unit.label}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        {loading
+          ? Array.from({ length: 4 }, (_, index) => (
+              <li key={index} aria-hidden="true" className="h-120 animate-pulse rounded-3xl bg-surface shadow-card" />
+            ))
+          : data?.products.map((product) => (
+              <li key={product._id} className="flex">
+                <FlashDealCard product={product} />
+              </li>
+            ))}
+      </ul>
+    </section>
+  );
+};
+
+export default FlashSale;
+```
+
+**Things worth understanding:**
+
+- **"Claimed: 82%"** uses `flashSaleStock` (server STEP 8): how many units the sale offered. AeroPro: 33 offered, 6
+  left → 27 claimed → 82%, exactly the design's number. When stock goes down (real orders), the bar grows.
+- **`setInterval` + clean-up:** the countdown re-draws every second. The clean-up (`clearInterval`) stops the timer
+  when you leave the page; without it, timers would pile up every time you came back to Home.
+- **`setHours(24, 0, 0, 0)`** = midnight tonight. JavaScript turns "24:00 today" into "00:00 tomorrow" by itself.
+  (It's worked out when the page loads: a shopper who keeps the tab open past midnight sees 00:00:00 until they
+  refresh. Fine for a demo.)
+- **`key={unit.value}`** on the number: the same trick as the cart badge, so your `animate-tick` animation plays every
+  second.
+- **`id="flash-sale"`**: the Footer's "Daily Flash Deals" link (`/#flash-sale`) points here. `scroll-mt-28` leaves room
+  for the sticky Navbar.
+
+### 33.5 `src/components/home/TodaysDeal.tsx`
+
+```tsx
+// TodaysDeal.tsx client/src/components/home/TodaysDeal.tsx
+// "24-HOUR EXCLUSIVES / Today's Deals": a row you scroll sideways (with ‹ › buttons), each card saying how much
+// you save. The products tagged "deal".
+
+// STEP 33 (part 5): Today's deals
+
+import { useRef } from "react";
+import { MdChevronLeft, MdChevronRight, MdOutlineLocalOffer } from "react-icons/md";
+import { useApi } from "../../hooks/useApi";
+import type { ProductsResponse } from "../../types/api";
+import { naira } from "../../utils/format";
+import SectionHeader from "../common/SectionHeader";
+import ProductCard from "../product/ProductCard";
+
+const arrowClasses =
+  "flex size-10 items-center justify-center rounded-full bg-surface text-ink shadow-card transition-colors hover:bg-field disabled:opacity-40";
+
+const TodaysDeal = () => {
+  const { data, error, loading } = useApi<ProductsResponse>("/products?tag=deal&limit=8");
+  const rowRef = useRef<HTMLUListElement>(null); // the scrolling list, so the arrows can move it
+
+  if (error || (!loading && !data?.products.length)) return null;
+
+  // Move the row by about one card ("smooth" = animated)
+  const scrollBy = (direction: 1 | -1) => {
+    rowRef.current?.scrollBy({ left: direction * 300, behavior: "smooth" });
+  };
+
+  return (
+    <section aria-labelledby="deals-title">
+      <SectionHeader eyebrow="24-hour exclusives" eyebrowIcon={MdOutlineLocalOffer} title="Today's Deals" titleId="deals-title">
+        <div className="flex gap-2">
+          <button type="button" onClick={() => scrollBy(-1)} aria-label="Previous deals" className={arrowClasses}>
+            <MdChevronLeft size={22} />
+          </button>
+          <button type="button" onClick={() => scrollBy(1)} aria-label="More deals" className={arrowClasses}>
+            <MdChevronRight size={22} />
+          </button>
+        </div>
+      </SectionHeader>
+
+      {/* overflow-x-auto: the row scrolls sideways (swipe on phones). snap: it stops neatly on a card. */}
+      <ul ref={rowRef} className="-mx-4 flex snap-x snap-mandatory gap-6 overflow-x-auto scroll-smooth px-4 pt-1 pb-4 md:mx-0 md:px-0">
+        {loading
+          ? Array.from({ length: 4 }, (_, index) => (
+              <li key={index} aria-hidden="true" className="h-105 w-70 shrink-0 animate-pulse rounded-3xl bg-surface shadow-card" />
+            ))
+          : data?.products.map((product) => (
+              <li key={product._id} className="flex w-70 shrink-0 snap-start">
+                <ProductCard
+                  product={product}
+                  // "Save ₦12,000": green when it's a small saving, red when it's a big one (like the design)
+                  badge={
+                    product.oldPrice
+                      ? {
+                          label: `Save ${naira(product.oldPrice - product.price)}`,
+                          className: product.oldPrice - product.price >= 10000 ? "bg-danger text-white" : "bg-success text-white",
+                        }
+                      : undefined
+                  }
+                  details={<p className="text-[13px] text-muted">{product.tagline ?? product.brand}</p>}
+                />
+              </li>
+            ))}
+      </ul>
+    </section>
+  );
+};
+
+export default TodaysDeal;
+```
+
+- **`overflow-x-auto` + `snap-x`**: the row scrolls sideways (swipe on a phone), and stops neatly at a card.
+- **`useRef`** gives the arrow buttons the real `<ul>`, so `scrollBy({ left: 300 })` can move it.
+- **"Save ₦12,000"** = `oldPrice - price`, worked out on the page.
+
+### 33.6 `src/components/home/BestSellers.tsx`, `NewArrivals.tsx`, `RecommendedForYou.tsx`
+
+```tsx
+// BestSellers.tsx client/src/components/home/BestSellers.tsx
+// "MOST WANTED / Best Sellers in Nigeria": the 4 products with the most sales (?sort=best-selling, server STEP 16),
+// ranked "#1 BEST SELLER" to "#4", with the brand and "(1,420+ sold)".
+
+// STEP 33 (part 6): Best sellers
+
+import { MdStar, MdVerified } from "react-icons/md";
+import ProductCard from "../product/ProductCard";
+import ProductSection from "./ProductSection";
+
+const BestSellers = () => {
+  return (
+    <ProductSection
+      eyebrow="Most wanted"
+      title="Best Sellers in Nigeria"
+      titleId="best-title"
+      query="sort=best-selling&limit=4"
+      link={{ to: "/shop?sort=best-selling", label: "See leaderboard" }}
+      renderCard={(product, index) => (
+        <ProductCard
+          product={product}
+          badge={{ label: `#${index + 1} Best seller`, className: "bg-warning text-white" }}
+          details={
+            <div className="flex flex-col gap-1 text-[13px]">
+              <p className="flex items-center gap-1 font-medium text-success">
+                <MdVerified size={15} aria-hidden="true" /> {product.brand}
+              </p>
+              <p className="flex items-center gap-1 text-muted">
+                <MdStar size={15} aria-hidden="true" className="text-warning" />
+                <span className="font-semibold text-ink">{product.ratings.toFixed(1)}</span>
+                ({product.sold.toLocaleString("en-NG")}+ sold)
+              </p>
+            </div>
+          }
+        />
+      )}
+    />
+  );
+};
+
+export default BestSellers;
+```
+
+```tsx
+// NewArrivals.tsx client/src/components/home/NewArrivals.tsx
+// "JUST IN CATALOG / New Arrivals": the products tagged "new-arrival", each with a blue NEW badge.
+
+// STEP 33 (part 7): New arrivals
+
+import { MdOutlineVerified } from "react-icons/md";
+import ProductCard from "../product/ProductCard";
+import ProductSection from "./ProductSection";
+
+const NewArrivals = () => {
+  return (
+    <ProductSection
+      eyebrow="Just in catalog"
+      eyebrowIcon={MdOutlineVerified}
+      title="New Arrivals"
+      titleId="new-title"
+      query="tag=new-arrival&limit=4"
+      link={{ to: "/shop?tag=new-arrival", label: "See all new in" }}
+      renderCard={(product) => (
+        <ProductCard
+          product={product}
+          badge={{ label: "New", className: "bg-primary text-white" }}
+          details={<p className="text-[13px] text-muted">{product.tagline ?? product.brand}</p>}
+        />
+      )}
+    />
+  );
+};
+
+export default NewArrivals;
+```
+
+```tsx
+// RecommendedForYou.tsx client/src/components/home/RecommendedForYou.tsx
+// "TAILORED PICKS / Recommended for You": the products tagged "recommended", on a soft blue panel.
+
+// STEP 33 (part 8): Recommended for you
+
+import { MdAutoAwesome } from "react-icons/md";
+import ProductCard from "../product/ProductCard";
+import ProductSection from "./ProductSection";
+
+const RecommendedForYou = () => {
+  return (
+    <ProductSection
+      eyebrow="Tailored picks"
+      eyebrowIcon={MdAutoAwesome}
+      title="Recommended for You"
+      titleId="recommended-title"
+      query="tag=recommended&limit=4"
+      aside={<p className="hidden text-[13px] text-muted sm:block">Picked from our customers' favourites</p>}
+      className="rounded-3xl border border-line-soft bg-panel p-6"
+      renderCard={(product) => <ProductCard product={product} />}
+    />
+  );
+};
+
+export default RecommendedForYou;
+```
+
+The "See leaderboard" / "See all new in" links already point to the Shop page with the right filters
+(`/shop?sort=best-selling`, `/shop?tag=new-arrival`). STEP 34 makes the Shop page read them.
+
+### 33.7 `src/components/home/PromoBanner.tsx`
+
+```tsx
+// PromoBanner.tsx client/src/components/home/PromoBanner.tsx
+// "SEASONAL CAMPAIGN / Mega Tech & Home Upgrade": the dark blue banner with the QUICK25 code and a Copy Code button.
+// QUICK25 is a real code in the database (server STEP 21): ₦2,000 off orders of ₦25,000 or more.
+
+// STEP 33 (part 9): The promo banner
+
+import { MdArrowForward, MdOutlineCampaign } from "react-icons/md";
+import { Link } from "react-router-dom";
+import heroImg from "../../assets/images/Curated lifestyle essentials.png";
+import { useToast } from "../../context/ToastContext";
+
+const CODE = "QUICK25";
+
+const PromoBanner = () => {
+  const { showToast } = useToast();
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(CODE); // the browser's clipboard (needs https or localhost)
+      showToast({ type: "success", title: `${CODE} copied`, message: "Paste it in your cart to save ₦2,000." });
+    } catch {
+      // Some browsers block the clipboard: tell them the code instead
+      showToast({ type: "info", title: `Your code is ${CODE}`, message: "Type it in the promo box in your cart." });
+    }
+  };
+
+  return (
+    <section
+      aria-labelledby="promo-title"
+      className="grid overflow-hidden rounded-3xl bg-linear-to-r from-footer via-primary to-primary text-white shadow-banner lg:grid-cols-[1.4fr_1fr]"
+    >
+      <div className="p-8 md:p-10">
+        <p className="mb-4 flex w-fit items-center gap-1.5 rounded-full bg-mint px-3 py-1 text-xs font-bold tracking-wide text-forest uppercase">
+          <MdOutlineCampaign size={16} aria-hidden="true" /> Seasonal campaign
+        </p>
+        <h2 id="promo-title" className="max-w-110 text-4xl leading-11 font-extrabold tracking-tight md:text-5xl md:leading-14">
+          Mega Tech &amp; Home Upgrade
+        </h2>
+        <p className="mt-3 max-w-120 text-base leading-6.5 text-white/80">
+          Transform your workspace and living quarters with verified electronics and modern interior picks. Get ₦2,000
+          off any order of ₦25,000 or more.
+        </p>
+
+        <div className="mt-6 flex w-fit items-center gap-6 rounded-2xl border border-white/20 bg-white/10 py-3 pr-3 pl-4">
+          <div>
+            <p className="text-[11px] tracking-wide text-white/70 uppercase">Checkout coupon code</p>
+            <p className="font-mono text-xl font-bold tracking-wider text-mint">{CODE}</p>
+          </div>
+          <button type="button" onClick={copyCode} className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-ink hover:bg-field">
+            Copy Code
+          </button>
+        </div>
+
+        <div className="mt-6 flex flex-wrap items-center gap-4">
+          <Link
+            to="/shop"
+            className="flex h-12 items-center gap-2 rounded-xl bg-success px-6 font-semibold text-white transition-colors hover:bg-forest"
+          >
+            Explore Promotion <MdArrowForward size={18} aria-hidden="true" />
+          </Link>
+          <p className="text-[13px] text-white/70">Valid on orders of ₦25,000 or more</p>
+        </div>
+      </div>
+
+      <div className="relative hidden p-6 lg:block">
+        <img src={heroImg} alt="" className="h-full w-full rounded-2xl object-cover" />
+        <p className="absolute right-10 bottom-10 left-10 flex items-center justify-between rounded-xl bg-ink/60 px-4 py-3 text-sm backdrop-blur-sm">
+          <span>
+            <span className="block text-xs text-white/70">Featured Bundle</span>
+            <span className="font-semibold">Desk Sanctuary Setup</span>
+          </span>
+          <span className="font-semibold text-mint">Save ₦2,000</span>
+        </p>
+      </div>
+    </section>
+  );
+};
+
+export default PromoBanner;
+```
+
+**`navigator.clipboard.writeText`** copies text like Ctrl+C. Browsers only allow it on `https://` sites and on
+`localhost`, and some block it anyway, so the `catch` shows the code in a toast instead.
+
+### 33.8 `src/components/home/Testimonials.tsx`
+
+```tsx
+// Testimonials.tsx client/src/components/home/Testimonials.tsx
+// "Loved by over 25,000 shoppers across Nigeria": 3 customer quotes. They're written into the page (marketing text),
+// unlike product reviews, which come from real customers through the server (STEP 35).
+
+// STEP 33 (part 10): Testimonials
+
+import { MdOutlineVerified, MdStar } from "react-icons/md";
+
+const testimonials = [
+  {
+    quote:
+      "Ordered the noise-cancelling headphones around noon in Ikeja and they reached my doorstep under 35 minutes! Genuine gear and ultra clean packaging.",
+    name: "Amina Bello",
+    city: "Lagos",
+  },
+  {
+    quote:
+      "The fastest checkout experience in Nigeria right now. No unnecessary steps or glitches, and customer support answered my inquiry via WhatsApp in 2 minutes.",
+    name: "Chinedu Okafor",
+    city: "Abuja",
+  },
+  {
+    quote:
+      "Was hesitant about online skincare until I received 100% authentic serums with verified batch numbers. QuickCart has completely won over my weekly shopping.",
+    name: "Tolu Adeleke",
+    city: "Port Harcourt",
+  },
+];
+
+// "Amina Bello" -> "AB" (we have no photos of these customers, so their initials go in the circle)
+const initials = (name: string) =>
+  name
+    .split(" ")
+    .map((part) => part[0])
+    .join("");
+
+const Testimonials = () => {
+  return (
+    <section aria-labelledby="testimonials-title" className="text-center">
+      <p className="mx-auto mb-4 flex w-fit items-center gap-1.5 rounded-full bg-primary-light px-3 py-1 text-sm font-medium text-primary">
+        <MdOutlineVerified size={16} aria-hidden="true" /> Verified Reviews
+      </p>
+      <h2 id="testimonials-title" className="mx-auto max-w-150 text-3xl leading-10 font-bold tracking-tight text-ink md:text-4xl md:leading-11">
+        Loved by over 25,000 shoppers across Nigeria
+      </h2>
+      <p className="mx-auto mt-2 max-w-155 text-base leading-6 text-ink-soft">
+        See what everyday customers in Lagos, Abuja, and Port Harcourt have to say about QuickCart.
+      </p>
+
+      <ul className="mt-8 grid gap-6 text-left md:grid-cols-3">
+        {testimonials.map((item) => (
+          <li key={item.name}>
+            {/* <figure> + <blockquote> + <figcaption>: the HTML way to write "a quote and who said it" */}
+            <figure className="flex h-full flex-col rounded-3xl bg-surface p-6 shadow-card">
+              <p className="mb-3 flex text-warning" role="img" aria-label="5 out of 5 stars">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <MdStar key={star} size={18} aria-hidden="true" />
+                ))}
+              </p>
+              <blockquote className="flex-1 text-[15px] leading-6 text-ink">"{item.quote}"</blockquote>
+              <figcaption className="mt-5 flex items-center gap-3 border-t border-line pt-4">
+                <span aria-hidden="true" className="flex size-10 items-center justify-center rounded-full bg-primary-light text-sm font-bold text-primary">
+                  {initials(item.name)}
+                </span>
+                <span>
+                  <span className="block font-semibold text-ink">{item.name}</span>
+                  <span className="text-sm text-muted">{item.city} · Verified Buyer</span>
+                </span>
+              </figcaption>
+            </figure>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+export default Testimonials;
+```
+
+### 33.9 `src/components/home/NewsletterBanner.tsx`
+
+```tsx
+// NewsletterBanner.tsx client/src/components/home/NewsletterBanner.tsx
+// "JOIN QUICKCART CLUB": the email box at the bottom of the Home page. It uses your newsletter endpoint
+// (POST /api/newsletter/subscribe, server STEP 24), which emails a welcome gift: the QUICK10 code.
+
+// STEP 33 (part 11): The newsletter box
+
+import { useState, type FormEvent } from "react";
+import { MdCheckCircle, MdOutlineMail } from "react-icons/md";
+import { api } from "../../utils/api";
+
+const NewsletterBanner = () => {
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState<"idle" | "sending" | "done" | "error">("idle");
+  const [message, setMessage] = useState("");
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setStatus("sending");
+    try {
+      // The server checks the email and answers with the message to show, e.g.
+      // "Thanks for subscribing! Check your inbox for a welcome gift." or "You're already subscribed..."
+      const reply = await api<{ message: string }>("/newsletter/subscribe", { method: "POST", body: { email } });
+      setMessage(reply.message);
+      setStatus("done");
+      setEmail("");
+    } catch (error) {
+      setMessage((error as Error).message); // e.g. "Please enter a valid email address."
+      setStatus("error");
+    }
+  };
+
+  return (
+    <section aria-labelledby="newsletter-title" className="relative overflow-hidden rounded-3xl bg-primary px-6 py-12 text-center text-white shadow-banner">
+      <div aria-hidden="true" className="absolute -bottom-24 -left-24 size-80 rounded-full bg-white/10 blur-3xl" />
+      <div aria-hidden="true" className="absolute -top-24 -right-24 size-80 rounded-full bg-[#4f7bd9]/40 blur-3xl" />
+
+      <div className="relative">
+        <p className="mx-auto mb-4 flex w-fit items-center gap-2 rounded-full bg-white/15 px-4 py-1.5 text-sm font-bold tracking-wide uppercase">
+          <MdOutlineMail size={18} aria-hidden="true" className="text-mint" /> Join QuickCart Club
+        </p>
+        <h2 id="newsletter-title" className="text-3xl leading-10 font-bold tracking-tight md:text-4xl">
+          Get 10% Off Your Next Order
+        </h2>
+        <p className="mx-auto mt-2 max-w-140 text-base leading-6 text-white/80">
+          Subscribe to QuickCart VIP Drops for flash deals, members-only secret drops, and a welcome code in your inbox.
+        </p>
+
+        {status === "done" ? (
+          <p role="status" className="mx-auto mt-8 flex w-fit items-center gap-2 rounded-xl bg-white/15 px-5 py-3 font-medium">
+            <MdCheckCircle size={22} aria-hidden="true" className="text-mint" /> {message}
+          </p>
+        ) : (
+          <form onSubmit={handleSubmit} noValidate className="mx-auto mt-8 flex max-w-115 flex-col gap-3 sm:flex-row">
+            <label htmlFor="newsletter-email" className="sr-only">
+              Email address
+            </label>
+            <input
+              id="newsletter-email"
+              type="email"
+              autoComplete="email"
+              placeholder="Enter your email address"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              aria-invalid={status === "error" ? true : undefined}
+              aria-describedby={status === "error" ? "newsletter-error" : undefined}
+              className="h-13 flex-1 rounded-xl bg-white px-4 text-ink outline-none placeholder:text-muted focus:ring-4 focus:ring-white/30"
+            />
+            <button
+              type="submit"
+              disabled={status === "sending"}
+              className="h-13 rounded-xl bg-navy px-7 font-semibold text-white transition-colors hover:bg-footer disabled:opacity-60"
+            >
+              {status === "sending" ? "Subscribing..." : "Subscribe"}
+            </button>
+          </form>
+        )}
+
+        {status === "error" && (
+          <p id="newsletter-error" role="alert" className="mt-3 text-sm font-medium text-[#ffdad6]">
+            {message}
+          </p>
+        )}
+        <p className="mt-4 text-[13px] text-white/70">No spam ever. Unsubscribe with 1 click at any time.</p>
+      </div>
+    </section>
+  );
+};
+
+export default NewsletterBanner;
+```
+
+The messages come **from the server**: "Please enter a valid email address.", "Thanks for subscribing! Check your
+inbox for a welcome gift.", "You're already subscribed to QuickCart VIP Drops." The website doesn't repeat the rules,
+so they can never disagree.
+
+### 33.10 Test it
+
+`npm run seed` in the server (so stock and tags are as designed), both terminals running, then open the Home page.
+
+| Look at / do                          | You should see                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------- |
+| The flash sale                        | the blue banner; the clock counting down to midnight, second by second; 4 cards: **AeroPro Wireless Buds** -45% OFF, ⚡ Fast Deal, ₦16,500 ~~₦30,000~~, **Claimed: 82%**, **Only 6 left**; Smart Gooseneck Kettle 65% / 14 left; Botanical Radiance Elixir 90% / Only 3 left; Alloy Adjustable Stand 74% / 8 left |
+| **Quick Add** on a flash card          | the "Added to Cart!" box                                                  |
+| Today's Deals                         | 5 cards: "Save ₦12,000" Compact Mechanical Keypad, "Save ₦8,000" Insulated 1L Hydro Flask...; the **›** button slides the row |
+| Best Sellers                          | #1 Wireless Noise-Cancelling Headphones (Aura Sound Labs, ★ 4.8, 1,420+ sold), #2 Canvas Low-Top Sneakers (980+ sold)... |
+| The promo banner → **Copy Code**       | a toast: "QUICK25 copied" (paste it somewhere to check)                   |
+| New Arrivals, Recommended for You      | 4 cards each, New Arrivals with blue NEW badges                           |
+| Newsletter: type `abc` → Subscribe     | "Please enter a valid email address." (from the server)                   |
+| Your own email → Subscribe            | "Thanks for subscribing! Check your inbox for a welcome gift." and the email with QUICK10 arrives (STEP 24) |
+| Footer → **Daily Flash Deals**         | the page jumps to the flash sale                                          |
+| Make the window narrow (phone size)   | 1 card per row; Today's Deals swipes sideways                             |
+
+I tested all of this on a copy of your project against a throwaway database: **19 checks, all passed**. The
+numbers above (82%, 90%, Save ₦12,000, 1,420+ sold...) are what the page showed, and they match the design. I compared
+every section's screenshot with the design. `npm run build` and `npm run lint` pass.
+
+### 33.11 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 33: home page sections"
+git push
+```
+
+➡️ **Next: STEP 34 (The Shop page: category, price and search filters, sorting and pages, all kept in the address
+bar so links like `/shop?category=electronics` work; the Navbar search box; and the Categories page).** Reply **NEXT**
+when 33.10 works.

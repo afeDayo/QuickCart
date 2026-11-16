@@ -5,6 +5,9 @@
 
 // STEP 32 (part 7): The product card
 
+// Other Home rows change the badge and the line under the name (STEP 33):
+//   <ProductCard product={product} badge={{ label: "NEW", className: "bg-primary text-white" }} details={<p>...</p>} />
+
 import { MdOutlineImageNotSupported } from "react-icons/md";
 import { Link } from "react-router-dom";
 import { useCart } from "../../context/CartContext";
@@ -12,6 +15,13 @@ import { useToast } from "../../context/ToastContext";
 import type { ProductSummary } from "../../types/api";
 import Price from "../common/Price";
 import RatingStars from "../common/RatingStars";
+import type { ReactNode } from "react";
+
+type ProductCardProps = {
+  product: ProductSummary;
+  badge?: { label: string; className: string }; // replaces the product's own badge, e.g. "#1 BEST SELLER" (STEP 33)
+  details?: ReactNode; // replaces the stars line under the name (STEP 33)
+};
 
 // The badge colours from the design: SALE red, TOP SELLER green, anything else amber ("#4 BEST SELLER")
 const badgeColor = (badge: string) =>
@@ -21,12 +31,19 @@ const badgeColor = (badge: string) =>
       ? "bg-success text-white"
       : "bg-warning text-white";
 
-const ProductCard = ({ product }: { product: ProductSummary }) => {
+const ProductCard = ({ product, badge, details }: ProductCardProps) => {
   const { addItem } = useCart();
   const { showToast } = useToast();
 
   const soldOut = product.trackStock && product.stock === 0;
   const link = `/product/${product.slug}`;
+
+  // The badge to show: the one given by the row, or the product's own (SALE, TOP SELLER...), or none
+  const shownBadge =
+    badge ??
+    (product.badge
+      ? { label: product.badge, className: badgeColor(product.badge) }
+      : null);
 
   const handleAdd = () => {
     // Quick add from a card takes the first colour. (The product page lets you choose, STEP 35.)
@@ -60,11 +77,11 @@ const ProductCard = ({ product }: { product: ProductSummary }) => {
           </span>
         )}
 
-        {product.badge && (
+        {shownBadge && (
           <span
-            className={`absolute top-3 left-3 rounded-full px-2.5 py-1 text-[11px] leading-3.5 font-bold uppercase ${badgeColor(product.badge)}`}
+            className={`absolute top-3 left-3 rounded-full px-2.5 py-1 text-[11px] leading-3.5 font-bold uppercase ${shownBadge.className}`}
           >
-            {product.badge}
+            {shownBadge.label}
           </span>
         )}
       </Link>
@@ -82,11 +99,13 @@ const ProductCard = ({ product }: { product: ProductSummary }) => {
         </h3>
 
         <div className="mt-1.5">
-          <RatingStars
-            rating={product.ratings}
-            count={product.reviewCount}
-            size={15}
-          />
+          {details ?? (
+            <RatingStars
+              rating={product.ratings}
+              count={product.reviewCount}
+              size={15}
+            />
+          )}
         </div>
 
         <div className="mt-auto flex items-center justify-between gap-2 pt-3">
