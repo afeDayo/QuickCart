@@ -1,6 +1,7 @@
 import { Link, NavLink } from "react-router-dom";
 import logo from "../../assets/images/Link.png";
-import { MdOutlineLocalMall, MdOutlinePerson, MdSearch } from "react-icons/md";
+import { MdOutlineLocalMall, MdSearch } from "react-icons/md";
+import AccountMenu from "./AccountMenu";
 
 // The links in the main navigation
 const navLinks = [
@@ -75,12 +76,7 @@ const Navbar = () => {
             </span>
           </Link>
 
-          <Link
-            to="/account"
-            className="flex size-8 items-center justify-center rounded-full bg-primary text-white transition-colors hover:bg-primary-hover"
-          >
-            <MdOutlinePerson size={16} aria-hidden="true" />
-          </Link>
+          <AccountMenu />
         </div>
       </div>
     </nav>
