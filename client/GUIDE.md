@@ -39,8 +39,8 @@ then the admin.
 | ✅   | 30     | Connect the client to the server: real categories on the Home page |
 | ✅   | 31     | Logged-in user: AuthContext, Login and Register pages, protected routes |
 | ✅   | 32     | The cart (saved in the browser), toasts, product cards, Featured products |
-| ⬜   | **33** | **The rest of the Home page sections** ← you are here |
-| ⬜   | 34     | Shop page (filters, search, sort, pages) and Categories page                        |
+| ✅   | 33     | The rest of the Home page sections |
+| ⬜   | **34** | **Shop page (filters, search, sort, pages) and Categories page** ← you are here |
 | ⬜   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
 | ⬜   | 36     | Cart page: items, promo code, summary, empty state                                  |
 | ⬜   | 37     | Forgot password, reset password, verify email                                       |
@@ -2446,7 +2446,8 @@ In `src/components/layout/Navbar.tsx`:
                aria-label={`Cart, ${count} ${count === 1 ? "item" : "items"}`}
    ```
 
-4. Replace the red `<span ...>1</span>` with (keep your long `className` exactly as it is):
+4. Replace the **whole** red `<span ...>1</span>` (its opening tag, the `1` and its closing `</span>`, all three) with
+   this. Don't put it inside the old span: the old one would stay as an empty red dot.
 
    ```tsx
                {/* key={count}: a new number = a new element, so the "bump" animation plays again */}
@@ -3378,3 +3379,683 @@ git push
 ➡️ **Next: STEP 34 (The Shop page: category, price and search filters, sorting and pages, all kept in the address
 bar so links like `/shop?category=electronics` work; the Navbar search box; and the Categories page).** Reply **NEXT**
 when 33.10 works.
+
+---
+
+## STEP 34: The Shop page, search and the Categories page
+
+By the end of this step:
+
+- **Shop all products** (design: Shop): category chips, a search box, "All Categories" and "Sort" dropdowns, 24
+  products per page, "Showing 1–24 of 40 items" and page buttons
+- every choice is kept **in the address bar** (`/shop?category=electronics&sort=price-asc&page=2`), so the links
+  you already have work: the Footer's categories, the Home rows' "View all", and Back/Forward undo filters
+- the **Navbar search box** works: type and press Enter → `/shop?search=...`
+- a **Categories** page with a card per department
+- every new page opens **scrolled to the top**
+
+| New / changed file                      | What it is                                                     |
+| --------------------------------------- | -------------------------------------------------------------- |
+| `components/common/Pagination.tsx`      | "‹ 1 2 3 … 7 ›", reused by Order History and the admin tables later |
+| `components/common/EmptyState.tsx`      | the "No products found" box, reused for the empty cart and "no orders yet" |
+| `components/layout/ScrollToTop.tsx`     | scrolls to the top on every new page                           |
+| `components/layout/SearchBox.tsx`       | the Navbar search                                              |
+| `pages/shop/ShopPage.tsx`               | the Shop page                                                  |
+| `components/product/CategoryCard.tsx`, `pages/shop/CategoriesPage.tsx` | the Categories page              |
+
+### 34.1 First, fix the cart badge from STEP 32
+
+While testing this step on your code, the bag showed **a red dot with no number** even with an empty cart. In your
+`Navbar.tsx` the new badge went *inside* the old `<span>` instead of replacing it:
+
+```tsx
+<span className="absolute -top-1 -right-1 ... animate-bumb ...">      {/* ❌ the OLD span: always shows an empty red dot */}
+  {/* key={count}: ... */}
+  {count > 0 && (
+    <span key={count} ...>{count > 99 ? "99+" : count}</span>
+  )}
+</span>                                                               {/* ❌ its closing tag */}
+```
+
+Delete the outer `<span className="absolute -top-1 ...">` line and its closing `</span>` (just before `</Link>`). Keep
+what's between them. After the fix, the inside of the cart `<Link>` is only:
+
+```tsx
+            <MdOutlineLocalMall size={20} aria-hidden="true" />
+            {/* key={count}: a new number = a new element, so the "bump" animation plays again */}
+            {count > 0 && (
+              <span
+                key={count}
+                aria-hidden="true"
+                className="absolute -top-1 -right-1 flex h-4.5 min-w-4.5 animate-bumb items-center justify-center rounded-full bg-danger px-1 text-xs leading-none font-bold text-white"
+              >
+                {count > 99 ? "99+" : count}
+              </span>
+            )}
+```
+
+Check: with an empty cart (DevTools → Application → Local Storage → delete `quickcart_cart`, refresh) there's **no** red
+dot; add something and "1" appears in the corner.
+
+### 34.2 `src/components/common/Pagination.tsx`
+
+Replace the placeholder.
+
+```tsx
+// Pagination.tsx client/src/components/common/Pagination.tsx
+// "‹ 1 2 3 4 … 7 ›" under a list. Used by the Shop page, and later Order History and the admin tables.
+//   <Pagination page={2} pages={7} onChange={(page) => ...} />
+
+// STEP 34 (part 1): Pagination
+
+import { MdChevronLeft, MdChevronRight } from "react-icons/md";
+
+type PaginationProps = {
+  page: number;
+  pages: number;
+  onChange: (page: number) => void;
+};
+
+// Which buttons to show: always the first and last page, and the pages around the current one.
+// Gaps become "…". pagesToShow(5, 10) -> [1, "…", 4, 5, 6, "…", 10]
+const pagesToShow = (page: number, pages: number): (number | "…")[] => {
+  const wanted = new Set([1, pages, page - 1, page, page + 1].filter((n) => n >= 1 && n <= pages));
+  const sorted = [...wanted].sort((a, b) => a - b);
+
+  const result: (number | "…")[] = [];
+  sorted.forEach((n, index) => {
+    if (index > 0 && n - sorted[index - 1] > 1) result.push("…");
+    result.push(n);
+  });
+  return result;
+};
+
+const buttonClasses =
+  "flex size-10 items-center justify-center rounded-xl bg-surface text-sm font-medium text-ink shadow-card transition-colors hover:bg-field disabled:cursor-not-allowed disabled:opacity-40";
+
+const Pagination = ({ page, pages, onChange }: PaginationProps) => {
+  if (pages <= 1) return null; // one page: nothing to choose
+
+  return (
+    <nav aria-label="Pages" className="flex items-center gap-2">
+      <button type="button" onClick={() => onChange(page - 1)} disabled={page <= 1} aria-label="Previous page" className={buttonClasses}>
+        <MdChevronLeft size={20} />
+      </button>
+
+      {pagesToShow(page, pages).map((item, index) =>
+        item === "…" ? (
+          <span key={`gap-${index}`} aria-hidden="true" className="px-1 text-muted">
+            …
+          </span>
+        ) : (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onChange(item)}
+            aria-current={item === page ? "page" : undefined} // tells screen readers "current page"
+            aria-label={`Page ${item}`}
+            className={item === page ? `${buttonClasses} bg-primary! text-white hover:bg-primary-hover!` : buttonClasses}
+          >
+            {item}
+          </button>
+        ),
+      )}
+
+      <button type="button" onClick={() => onChange(page + 1)} disabled={page >= pages} aria-label="Next page" className={buttonClasses}>
+        <MdChevronRight size={20} />
+      </button>
+    </nav>
+  );
+};
+
+export default Pagination;
+```
+
+- **`pagesToShow`** never shows 50 buttons: only the first page, the last, and the ones next to the current page.
+  Gaps become "…".
+- **`bg-primary!`**: the `!` at the end is Tailwind v4's "important", so the current page's blue wins over the white
+  in `buttonClasses`.
+
+### 34.3 `src/components/common/EmptyState.tsx`
+
+Replace the placeholder.
+
+```tsx
+// EmptyState.tsx client/src/components/common/EmptyState.tsx
+// The friendly "nothing here" box: an icon, a title, a sentence, and an optional button.
+// Used when a search finds nothing (STEP 34), an empty cart (STEP 36), no orders yet (STEP 40)...
+//   <EmptyState icon={MdSearchOff} title="No products found" text="Try another word." action={<button>...</button>} />
+
+// STEP 34 (part 2): The empty state
+
+import type { ReactNode } from "react";
+import type { IconType } from "react-icons";
+
+type EmptyStateProps = {
+  icon: IconType;
+  title: string;
+  text?: string;
+  action?: ReactNode;
+};
+
+const EmptyState = ({ icon: Icon, title, text, action }: EmptyStateProps) => {
+  return (
+    <div className="flex flex-col items-center rounded-3xl bg-surface px-6 py-16 text-center shadow-card">
+      <span className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-primary-light text-primary">
+        <Icon size={32} aria-hidden="true" />
+      </span>
+      <h2 className="text-xl leading-7 font-bold text-ink">{title}</h2>
+      {text && <p className="mt-2 max-w-100 text-[15px] leading-6 text-ink-soft">{text}</p>}
+      {action && <div className="mt-6">{action}</div>}
+    </div>
+  );
+};
+
+export default EmptyState;
+```
+
+### 34.4 `src/components/layout/ScrollToTop.tsx` and `src/components/layout/SearchBox.tsx`
+
+Replace the `ScrollToTop` placeholder:
+
+```tsx
+// ScrollToTop.tsx client/src/components/layout/ScrollToTop.tsx
+// React Router changes the page without reloading, so the browser keeps the old scroll position: click a product at
+// the bottom of the Home page and its page would open scrolled to the bottom. This scrolls to the top on every new page.
+// It draws nothing (returns null); MainLayout includes it once.
+
+// STEP 34 (part 3): Scroll to the top on every new page
+
+import { useEffect } from "react";
+import { useLocation } from "react-router-dom";
+
+const ScrollToTop = () => {
+  const { pathname } = useLocation(); // only the path ("/shop"), so changing a filter (?sort=...) doesn't jump
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+
+  return null;
+};
+
+export default ScrollToTop;
+```
+
+New file `SearchBox.tsx`:
+
+```tsx
+// SearchBox.tsx client/src/components/layout/SearchBox.tsx
+// The Navbar's "Search products, brands and categories..." box. Pressing Enter opens the Shop page with the search:
+// "aura" -> /shop?search=aura (the server searches names, brands and tags, server STEP 16).
+
+// STEP 34 (part 4): The Navbar search
+
+import { useState, type FormEvent } from "react";
+import { MdSearch } from "react-icons/md";
+import { useNavigate } from "react-router-dom";
+
+const SearchBox = () => {
+  const navigate = useNavigate();
+  const [text, setText] = useState("");
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const search = text.trim();
+    // encodeURIComponent: "socks & shoes" -> "socks%20%26%20shoes", safe inside an address
+    navigate(search ? `/shop?search=${encodeURIComponent(search)}` : "/shop");
+    setText("");
+  };
+
+  return (
+    <form role="search" onSubmit={handleSubmit} className="relative hidden lg:block">
+      <label htmlFor="header-search" className="sr-only">
+        Search products, brands and categories
+      </label>
+      <MdSearch size={21} aria-hidden="true" className="pointer-events-none absolute top-3 left-3.25 text-muted" />
+      <input
+        id="header-search"
+        name="search"
+        type="search"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        placeholder="Search products, brands and categories..."
+        className="h-12 w-83 rounded-full bg-field pr-4 pl-11.75 text-[13px] text-ink outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/30"
+      />
+    </form>
+  );
+};
+
+export default SearchBox;
+```
+
+In `src/layouts/MainLayout.tsx`, add the import and put `<ScrollToTop />` first:
+
+```tsx
+import ScrollToTop from "../components/layout/ScrollToTop";
+```
+
+```tsx
+    <>
+      <ScrollToTop />
+      <Navbar />
+```
+
+In `src/components/layout/Navbar.tsx`:
+
+1. Remove `MdSearch` from the icons import, and import the new box:
+
+   ```tsx
+   import { MdOutlineLocalMall } from "react-icons/md";
+   import SearchBox from "./SearchBox";
+   ```
+
+2. Replace the whole `<form role="search" ...> ... </form>` with:
+
+   ```tsx
+             <SearchBox />
+   ```
+
+The input looks exactly the same: `SearchBox` has your classes. It just has a `value`, an `onChange` and an `onSubmit`
+now.
+
+### 34.5 `src/pages/shop/ShopPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// ShopPage.tsx client/src/pages/shop/ShopPage.tsx
+// "Shop all products": category chips, search, category and sort dropdowns, 24 products per page. (Design: Shop)
+// Every choice lives in the ADDRESS BAR (/shop?category=electronics&sort=price-asc&page=2), so:
+//   - links from other pages work (the Footer, the Home rows' "View all", the Navbar search)
+//   - Back and Forward undo and redo filters
+//   - you can share or refresh a filtered page and get the same products
+
+// STEP 34 (part 5): The Shop page
+
+import { useEffect, useRef, useState } from "react";
+import { MdClose, MdSearch, MdSearchOff } from "react-icons/md";
+import { useSearchParams } from "react-router-dom";
+import EmptyState from "../../components/common/EmptyState";
+import Pagination from "../../components/common/Pagination";
+import ProductCard from "../../components/product/ProductCard";
+import { useApi } from "../../hooks/useApi";
+import type { CategoriesResponse, ProductsResponse } from "../../types/api";
+
+const PER_PAGE = 24; // like the design ("Showing 1-24")
+
+// The server's sort names (server STEP 16) and what the dropdown says
+const SORTS = [
+  { value: "featured", label: "Featured" },
+  { value: "newest", label: "Newest" },
+  { value: "price-asc", label: "Price: Low to High" },
+  { value: "price-desc", label: "Price: High to Low" },
+  { value: "rating", label: "Top Rated" },
+  { value: "best-selling", label: "Best Selling" },
+];
+
+// The Home rows link here with a tag (?tag=new-arrival): show a readable name for it
+const TAG_NAMES: Record<string, string> = {
+  featured: "Featured",
+  "new-arrival": "New Arrivals",
+  recommended: "Recommended",
+  deal: "Today's Deals",
+  "flash-deal": "Flash Deals",
+};
+
+const chipClasses = (active: boolean) =>
+  `shrink-0 rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+    active ? "bg-primary text-white" : "bg-surface text-ink-soft shadow-card hover:text-primary"
+  }`;
+
+const selectClasses =
+  "h-12 cursor-pointer rounded-xl bg-surface px-4 text-[15px] font-medium text-ink shadow-card outline-none focus:ring-2 focus:ring-primary/30";
+
+const ShopPage = () => {
+  const [params, setParams] = useSearchParams();
+
+  // Read the filters from the address bar (missing = the default)
+  const category = params.get("category") ?? "";
+  const search = params.get("search") ?? "";
+  const tag = params.get("tag") ?? "";
+  const sort = params.get("sort") ?? "featured";
+  const page = Math.max(1, Number(params.get("page")) || 1);
+
+  // Change some filters. Any change except the page itself goes back to page 1
+  // (page 3 of "all products" may not exist for "Books").
+  // setParams((current) => ...) gets the address as it is RIGHT NOW, so a late update (the search timer below)
+  // never undoes a filter clicked in the meantime.
+  const update = (changes: Record<string, string>) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      for (const [key, value] of Object.entries(changes)) {
+        if (value && !(key === "sort" && value === "featured")) next.set(key, value);
+        else next.delete(key); // empty, or the default: keep the address short
+      }
+      if (!("page" in changes)) next.delete("page");
+      return next;
+    });
+  };
+
+  // The search box: typing updates the address 0.4s after you stop (debouncing, like the register email check)
+  const [searchText, setSearchText] = useState(search);
+  const [lastSearch, setLastSearch] = useState(search);
+  if (search !== lastSearch) {
+    // The search changed from OUTSIDE this box (the Navbar search, Back button): show it in the box.
+    // (Setting state while rendering is React's recommended way to follow a value like this.)
+    setLastSearch(search);
+    setSearchText(search);
+  }
+  const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleSearchChange = (value: string) => {
+    setSearchText(value);
+    clearTimeout(searchTimer.current); // typed again before 0.4s: forget the previous timer
+    searchTimer.current = setTimeout(() => update({ search: value.trim() }), 400);
+  };
+  // Leaving the page: cancel a waiting timer, or it would bring you back to /shop
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
+
+  // The same filters, as the server's query string
+  const query = new URLSearchParams({ limit: String(PER_PAGE), page: String(page) });
+  if (category) query.set("category", category);
+  if (search) query.set("search", search);
+  if (tag) query.set("tag", tag);
+  if (sort !== "featured") query.set("sort", sort);
+
+  const { data, error, loading, reload } = useApi<ProductsResponse>(`/products?${query}`);
+  const { data: categoryData } = useApi<CategoriesResponse>("/categories");
+  const categories = categoryData?.categories ?? [];
+
+  const currentCategory = categories.find((item) => item.slug === category);
+  const title = search ? `Results for "${search}"` : currentCategory ? currentCategory.name : tag ? TAG_NAMES[tag] ?? "Shop all products" : "Shop all products";
+  const hasFilters = Boolean(category || search || tag);
+
+  const goToPage = (next: number) => {
+    update({ page: String(next) });
+    window.scrollTo({ top: 0, behavior: "smooth" }); // back to the top of the new page
+  };
+
+  const first = data ? (data.page - 1) * PER_PAGE + 1 : 0;
+  const last = data ? Math.min(data.page * PER_PAGE, data.total) : 0;
+
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-10 pb-20 md:px-12">
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <h1 className="text-4xl leading-11 font-extrabold tracking-tight text-ink md:text-5xl md:leading-14">{title}</h1>
+
+        {/* The quick chips: All + the first 6 categories (the dropdown below has all of them) */}
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 lg:mx-0 lg:px-0">
+          <button type="button" onClick={() => update({ category: "" })} className={chipClasses(!category)}>
+            All
+          </button>
+          {categories.slice(0, 6).map((item) => (
+            <button key={item._id} type="button" onClick={() => update({ category: item.slug })} className={chipClasses(category === item.slug)}>
+              {item.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mb-4 flex flex-col gap-3 md:flex-row">
+        <div className="relative flex-1">
+          <label htmlFor="shop-search" className="sr-only">
+            Search products
+          </label>
+          <MdSearch size={22} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted" />
+          <input
+            id="shop-search"
+            type="search"
+            value={searchText}
+            onChange={(event) => handleSearchChange(event.target.value)}
+            placeholder="Search products, brands and tags..."
+            className="h-12 w-full rounded-xl bg-surface pr-4 pl-12 text-[15px] text-ink shadow-card outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+
+        <label htmlFor="shop-category" className="sr-only">
+          Category
+        </label>
+        <select id="shop-category" value={category} onChange={(event) => update({ category: event.target.value })} className={selectClasses}>
+          <option value="">All Categories</option>
+          {categories.map((item) => (
+            <option key={item._id} value={item.slug}>
+              {item.name} ({item.productCount})
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor="shop-sort" className="sr-only">
+          Sort by
+        </label>
+        <select id="shop-sort" value={sort} onChange={(event) => update({ sort: event.target.value })} className={selectClasses}>
+          {SORTS.map((option) => (
+            <option key={option.value} value={option.value}>
+              Sort: {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* The active filters, each with an ✕ to remove it */}
+      {hasFilters && (
+        <div className="mb-6 flex flex-wrap items-center gap-2 text-sm">
+          {[
+            category && { key: "category", label: currentCategory?.name ?? category },
+            tag && { key: "tag", label: TAG_NAMES[tag] ?? tag },
+            search && { key: "search", label: `"${search}"` },
+          ]
+            .filter((chip): chip is { key: string; label: string } => Boolean(chip))
+            .map((chip) => (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => update({ [chip.key]: "" })}
+                aria-label={`Remove filter ${chip.label}`}
+                className="flex items-center gap-1 rounded-full bg-primary-light py-1 pr-2 pl-3 font-medium text-primary hover:bg-info-light"
+              >
+                {chip.label} <MdClose size={16} aria-hidden="true" />
+              </button>
+            ))}
+          <button type="button" onClick={() => setParams({})} className="ml-1 font-semibold text-muted hover:text-ink">
+            Clear all
+          </button>
+        </div>
+      )}
+
+      {error ? (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          <p>{error}</p>
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : !data && loading ? (
+        <ul aria-hidden="true" className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 8 }, (_, index) => (
+            <li key={index} className="h-105 animate-pulse rounded-3xl bg-surface shadow-card" />
+          ))}
+        </ul>
+      ) : data && data.products.length === 0 ? (
+        <EmptyState
+          icon={MdSearchOff}
+          title="No products found"
+          text={search ? `Nothing matches "${search}". Check the spelling, or try a shorter word.` : "There's nothing here yet. Try another category."}
+          action={
+            <button type="button" onClick={() => setParams({})} className="h-11 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              Show all products
+            </button>
+          }
+        />
+      ) : (
+        data && (
+          <>
+            {/* While new results load, the old ones stay but fade (aria-busy tells screen readers it's updating) */}
+            <ul aria-busy={loading} className={`grid grid-cols-1 gap-6 transition-opacity sm:grid-cols-2 lg:grid-cols-4 ${loading ? "opacity-50" : ""}`}>
+              {data.products.map((product) => (
+                <li key={product._id} className="flex">
+                  <ProductCard product={product} />
+                </li>
+              ))}
+            </ul>
+
+            <div className="mt-10 flex flex-col items-center justify-between gap-4 border-t border-line pt-6 sm:flex-row">
+              <p className="text-sm text-ink-soft">
+                Showing{" "}
+                <strong className="text-ink">
+                  {first}–{last}
+                </strong>{" "}
+                of <strong className="text-ink">{data.total}</strong> {data.total === 1 ? "item" : "items"}
+              </p>
+              <Pagination page={data.page} pages={data.pages} onChange={goToPage} />
+            </div>
+          </>
+        )
+      )}
+    </div>
+  );
+};
+
+export default ShopPage;
+```
+
+**Things worth understanding:**
+
+- **`useSearchParams`** reads and writes the part of the address after `?`. The filters are *not* in `useState`: the
+  address IS the state. That's what makes `/shop?category=home-living` from your Footer work, and Back undo a filter.
+- **`update({ category: "fashion" })`** changes only what you pass and goes back to page 1 (page 3 of "everything"
+  may not exist for "Books"). The default sort (`featured`) is left out of the address to keep it short.
+- **`setParams((current) => ...)`** builds the new address from the address *as it is now*. The search box updates
+  it 0.4 s after you stop typing; if you click a chip in those 0.4 s, the late update keeps your chip. (The linter
+  pointed out the problem with my first version, which used an effect.)
+- **The search box keeps its own text** (`searchText`) so typing feels instant, and only puts it in the address after
+  0.4 s. When the search changes from *outside* (the Navbar search, the Back button), the `if (search !==
+  lastSearch)` block copies it into the box. Setting state during render like this is React's recommended way to
+  "follow" a value without an effect.
+- **The clean-up `useEffect`** cancels a waiting search timer when you leave the page. Without it, typing and then
+  quickly clicking a product would bring you back to `/shop`.
+- **4 states**: the error with Try again, grey boxes on the very first load, "No products found", and the products.
+  When you change a filter, the old products stay **faded** until the new ones arrive (`aria-busy`), instead of
+  flashing empty.
+
+### 34.6 The Categories page: `src/components/product/CategoryCard.tsx` and `src/pages/shop/CategoriesPage.tsx`
+
+Replace both placeholders. There's no design for this page, so it uses the Home page's style.
+
+```tsx
+// CategoryCard.tsx client/src/components/product/CategoryCard.tsx
+// A big department card for the Categories page: icon, name, number of products, "Shop now".
+
+// STEP 34 (part 6): The category card
+
+import { MdArrowForward } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { Category } from "../../types/api";
+import { categoryIcons, DefaultCategoryIcon } from "../../utils/categoryIcons";
+import { plural } from "../../utils/format";
+
+const CategoryCard = ({ category }: { category: Category }) => {
+  const Icon = categoryIcons[category.icon] ?? DefaultCategoryIcon;
+
+  return (
+    <Link
+      to={`/shop?category=${category.slug}`}
+      className="group flex h-full flex-col rounded-3xl bg-surface p-6 shadow-card transition-shadow hover:shadow-lift"
+    >
+      <span className="mb-6 flex size-16 items-center justify-center rounded-2xl bg-primary-light text-primary transition-colors group-hover:bg-primary group-hover:text-white">
+        <Icon size={32} aria-hidden="true" />
+      </span>
+      <h2 className="text-xl leading-7 font-bold text-ink">{category.name}</h2>
+      <p className="mt-1 text-sm text-muted">{plural(category.productCount, "product")}</p>
+      <span className="mt-6 flex items-center gap-1 text-sm font-semibold text-primary-hover">
+        Shop now <MdArrowForward size={16} aria-hidden="true" className="transition-transform group-hover:translate-x-1" />
+      </span>
+    </Link>
+  );
+};
+
+export default CategoryCard;
+```
+
+```tsx
+// CategoriesPage.tsx client/src/pages/shop/CategoriesPage.tsx
+// /categories: every department as a big card. (There's no design for it, so it reuses the Home page's style.)
+
+// STEP 34 (part 7): The Categories page
+
+import CategoryCard from "../../components/product/CategoryCard";
+import { useApi } from "../../hooks/useApi";
+import type { CategoriesResponse } from "../../types/api";
+
+const CategoriesPage = () => {
+  const { data, error, loading, reload } = useApi<CategoriesResponse>("/categories");
+
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-10 pb-20 md:px-12">
+      <p className="text-[11px] font-bold tracking-wider text-primary uppercase">Explore departments</p>
+      <h1 className="mt-1 text-4xl leading-11 font-extrabold tracking-tight text-ink md:text-5xl md:leading-14">Shop by category</h1>
+      <p className="mt-2 mb-8 max-w-140 text-base leading-6.5 text-ink-soft">
+        Everything we sell, by department. Pick one to see all its products.
+      </p>
+
+      {error ? (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          <p>{error}</p>
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : (
+        <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {loading
+            ? Array.from({ length: 8 }, (_, index) => <li key={index} aria-hidden="true" className="h-60 animate-pulse rounded-3xl bg-surface shadow-card" />)
+            : data?.categories.map((category) => (
+                <li key={category._id}>
+                  <CategoryCard category={category} />
+                </li>
+              ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default CategoriesPage;
+```
+
+### 34.7 Test it
+
+After `npm run seed`, both terminals running:
+
+| Do this                                                       | You should see                                         |
+| ------------------------------------------------------------- | ------------------------------------------------------ |
+| Click **Shop** in the Navbar                                   | "Shop all products", 24 cards (headphones first), "Showing **1–24** of **40** items", buttons 1 2 › |
+| Click **2**                                                    | the address is `/shop?page=2`, 16 cards, "Showing 25–40 of 40", the page scrolls up |
+| Click the **Electronics** chip                                 | `/shop?category=electronics`, title "Electronics", 15 products, back on page 1 |
+| Sort: **Price: Low to High**                                   | `...&sort=price-asc`, cheapest first                   |
+| Press the browser's **Back** button                            | the sort is undone and the dropdown says Featured again |
+| Type `aura` in the page's search box and wait                  | after a moment: `...&search=aura`, title `Results for "aura"`, chips for Electronics and "aura" |
+| Click the ✕ on the Electronics chip                            | `/shop?search=aura`: all categories                    |
+| Search `zzzzqqq`                                               | "No products found"; **Show all products** clears everything |
+| Type `kettle` in the **Navbar** search and press Enter          | `/shop?search=kettle`, the page's box says "kettle", 2 kettles |
+| Home → "See all new in" / "See leaderboard"; Footer → "Home & Living" | New Arrivals (4) / best-selling order / Home & Living (3) |
+| `/shop?category=toys`                                          | "No products found" (not an error)                     |
+| Scroll down the Shop page, click a product                     | its page opens at the **top**                          |
+| **Categories** in the Navbar                                   | 8 cards (Electronics 15 products, Fashion 6...); a card opens the Shop page on that category |
+| Narrow window (phone)                                          | chips scroll sideways, the dropdowns stack, 1 card per row |
+
+I tested all of this on a copy of your project against a throwaway database: **30 checks, all passed** (one only
+needed a second longer on the slow connection; I re-checked it by hand). I compared the screenshots with the design.
+`npm run build` and `npm run lint` pass. The test is also what found the cart badge bug in 34.1.
+
+### 34.8 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 34: shop page, search, categories page"
+git push
+```
+
+➡️ **Next: STEP 35 (Product Details: the photo gallery, colours, quantity, Add to Cart, the ♡ save button, the specs
+and highlights, reviews with the star bars and "Write a review", Frequently Bought Together, Related Products, and
+Recently Viewed on the Home page).** Reply **NEXT** when 34.7 works.
