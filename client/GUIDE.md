@@ -37,9 +37,9 @@ then the admin.
 | Done | Step   | What                                                                                |
 | ---- | ------ | ----------------------------------------------------------------------------------- |
 | ✅   | 30     | Connect the client to the server: real categories on the Home page |
-| ⬜   | **31** | **Logged-in user: AuthContext, Login and Register pages, protected routes** ← you are here |
-| ⬜   | 32     | The cart: CartContext (saved in the browser), cart count, toasts                    |
-| ⬜   | 33     | Product cards and the Home page sections                                            |
+| ✅   | 31     | Logged-in user: AuthContext, Login and Register pages, protected routes |
+| ⬜   | **32** | **The cart (saved in the browser), toasts, product cards, Featured products** ← you are here |
+| ⬜   | 33     | The rest of the Home page sections |
 | ⬜   | 34     | Shop page (filters, search, sort, pages) and Categories page                        |
 | ⬜   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
 | ⬜   | 36     | Cart page: items, promo code, summary, empty state                                  |
@@ -1628,3 +1628,873 @@ git push
 
 ➡️ **Next: STEP 32 (The cart: a CartContext saved in the browser, the cart count in the Navbar, and pop-up
 messages like "Added to cart").** Reply **NEXT** when 31.9 works.
+
+---
+
+## STEP 32: The cart, toasts and the first product cards
+
+By the end of this step:
+
+- a **cart** that lives in the browser: add products, change quantities, remove them. It survives a refresh,
+  and needs no login (checkout will ask for one)
+- the **red number on the Navbar's bag** shows how many items are in the cart, with a little "bump" each time
+- the **"Added to Cart!"** box from the design drops down whenever something is added, from any page
+- **toasts**: small dark messages in the corner for things like "Only 3 left"
+- the reusable **product card** (photo, badge, category, name, stars, price, **Add**), and the Home page's
+  **"Featured products"** row using it, so you can test the cart for real
+
+| New file                                   | What it is                                                     |
+| ------------------------------------------ | -------------------------------------------------------------- |
+| `utils/format.ts`                          | `naira(45000)` → "₦45,000", `plural(3, "item")` → "3 items"     |
+| `context/CartContext.ts`, `CartProvider.tsx` | `useCart()`: items, count, subtotal, add / change / remove    |
+| `context/ToastContext.ts`, `ToastProvider.tsx` + `components/common/Toaster.tsx` | `useToast()`: show a message |
+| `components/common/Price.tsx`, `RatingStars.tsx` | "₦45,000 ~~₦60,000~~" and ★★★★½ (48), used by every card     |
+| `components/product/ProductCard.tsx`       | the card from the design's "Featured products"                  |
+| `components/home/FeaturedProducts.tsx`     | the Home row: `GET /api/products?tag=featured&limit=4`          |
+| `components/product/AddedToCartModal.tsx`  | the "Added to Cart!" box                                       |
+
+### 32.1 Product types in `src/types/api.ts`
+
+Add at the bottom:
+
+```ts
+// STEP 32: Products (server: models/Product.ts and CARD_FIELDS in productController.ts)
+
+export type ProductColor = { name: string; hex: string }; // { name: "Midnight Black", hex: "#1f2937" }
+
+// What a product CARD gets from GET /api/products: the fields cards need, not the whole product
+export type ProductSummary = {
+  _id: string;
+  name: string;
+  slug: string;
+  brand: string;
+  price: number; // whole naira: 45000 = ₦45,000
+  oldPrice?: number; // the crossed-out price when it's on sale
+  images: string[]; // images[0] is the card photo
+  ratings: number; // average stars, 0 to 5
+  reviewCount: number;
+  badge?: string; // "SALE", "TOP SELLER", "FEATURED"...
+  tagline?: string;
+  priceNote?: string;
+  tags: string[];
+  sold: number;
+  stock: number;
+  trackStock: boolean; // false = never sells out
+  flashSaleStock?: number;
+  colors: ProductColor[];
+  category: { _id: string; name: string; slug: string };
+};
+
+// GET /api/products -> one page of products
+export type ProductsResponse = {
+  products: ProductSummary[];
+  total: number;
+  page: number;
+  pages: number;
+};
+```
+
+`ProductSummary` is what a **card** gets: the server's `CARD_FIELDS` (server STEP 16), not the whole product.
+The Product Details page (STEP 35) adds a bigger `Product` type.
+
+### 32.2 `src/utils/format.ts`
+
+New file.
+
+```ts
+// format.ts client/src/utils/format.ts
+// Small helpers to show values the Nigerian way.
+
+// STEP 32 (part 1): Formatting
+
+// 45000 -> "₦45,000" (prices are whole naira everywhere, like the server)
+export const naira = (amount: number) => `₦${Math.round(amount).toLocaleString("en-NG")}`;
+
+// 1 -> "1 item", 3 -> "3 items"
+export const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+```
+
+`toLocaleString("en-NG")` adds the commas the Nigerian way. Every price on the website goes through `naira()`,
+so if you ever want "NGN 45,000" instead, it's one line to change.
+
+### 32.3 The cart: `src/context/CartContext.ts` and `src/context/CartProvider.tsx`
+
+New files, the same two-file pattern as the auth context (STEP 31).
+
+```ts
+// CartContext.ts client/src/context/CartContext.ts
+// The shopping cart for the whole website:
+//   const { items, count, subtotal, addItem } = useCart();
+// The values come from CartProvider.tsx (wrapped around the app in main.tsx).
+
+// STEP 32 (part 2): The cart context
+
+import { createContext, useContext } from "react";
+import type { ProductSummary } from "../types/api";
+
+// One line in the cart. We copy what the cart page needs to show (name, photo, price), so the cart works
+// without asking the server for every product. The server checks the REAL price and stock at checkout (STEP 22).
+export type CartItem = {
+  key: string; // product id + colour: the same product in 2 colours is 2 lines
+  productId: string;
+  slug: string;
+  name: string;
+  image: string;
+  price: number;
+  oldPrice?: number;
+  color?: string; // "Midnight Black"
+  quantity: number;
+  maxQuantity: number; // the most this line can have (stock, and never more than 10, like the server)
+};
+
+// What addItem answers, so the button can say "Added" or show why not
+export type AddResult = { ok: true; item: CartItem } | { ok: false; message: string };
+
+export type CartContextValue = {
+  items: CartItem[];
+  count: number; // all the quantities added up: the red number on the Navbar's bag
+  subtotal: number;
+  addItem: (product: ProductSummary, options?: { color?: string; quantity?: number }) => AddResult;
+  updateQuantity: (key: string, quantity: number) => void;
+  removeItem: (key: string) => void;
+  clearCart: () => void; // after an order is placed (STEP 38)
+  lastAdded: CartItem | null; // shown in the "Added to Cart!" pop-up
+  dismissLastAdded: () => void;
+};
+
+export const CartContext = createContext<CartContextValue | null>(null);
+
+export const useCart = () => {
+  const value = useContext(CartContext);
+  if (!value) {
+    throw new Error("useCart must be used inside <CartProvider> (see main.tsx)");
+  }
+  return value;
+};
+```
+
+```tsx
+// CartProvider.tsx client/src/context/CartProvider.tsx
+// Keeps the cart, and saves it in the browser (localStorage) so it survives a refresh or closing the tab.
+// No login needed: anyone can fill a cart. Checkout (STEP 38) asks them to log in.
+
+// STEP 32 (part 3): The cart provider
+
+import { useEffect, useState, type ReactNode } from "react";
+import type { ProductSummary } from "../types/api";
+import { CartContext, type AddResult, type CartItem } from "./CartContext";
+
+const CART_KEY = "quickcart_cart";
+const MAX_PER_LINE = 10; // the server refuses more than 10 of one line (orderController.ts, STEP 22)
+
+// Read the saved cart once, when the website opens. Broken or missing data -> an empty cart (never a crash).
+const loadCart = (): CartItem[] => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CART_KEY) ?? "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return [];
+  }
+};
+
+const CartProvider = ({ children }: { children: ReactNode }) => {
+  const [items, setItems] = useState<CartItem[]>(loadCart); // loadCart (no brackets): React runs it only once
+  const [lastAdded, setLastAdded] = useState<CartItem | null>(null);
+
+  // Every time the cart changes, save it
+  useEffect(() => {
+    localStorage.setItem(CART_KEY, JSON.stringify(items));
+  }, [items]);
+
+  // These are worked out from the items every time, so they can never be out of date
+  const count = items.reduce((sum, item) => sum + item.quantity, 0);
+  const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  const addItem = (product: ProductSummary, { color, quantity = 1 }: { color?: string; quantity?: number } = {}): AddResult => {
+    const key = color ? `${product._id}:${color}` : product._id;
+    const maxQuantity = Math.min(MAX_PER_LINE, product.trackStock ? product.stock : MAX_PER_LINE);
+    const existing = items.find((item) => item.key === key);
+    const alreadyInCart = existing?.quantity ?? 0;
+
+    if (maxQuantity <= 0) {
+      return { ok: false, message: `"${product.name}" is sold out.` };
+    }
+    if (alreadyInCart + quantity > maxQuantity) {
+      return {
+        ok: false,
+        message:
+          maxQuantity === MAX_PER_LINE
+            ? `You can add up to ${MAX_PER_LINE} of "${product.name}".`
+            : `Only ${maxQuantity} of "${product.name}" left${alreadyInCart > 0 ? `, and ${alreadyInCart} already in your cart` : ""}.`,
+      };
+    }
+
+    const item: CartItem = existing
+      ? { ...existing, quantity: alreadyInCart + quantity, maxQuantity }
+      : {
+          key,
+          productId: product._id,
+          slug: product.slug,
+          name: product.name,
+          image: product.images[0] ?? "",
+          price: product.price,
+          oldPrice: product.oldPrice,
+          color,
+          quantity,
+          maxQuantity,
+        };
+
+    // Already there: replace that line. New: add it at the end.
+    setItems((current) => (existing ? current.map((line) => (line.key === key ? item : line)) : [...current, item]));
+    setLastAdded({ ...item, quantity }); // the pop-up shows how many were JUST added
+    return { ok: true, item };
+  };
+
+  const updateQuantity = (key: string, quantity: number) => {
+    setItems((current) =>
+      current.map((item) =>
+        item.key === key ? { ...item, quantity: Math.max(1, Math.min(quantity, item.maxQuantity)) } : item,
+      ),
+    );
+  };
+
+  const removeItem = (key: string) => {
+    setItems((current) => current.filter((item) => item.key !== key));
+  };
+
+  const clearCart = () => {
+    setItems([]);
+  };
+
+  return (
+    <CartContext.Provider
+      value={{
+        items,
+        count,
+        subtotal,
+        addItem,
+        updateQuantity,
+        removeItem,
+        clearCart,
+        lastAdded,
+        dismissLastAdded: () => setLastAdded(null),
+      }}
+    >
+      {children}
+    </CartContext.Provider>
+  );
+};
+
+export default CartProvider;
+```
+
+**Things worth understanding:**
+
+- **The cart copies the name, photo and price** when you add something, so the cart page can show it
+  instantly without asking the server. Is that safe? Yes: at checkout the server ignores these prices and uses
+  its own (server STEP 22). Changing the price in `localStorage` gets you nothing.
+- **`key` = product id + colour**: 2 colours of the same headphones are 2 lines in the cart (like the
+  checkout design).
+- **`maxQuantity`**: the stock, and never more than 10. These are the server's own rules, checked here so
+  the shopper finds out now, not at checkout.
+- **`useState(loadCart)`** (no brackets) tells React to read `localStorage` only on the first render.
+  `useState(loadCart())` would read it again on every render.
+- **The `try/catch` in `loadCart`**: if the saved data is broken (someone edited it), the cart starts empty
+  instead of crashing the whole website. My test checked this.
+- **`count` and `subtotal` aren't state:** they're added up from `items` on every render, so they can never
+  disagree with the items.
+- **`addItem` returns a result** (`{ ok: true }` or `{ ok: false, message }`), so each button decides what to
+  show: the card shows a toast, the product page (STEP 35) can show the message next to its button.
+
+### 32.4 Toasts: `src/context/ToastContext.ts`, `src/context/ToastProvider.tsx`, `src/components/common/Toaster.tsx`
+
+```ts
+// ToastContext.ts client/src/context/ToastContext.ts
+// Small pop-up messages in the corner ("toasts"), like the design's "Product updated successfully":
+//   const { showToast } = useToast();
+//   showToast({ type: "error", title: "Only 3 left" });
+
+// STEP 32 (part 4): Toasts
+
+import { createContext, useContext } from "react";
+
+export type Toast = {
+  id: number;
+  type: "success" | "error" | "info";
+  title: string;
+  message?: string; // a second, smaller line
+};
+
+export type ToastContextValue = {
+  toasts: Toast[];
+  showToast: (toast: Omit<Toast, "id">) => void; // the id is made for you
+  dismissToast: (id: number) => void;
+};
+
+export const ToastContext = createContext<ToastContextValue | null>(null);
+
+export const useToast = () => {
+  const value = useContext(ToastContext);
+  if (!value) {
+    throw new Error("useToast must be used inside <ToastProvider> (see main.tsx)");
+  }
+  return value;
+};
+```
+
+```tsx
+// ToastProvider.tsx client/src/context/ToastProvider.tsx
+// Keeps the list of toasts, removes each one after 5 seconds, and draws them (Toaster) on top of every page.
+
+// STEP 32 (part 5): The toast provider
+
+import { useRef, useState, type ReactNode } from "react";
+import Toaster from "../components/common/Toaster";
+import { ToastContext, type Toast } from "./ToastContext";
+
+const TOAST_SECONDS = 5;
+
+const ToastProvider = ({ children }: { children: ReactNode }) => {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const nextId = useRef(1); // a counter that survives re-renders without causing one
+
+  const dismissToast = (id: number) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  };
+
+  const showToast = (toast: Omit<Toast, "id">) => {
+    const id = nextId.current++;
+    setToasts((current) => [...current.slice(-2), { ...toast, id }]); // at most 3 on screen
+    setTimeout(() => dismissToast(id), TOAST_SECONDS * 1000);
+  };
+
+  return (
+    <ToastContext.Provider value={{ toasts, showToast, dismissToast }}>
+      {children}
+      <Toaster />
+    </ToastContext.Provider>
+  );
+};
+
+export default ToastProvider;
+```
+
+`Toaster.tsx` replaces the placeholder:
+
+```tsx
+// Toaster.tsx client/src/components/common/Toaster.tsx
+// Draws the toasts in the bottom-right corner (bottom of the screen on phones), like the design's dark
+// "Product updated successfully" box. ToastProvider puts it on every page.
+
+// STEP 32 (part 5): The toasts on screen
+
+import { MdCheckCircle, MdClose, MdErrorOutline, MdInfoOutline } from "react-icons/md";
+import { useToast } from "../../context/ToastContext";
+
+const ICONS = {
+  success: { icon: MdCheckCircle, color: "text-mint" },
+  error: { icon: MdErrorOutline, color: "text-[#ffb4ab]" },
+  info: { icon: MdInfoOutline, color: "text-primary-light" },
+};
+
+const Toaster = () => {
+  const { toasts, dismissToast } = useToast();
+
+  return (
+    // aria-live="polite": screen readers read each new toast without interrupting
+    <div aria-live="polite" className="pointer-events-none fixed inset-x-4 bottom-4 z-100 flex flex-col items-end gap-3 sm:left-auto">
+      {toasts.map((toast) => {
+        const { icon: Icon, color } = ICONS[toast.type];
+        return (
+          <div
+            key={toast.id}
+            role={toast.type === "error" ? "alert" : "status"}
+            className="pointer-events-auto flex w-full max-w-sm animate-slide-up items-start gap-3 rounded-2xl bg-navy px-4 py-3.5 text-white shadow-banner"
+          >
+            <Icon size={22} aria-hidden="true" className={`mt-px shrink-0 ${color}`} />
+            <div className="flex-1">
+              <p className="text-[15px] leading-5 font-semibold">{toast.title}</p>
+              {toast.message && <p className="mt-0.5 text-sm leading-5 text-white/75">{toast.message}</p>}
+            </div>
+            <button type="button" onClick={() => dismissToast(toast.id)} aria-label="Close message" className="text-white/70 hover:text-white">
+              <MdClose size={20} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+export default Toaster;
+```
+
+- **`useRef` for the id counter:** a ref keeps a value between renders like state does, but changing it doesn't
+  re-render. Perfect for "the next number".
+- **`setTimeout(() => dismissToast(id), 5000)`** removes each toast after 5 seconds. Each toast has its own
+  timer, and its own id, so the right one disappears.
+- **`role="alert"`** for errors (screen readers interrupt), **`role="status"`** for the rest.
+
+### 32.5 Wrap the app in `src/main.tsx`
+
+```tsx
+import CartProvider from "./context/CartProvider";
+import ToastProvider from "./context/ToastProvider";
+```
+
+```tsx
+  <StrictMode>
+    <ToastProvider>
+      <AuthProvider>
+        <CartProvider>
+          <App />
+        </CartProvider>
+      </AuthProvider>
+    </ToastProvider>
+  </StrictMode>,
+```
+
+The order matters a little: `ToastProvider` is outside the others, so anything inside (even the auth or cart
+code, later) can show a toast.
+
+### 32.6 `src/components/common/Price.tsx` and `src/components/common/RatingStars.tsx`
+
+Replace both placeholders.
+
+```tsx
+// Price.tsx client/src/components/common/Price.tsx
+// "₦45,000 ₦60,000" (the second one crossed out when the product is on sale). Used on every product card.
+
+// STEP 32 (part 6): Price
+
+import { naira } from "../../utils/format";
+
+type PriceProps = {
+  price: number;
+  oldPrice?: number;
+  size?: "sm" | "md" | "lg";
+};
+
+const SIZES = { sm: "text-[15px]", md: "text-lg", lg: "text-3xl" };
+
+const Price = ({ price, oldPrice, size = "md" }: PriceProps) => {
+  const onSale = oldPrice !== undefined && oldPrice > price;
+
+  return (
+    <p className="flex flex-wrap items-baseline gap-x-2">
+      <span className={`${SIZES[size]} leading-tight font-bold text-ink`}>{naira(price)}</span>
+      {onSale && (
+        <>
+          <span className="sr-only">, was</span>
+          <del className="text-[13px] text-muted">{naira(oldPrice)}</del>
+        </>
+      )}
+    </p>
+  );
+};
+
+export default Price;
+```
+
+```tsx
+// RatingStars.tsx client/src/components/common/RatingStars.tsx
+// ★★★★☆ (48): the average rating as 5 stars, with halves, and the number of reviews.
+
+// STEP 32 (part 6): Rating stars
+
+import { MdStar, MdStarBorder, MdStarHalf } from "react-icons/md";
+
+type RatingStarsProps = {
+  rating: number; // 0 to 5, e.g. 4.8
+  count?: number; // how many reviews, shown in brackets
+  size?: number;
+};
+
+const RatingStars = ({ rating, count, size = 16 }: RatingStarsProps) => {
+  // 4.8 -> 5 full stars, 4.3 -> 4 full and a half: round to the nearest half first
+  const rounded = Math.round(rating * 2) / 2;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {/* The screen reader hears one sentence instead of "star star star star star" */}
+      <span className="flex text-warning" role="img" aria-label={`Rated ${rating.toFixed(1)} out of 5`}>
+        {[1, 2, 3, 4, 5].map((star) =>
+          rounded >= star ? (
+            <MdStar key={star} size={size} aria-hidden="true" />
+          ) : rounded >= star - 0.5 ? (
+            <MdStarHalf key={star} size={size} aria-hidden="true" />
+          ) : (
+            <MdStarBorder key={star} size={size} aria-hidden="true" />
+          ),
+        )}
+      </span>
+      {count !== undefined && <span className="text-[13px] text-muted">({count})</span>}
+    </div>
+  );
+};
+
+export default RatingStars;
+```
+
+- **`<del>`** is the HTML tag for "this text was removed": the browser crosses it out, and the hidden ", was"
+  makes a screen reader say "₦45,000, was ₦60,000".
+- **Half stars:** `Math.round(4.3 * 2) / 2` = 4.5. The ratings come from real reviews (server STEP 23), so they
+  can be anything like 4.73.
+
+### 32.7 `src/components/product/ProductCard.tsx`
+
+Replace the placeholder.
+
+```tsx
+// ProductCard.tsx client/src/components/product/ProductCard.tsx
+// The standard product card (Home "Featured products", and the Shop page in STEP 34):
+// photo with a badge, category, name, stars, price, and an "Add" button.
+//   <ProductCard product={product} />
+
+// STEP 32 (part 7): The product card
+
+import { MdOutlineImageNotSupported } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useCart } from "../../context/CartContext";
+import { useToast } from "../../context/ToastContext";
+import type { ProductSummary } from "../../types/api";
+import Price from "../common/Price";
+import RatingStars from "../common/RatingStars";
+
+// The badge colours from the design: SALE red, TOP SELLER green, anything else amber ("#4 BEST SELLER")
+const badgeColor = (badge: string) =>
+  badge === "SALE" ? "bg-danger text-white" : badge === "TOP SELLER" ? "bg-success text-white" : "bg-warning text-white";
+
+const ProductCard = ({ product }: { product: ProductSummary }) => {
+  const { addItem } = useCart();
+  const { showToast } = useToast();
+
+  const soldOut = product.trackStock && product.stock === 0;
+  const link = `/product/${product.slug}`;
+
+  const handleAdd = () => {
+    // Quick add from a card takes the first colour. (The product page lets you choose, STEP 35.)
+    const result = addItem(product, { color: product.colors[0]?.name });
+    if (!result.ok) {
+      showToast({ type: "error", title: "Couldn't add to cart", message: result.message });
+    }
+    // When it works, the "Added to Cart!" pop-up opens by itself (it watches lastAdded in the cart)
+  };
+
+  return (
+    <article className="group flex w-full flex-col rounded-3xl bg-surface p-3 shadow-card transition-shadow hover:shadow-lift">
+      <Link to={link} className="relative mb-4 block overflow-hidden rounded-2xl bg-field">
+        {product.images[0] ? (
+          <img
+            src={product.images[0]}
+            alt={product.name}
+            loading="lazy" // the browser only downloads it when it's about to scroll into view
+            className="aspect-square w-full object-cover transition-transform duration-300 group-hover:scale-105"
+          />
+        ) : (
+          <span className="flex aspect-square items-center justify-center text-muted">
+            <MdOutlineImageNotSupported size={40} aria-label="No photo yet" />
+          </span>
+        )}
+
+        {product.badge && (
+          <span className={`absolute top-3 left-3 rounded-full px-2.5 py-1 text-[11px] leading-3.5 font-bold uppercase ${badgeColor(product.badge)}`}>
+            {product.badge}
+          </span>
+        )}
+      </Link>
+
+      <div className="flex flex-1 flex-col px-1 pb-1">
+        <p className="text-[11px] leading-4 font-semibold tracking-wider text-muted uppercase">{product.category.name}</p>
+
+        <h3 className="mt-1 text-base leading-5.5 font-semibold text-ink">
+          {/* The link covers the name only, so the Add button isn't inside a link */}
+          <Link to={link} className="hover:text-primary">
+            {product.name}
+          </Link>
+        </h3>
+
+        <div className="mt-1.5">
+          <RatingStars rating={product.ratings} count={product.reviewCount} size={15} />
+        </div>
+
+        <div className="mt-auto flex items-center justify-between gap-2 pt-3">
+          <Price price={product.price} oldPrice={product.oldPrice} />
+          <button
+            type="button"
+            onClick={handleAdd}
+            disabled={soldOut}
+            aria-label={soldOut ? `${product.name} is sold out` : `Add ${product.name} to cart`}
+            className="h-9 shrink-0 rounded-full bg-navy px-4 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
+          >
+            {soldOut ? "Sold out" : "Add"}
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+};
+
+export default ProductCard;
+```
+
+- **The photo and the name are links** to the product page; the **Add** button is not inside a link (a button
+  inside a link is invalid HTML and confusing for keyboards).
+- **Quick add takes the first colour.** On the product page you'll choose.
+- **Sold out** (stock 0 and `trackStock`): the button is disabled and says so.
+- **`loading="lazy"`**: photos further down the page only download when you scroll near them.
+- **`w-full`** on the card: without it, each card is only as wide as its text, and the 4 columns end up
+  different sizes. I caught that in the screenshots.
+
+### 32.8 `src/components/home/FeaturedProducts.tsx`
+
+Replace the placeholder.
+
+```tsx
+// FeaturedProducts.tsx client/src/components/home/FeaturedProducts.tsx
+// The Home page's "EDITOR'S CHOICE / Featured products" row: the 4 products tagged "featured" in the database.
+
+// STEP 32 (part 8): The first product row
+
+import { MdArrowForward } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useApi } from "../../hooks/useApi";
+import type { ProductsResponse } from "../../types/api";
+import SectionHeader from "../common/SectionHeader";
+import ProductCard from "../product/ProductCard";
+
+const FeaturedProducts = () => {
+  // ?tag=featured: only products with the "featured" tag (server STEP 16)
+  const { data, error, loading } = useApi<ProductsResponse>("/products?tag=featured&limit=4");
+
+  // Nothing to show (an error, or no featured products): hide the whole section instead of an empty box.
+  // The category row above already shows the "Try again" message if the server is off.
+  if (error || (!loading && data?.products.length === 0)) {
+    return null;
+  }
+
+  return (
+    <section aria-labelledby="featured-title">
+      <SectionHeader eyebrow="Editor's choice" title="Featured products" titleId="featured-title">
+        <Link to="/shop?tag=featured" className="flex items-center gap-1 text-sm font-semibold text-primary-hover hover:underline">
+          View all <MdArrowForward size={16} aria-hidden="true" />
+        </Link>
+      </SectionHeader>
+
+      <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        {loading
+          ? Array.from({ length: 4 }, (_, index) => (
+              <li key={index} aria-hidden="true" className="h-105 animate-pulse rounded-3xl bg-surface shadow-card" />
+            ))
+          : data?.products.map((product) => (
+              <li key={product._id} className="flex">
+                <ProductCard product={product} />
+              </li>
+            ))}
+      </ul>
+    </section>
+  );
+};
+
+export default FeaturedProducts;
+```
+
+If the products can't load, the section hides itself instead of showing a second error: the categories row
+above already shows the "Try again" message.
+
+### 32.9 `src/components/product/AddedToCartModal.tsx` and where it goes
+
+Replace the placeholder.
+
+```tsx
+// AddedToCartModal.tsx client/src/components/product/AddedToCartModal.tsx
+// The "Added to Cart!" box that drops down under the Navbar's bag (design: Added to cart).
+// It opens by itself whenever something is added (cart.lastAdded), from any page. MainLayout shows it.
+
+// STEP 32 (part 9): The "Added to Cart!" pop-up
+
+import { useEffect } from "react";
+import { MdArrowForward, MdCheckCircle, MdClose, MdOutlineLocalShipping } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useCart } from "../../context/CartContext";
+import { naira, plural } from "../../utils/format";
+
+const AddedToCartModal = () => {
+  const { lastAdded, dismissLastAdded, count, subtotal } = useCart();
+
+  // Close by itself after 6 seconds, or when Escape is pressed. Adding again restarts the timer
+  // (lastAdded changes, so the effect runs again and the old timer is cleared).
+  useEffect(() => {
+    if (!lastAdded) return;
+    const timer = setTimeout(dismissLastAdded, 6000);
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") dismissLastAdded();
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [lastAdded, dismissLastAdded]);
+
+  if (!lastAdded) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-labelledby="added-title"
+      className="fixed top-22 right-4 left-4 z-60 animate-pop-in rounded-3xl bg-surface p-5 shadow-banner sm:left-auto sm:w-120 md:right-12"
+    >
+      <div className="flex items-start justify-between border-b border-line pb-4">
+        <div className="flex items-center gap-2.5">
+          <MdCheckCircle size={30} aria-hidden="true" className="text-success" />
+          <div>
+            <h2 id="added-title" className="text-lg leading-6 font-bold text-ink">
+              Added to Cart!
+            </h2>
+            <p className="text-xs font-semibold text-muted">({plural(lastAdded.quantity, "item")} added)</p>
+          </div>
+        </div>
+        <button type="button" onClick={dismissLastAdded} aria-label="Close" className="text-ink-soft hover:text-ink">
+          <MdClose size={22} />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-4 py-4">
+        <img src={lastAdded.image} alt="" className="size-18 shrink-0 rounded-xl bg-field object-cover" />
+        <div className="min-w-0 flex-1 text-sm">
+          <p className="truncate font-medium text-ink">{lastAdded.name}</p>
+          {lastAdded.color && <p className="text-ink-soft">Color: {lastAdded.color}</p>}
+          <div className="mt-1 flex items-center justify-between">
+            <p className="text-ink-soft">Qty: {lastAdded.quantity}</p>
+            <p className="text-lg font-bold text-primary-hover">{naira(lastAdded.price * lastAdded.quantity)}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-5 rounded-2xl bg-panel p-4">
+        <p className="flex items-center justify-between text-sm text-ink-soft">
+          Cart Subtotal ({plural(count, "item")}):
+          <span className="text-lg font-bold text-ink">{naira(subtotal)}</span>
+        </p>
+        {/* Standard delivery is always free in our server (DELIVERY_OPTIONS, server STEP 22) */}
+        <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-success">
+          <MdOutlineLocalShipping size={16} aria-hidden="true" />
+          Eligible for Free Standard Delivery in Nigeria
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Link
+          to="/cart"
+          onClick={dismissLastAdded}
+          className="flex h-12 items-center justify-center gap-2 rounded-xl bg-primary text-[15px] font-semibold text-white transition-colors hover:bg-primary-hover"
+        >
+          View Cart &amp; Checkout <MdArrowForward size={18} aria-hidden="true" />
+        </Link>
+        <button
+          type="button"
+          onClick={dismissLastAdded}
+          className="h-11 rounded-xl bg-panel text-sm font-semibold text-ink transition-colors hover:bg-field"
+        >
+          Continue Shopping
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default AddedToCartModal;
+```
+
+Show it on every store page, in `src/layouts/MainLayout.tsx`:
+
+```tsx
+import AddedToCartModal from "../components/product/AddedToCartModal";
+```
+
+```tsx
+      <Footer />
+      <AddedToCartModal />
+```
+
+- **It watches `lastAdded`** in the cart. The card doesn't open it; it just adds to the cart. So the product
+  page, the bundle "Add Both to Cart" (STEP 35) and anything else get the same pop-up for free.
+- **It closes after 6 seconds, on Escape, on ✕, or "Continue Shopping".** Adding again restarts the 6 seconds.
+- "Eligible for Free Standard Delivery" is always true: standard delivery is free in your server
+  (`DELIVERY_OPTIONS`, server STEP 22).
+
+### 32.10 The real number on the Navbar's bag
+
+In `src/components/layout/Navbar.tsx`:
+
+1. Import the hook:
+
+   ```tsx
+   import { useCart } from "../../context/CartContext";
+   ```
+
+2. First line inside `const Navbar = () => {`:
+
+   ```tsx
+     const { count } = useCart();
+   ```
+
+3. On the cart `<Link>`, replace `aria-label="Cart"` with:
+
+   ```tsx
+               aria-label={`Cart, ${count} ${count === 1 ? "item" : "items"}`}
+   ```
+
+4. Replace the red `<span ...>1</span>` with (keep your long `className` exactly as it is):
+
+   ```tsx
+               {/* key={count}: a new number = a new element, so the "bump" animation plays again */}
+               {count > 0 && (
+                 <span key={count} aria-hidden="true" className="absolute -top-1 -right-1 flex h-4.5 min-w-4.5 animate-bumb items-center justify-center rounded-full bg-danger px-1 text-xs leading-none font-bold text-white">
+                   {count > 99 ? "99+" : count}
+                 </span>
+               )}
+   ```
+
+- **`key={count}`** is a neat React trick: when the key changes, React throws the old `<span>` away and makes a
+  new one, so your `animate-bumb` animation from `index.css` plays again on every add.
+- An empty cart shows no badge at all.
+
+### 32.11 Test it
+
+Both terminals running. If you changed products in earlier steps, run `npm run seed` in the server first.
+
+| Do this                                                      | You should see                                              |
+| ------------------------------------------------------------ | ----------------------------------------------------------- |
+| Open the Home page                                            | "EDITOR'S CHOICE / Featured products": **Wireless Noise-Cancelling Headphones** (SALE), **Canvas Low-Top Sneakers** (TOP SELLER), **Ceramic Mug Set**, **Skincare Hydration Kit** (SALE), with stars, review counts and prices; no number on the bag |
+| Click **Add** on the headphones                               | the bag shows **1** (with a bump), and "Added to Cart!" drops down: the photo, "Color: Midnight Black", Qty 1, ₦45,000, "Cart Subtotal (1 item): ₦45,000" |
+| **Continue Shopping**                                         | it closes                                                    |
+| **Add** the headphones again                                  | "(1 item added)" but "Cart Subtotal (2 items): ₦90,000"      |
+| Press **Escape**, or wait 6 seconds                           | it closes                                                    |
+| DevTools → Application → Local Storage → `quickcart_cart`      | 1 line with `"quantity": 2`                                  |
+| Refresh the page                                              | the bag still says 2                                         |
+| Click the product's name or photo                             | you go to `/product/wireless-noise-cancelling-headphones` (STEP 35 builds that page) |
+| Keep clicking **Add** on the **Skincare Hydration Kit** (3 in stock after the seed) | after 3, a toast: "Couldn't add to cart. Only 3 of "Skincare Hydration Kit" left, and 3 already in your cart." |
+| As admin in Postman, set a featured product's stock to 0 (`PATCH /api/admin/products/:id` `{ "stock": 0 }`), then refresh | its button says **Sold out** and can't be clicked |
+| Change `quickcart_cart` to `{broken` in DevTools and refresh   | the page works and the cart is empty                         |
+
+**About photo speed:** the photos come from Cloudinary. On a slow connection they can take a few seconds to
+appear (the cards show a light blue box until then). That's the network, not your code.
+
+I tested this on a copy of your project against a throwaway database: **16 checks, all passed** (every row
+above). The screenshots showed one bug, cards of different widths, which the `w-full` above fixes. With it,
+the row matches the design. `npm run build` and `npm run lint` pass.
+
+### 32.12 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 32: cart, toasts, product cards, featured products"
+git push
+```
+
+➡️ **Next: STEP 33 (The rest of the Home page: the flash sale with its countdown, Today's Deals, Best Sellers,
+the promo banner, New Arrivals, Recommended for You, Recently Viewed, Testimonials and the newsletter box that
+uses your STEP 24 endpoint).** Reply **NEXT** when 32.11 works.
