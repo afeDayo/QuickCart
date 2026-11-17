@@ -53,3 +53,7 @@ export const localPhone = (phone = "") => {
     ? `${digits.slice(0, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`
     : phone;
 };
+
+// "0803 123 4567" -> "+2348031234567" (how the server stores phone numbers, STEP 31)
+export const toInternational = (phone: string) =>
+  `+234${phone.replace(/\D/g, "").replace(/^234/, "").replace(/^0/, "")}`;

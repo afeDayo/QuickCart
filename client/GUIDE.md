@@ -44,8 +44,8 @@ then the admin.
 | ✅   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
 | ✅   | 36     | Cart page: items, promo code, summary, empty state |
 | ✅   | 37     | Forgot password, reset password, verify email |
-| ⬜   | **38** | **Checkout and Order Confirmation** ← you are here |
-| ⬜   | 39     | My Account: layout, overview, settings, addresses, saved items                       |
+| ✅   | 38     | Checkout and Order Confirmation |
+| ⬜   | **39** | **My Account: layout, overview, settings, addresses, saved items** ← you are here |
 | ⬜   | 40     | Order History, Order Details and tracking, cancel, leave a review                    |
 | ⬜   | 41     | Admin: login, layout, dashboard with the sales chart                                 |
 | ⬜   | 42     | Admin: products table, add / edit product, photo upload                              |
@@ -8272,3 +8272,1238 @@ git push
 
 ➡️ **Next: STEP 39 (My Account: the account menu on the left, the overview with your stats and recent orders, account
 settings (profile and password), delivery addresses and saved items).** Reply **NEXT** when 38.7 works.
+
+---
+
+## STEP 39: My Account
+
+The My Account pages (design: My Account & Profile Dashboard), using your STEP 20 account endpoints:
+
+- **The account menu** on the left of every account page: initials (with a green dot when verified), name, email,
+  Overview / Order History (5) / Delivery Addresses (2) / Saved Items / Account Settings, Log Out, and a help box
+- **Overview**: "Welcome back, Ada!", **Track Active Order**, 4 stats (Total Orders, In Progress, Delivered, Saved
+  Places), the **profile card** with **Edit Profile** opening right under it, **Recent Orders** (3 of 5, with the right line
+  for each status), and cards for the **default address** and **Password & Security**
+- **Account Settings**: edit your details, **change your password** (with the strength meter), email verification status
+- **Delivery Addresses**: add, edit, set as default, delete (with "are you sure?")
+- **Saved Items**: the products you ♡ saved, with the ♡ to remove them
+
+| New / changed file                                 | What it is                                                 |
+| -------------------------------------------------- | ---------------------------------------------------------- |
+| `types/api.ts` (`passwordChangedAt`, summary type), `utils/nigeria.ts` (`toInternational`) | small additions |
+| `components/common/StatusPill.tsx`                 | "● Processing / Shipped / Delivered / Cancelled", reused in STEPs 40 and 43 |
+| `components/layout/AccountSidebar.tsx`, `layouts/AccountLayout.tsx` | the menu and the frame                     |
+| `components/account/AccountStats.tsx`, `ProfileCard.tsx`, `EditProfileForm.tsx`, `RecentOrderCard.tsx`, `SavedAddressCard.tsx`, `SecurityCard.tsx`, `ChangePasswordForm.tsx`, `AddressForm.tsx`, `AddressCard.tsx` | the pieces |
+| `pages/account/AccountOverviewPage.tsx`, `AccountSettingsPage.tsx`, `AddressesPage.tsx`, `SavedItemsPage.tsx` | the 4 pages |
+
+**Honest bits:** the design's "2FA Active" and "Two-factor authentication enabled via SMS" aren't real features of your
+server, so the security card shows what *is* real: when the password was last changed and whether the email is
+verified. "Member since" comes from the account's `createdAt`.
+
+### 39.1 Small additions
+
+In `src/types/api.ts`, add one line to `User`, under `createdAt`:
+
+```ts
+  passwordChangedAt?: string; // "Password last updated ..." (STEP 39)
+```
+
+and at the bottom of src/types/api.ts:
+
+```ts
+// STEP 39: My Account (server: getOrderSummary in orderController.ts)
+
+// GET /api/orders/summary -> the numbers and the 3 newest orders for the My Account overview
+export type OrderSummaryResponse = { totalOrders: number; inProgress: number; delivered: number; recentOrders: Order[] };
+```
+
+At the bottom of `src/utils/nigeria.ts`:
+
+```ts
+// "0803 123 4567" -> "+2348031234567" (how the server stores phone numbers, STEP 31)
+export const toInternational = (phone: string) => `+234${phone.replace(/\D/g, "").replace(/^234/, "").replace(/^0/, "")}`;
+```
+
+### 39.2 `src/components/common/StatusPill.tsx`
+
+Replace the placeholder.
+
+```tsx
+// StatusPill.tsx client/src/components/common/StatusPill.tsx
+// "● Processing" / "Shipped" / "✓ Delivered" / "Cancelled": an order's status as a coloured pill.
+// Used on My Account (STEP 39), Order History and Order Details (STEP 40), and the admin orders (STEP 43).
+
+// STEP 39 (part 1): The status pill
+
+import type { OrderStatus } from "../../types/api";
+
+const STYLES: Record<OrderStatus, { label: string; classes: string }> = {
+  processing: { label: "Processing", classes: "bg-[#fff4e0] text-[#8a5300]" },
+  shipped: { label: "Shipped", classes: "bg-info-light text-primary" },
+  delivered: { label: "Delivered", classes: "bg-mint/40 text-forest" },
+  cancelled: { label: "Cancelled", classes: "bg-danger-light text-danger" },
+};
+
+const StatusPill = ({ status }: { status: OrderStatus }) => {
+  const { label, classes } = STYLES[status];
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-bold uppercase ${classes}`}>
+      <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+      {label}
+    </span>
+  );
+};
+
+export default StatusPill;
+```
+
+`Record<OrderStatus, ...>`: TypeScript makes sure there's a style for **every** status. Add a status to the type one day
+and forget the pill, and the build fails.
+
+### 39.3 The menu and the frame: `AccountSidebar.tsx` and `AccountLayout.tsx`
+
+Replace both placeholders (`src/components/layout/AccountSidebar.tsx` and `src/layouts/AccountLayout.tsx`).
+
+```tsx
+// AccountSidebar.tsx client/src/components/layout/AccountSidebar.tsx
+// The menu on the left of every My Account page: who you are, the pages (with counts), Log Out, and the help box.
+
+// STEP 39 (part 2): The account menu
+
+import type { IconType } from "react-icons";
+import { MdLogout, MdOutlineDashboard, MdOutlineFavoriteBorder, MdOutlineLocalShipping, MdOutlineManageAccounts, MdOutlinePlace, MdOutlineSupportAgent } from "react-icons/md";
+import { NavLink, useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useApi } from "../../hooks/useApi";
+import type { OrderSummaryResponse } from "../../types/api";
+
+const AccountSidebar = () => {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const { data: summary } = useApi<OrderSummaryResponse>("/orders/summary"); // for the "Order History 5" count
+
+  if (!user) return null; // (ProtectedRoute makes sure there's always a user here)
+
+  const links: { to: string; label: string; icon: IconType; count?: number; end?: boolean }[] = [
+    { to: "/account", label: "Overview", icon: MdOutlineDashboard, end: true },
+    { to: "/account/orders", label: "Order History", icon: MdOutlineLocalShipping, count: summary?.totalOrders },
+    { to: "/account/addresses", label: "Delivery Addresses", icon: MdOutlinePlace, count: user.addresses.length },
+    { to: "/account/saved", label: "Saved Items", icon: MdOutlineFavoriteBorder, count: user.savedItems.length },
+    { to: "/account/settings", label: "Account Settings", icon: MdOutlineManageAccounts },
+  ];
+
+  return (
+    <aside className="flex flex-col gap-4">
+      <div className="flex items-center gap-3 rounded-3xl bg-surface p-5 shadow-card">
+        <span className="relative flex size-12 shrink-0 items-center justify-center rounded-full bg-primary text-lg font-bold text-white">
+          {user.firstName[0]}
+          {user.lastName[0]}
+          {user.isEmailVerified && (
+            <span aria-label="Verified" className="absolute right-0 bottom-0 size-3.5 rounded-full border-2 border-surface bg-success" />
+          )}
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-lg font-semibold text-ink">
+            {user.firstName} {user.lastName}
+          </p>
+          <p className="truncate text-sm text-muted">{user.email}</p>
+        </div>
+      </div>
+
+      <nav aria-label="My Account" className="rounded-3xl bg-surface p-3 shadow-card">
+        <ul className="flex flex-col gap-1">
+          {links.map((link) => (
+            <li key={link.to}>
+              <NavLink
+                to={link.to}
+                end={link.end} // "end": Overview is only active on /account itself, not on /account/orders
+                className={({ isActive }) =>
+                  `flex items-center gap-3 rounded-xl px-4 py-3 text-[15px] font-medium transition-colors ${
+                    isActive ? "bg-primary-light/70 text-primary" : "text-ink hover:bg-field"
+                  }`
+                }
+              >
+                <link.icon size={20} aria-hidden="true" />
+                <span className="flex-1">{link.label}</span>
+                {link.count !== undefined && link.count > 0 && (
+                  <span className="rounded-full bg-field px-2 py-0.5 text-xs font-semibold text-ink-soft">{link.count}</span>
+                )}
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-2 border-t border-line pt-2">
+          <button
+            type="button"
+            onClick={() => {
+              logout();
+              navigate("/");
+            }}
+            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-[15px] font-medium text-danger hover:bg-danger-light"
+          >
+            <MdLogout size={20} aria-hidden="true" /> Log Out
+          </button>
+        </div>
+      </nav>
+
+      <div className="rounded-3xl bg-primary-light/50 p-5">
+        <p className="flex items-center gap-2 font-semibold text-primary">
+          <MdOutlineSupportAgent size={20} aria-hidden="true" /> QuickSupport
+        </p>
+        <p className="mt-1 text-sm text-ink-soft">Need help with a delivery or a return? Our team is here every day.</p>
+        <a href="mailto:help@quickcart.ng" className="mt-2 inline-block text-sm font-semibold text-primary-hover hover:underline">
+          Email the help desk →
+        </a>
+      </div>
+    </aside>
+  );
+};
+
+export default AccountSidebar;
+```
+
+```tsx
+// AccountLayout.tsx client/src/layouts/AccountLayout.tsx
+// The frame of the My Account pages (App.tsx puts Overview, Order History, Addresses, Saved Items and Settings inside it):
+// "Home › My Account", the menu on the left, and the page on the right (<Outlet />).
+
+// STEP 39 (part 3): The account layout
+
+import { Outlet } from "react-router-dom";
+import Breadcrumb from "../components/common/Breadcrumb";
+import AccountSidebar from "../components/layout/AccountSidebar";
+
+const AccountLayout = () => {
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-6 pb-20 md:px-12">
+      <Breadcrumb items={[{ label: "Home", to: "/" }, { label: "My Account" }]} />
+      <div className="grid items-start gap-8 lg:grid-cols-[300px_1fr]">
+        <AccountSidebar />
+        <div className="min-w-0">
+          <Outlet />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AccountLayout;
+```
+
+- **`NavLink`** knows when its link is the current page and gives you `isActive` to style it. **`end`** on Overview: without
+  it, `/account` would also be "active" on `/account/orders` (it starts with `/account`).
+- **The counts**: addresses and saved items come straight from the logged-in user, so they update the instant you add or
+  remove one. The order count comes from `GET /api/orders/summary`.
+- Your `App.tsx` already puts Order Details (`/account/orders/:orderId`) **outside** this layout, full width like its
+  design (STEP 40).
+
+### 39.4 The Overview pieces in `src/components/account/`
+
+Replace the placeholders: `AccountStats.tsx`, `EditProfileForm.tsx`, `ProfileCard.tsx`, `RecentOrderCard.tsx`,
+`SavedAddressCard.tsx`, `SecurityCard.tsx`.
+
+```tsx
+// AccountStats.tsx client/src/components/account/AccountStats.tsx
+// The 4 boxes at the top of My Account: Total Orders, In Progress, Delivered, Saved Places.
+
+// STEP 39 (part 4): Account stats
+
+import type { IconType } from "react-icons";
+import { MdOutlineCheckCircle, MdOutlineLocalShipping, MdOutlinePlace, MdOutlineReceiptLong } from "react-icons/md";
+
+type Stat = { label: string; value: number; unit: string; note: string; icon: IconType; tile: string };
+
+type AccountStatsProps = { totalOrders: number; inProgress: number; delivered: number; addresses: number; defaultCity?: string; activeOrder?: string };
+
+const AccountStats = ({ totalOrders, inProgress, delivered, addresses, defaultCity, activeOrder }: AccountStatsProps) => {
+  const stats: Stat[] = [
+    { label: "Total orders", value: totalOrders, unit: "orders", note: "Lifetime purchases", icon: MdOutlineReceiptLong, tile: "bg-primary-light text-primary" },
+    {
+      label: "In progress",
+      value: inProgress,
+      unit: "active",
+      note: activeOrder ? `#${activeOrder} on its way` : "Nothing on the way",
+      icon: MdOutlineLocalShipping,
+      tile: "bg-info-light text-primary",
+    },
+    { label: "Delivered", value: delivered, unit: "packages", note: "Received and signed for", icon: MdOutlineCheckCircle, tile: "bg-mint text-forest" },
+    {
+      label: "Saved places",
+      value: addresses,
+      unit: addresses === 1 ? "location" : "locations",
+      note: defaultCity ? `Default: ${defaultCity}` : "No address yet",
+      icon: MdOutlinePlace,
+      tile: "bg-field text-ink-soft",
+    },
+  ];
+
+  return (
+    <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {stats.map((stat) => (
+        <li key={stat.label} className="rounded-3xl bg-surface p-5 shadow-card">
+          <div className="flex items-start justify-between">
+            <p className="text-xs font-bold tracking-wider text-ink-soft uppercase">{stat.label}</p>
+            <span className={`flex size-9 items-center justify-center rounded-lg ${stat.tile}`}>
+              <stat.icon size={20} aria-hidden="true" />
+            </span>
+          </div>
+          <p className="mt-1">
+            <span className="text-3xl font-bold text-ink">{stat.value}</span> <span className="text-sm text-ink-soft">{stat.unit}</span>
+          </p>
+          <p className="mt-1 truncate text-xs font-semibold text-muted">{stat.note}</p>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+export default AccountStats;
+```
+
+```tsx
+// EditProfileForm.tsx client/src/components/account/EditProfileForm.tsx
+// "Edit Profile Information": first and last name, email, phone. Saves with PATCH /api/account/profile (server STEP 20).
+// Used on the Overview (opens under the profile card) and on Account Settings.
+
+// STEP 39 (part 5): Edit profile
+
+import { useState, type FormEvent } from "react";
+import { MdClose, MdOutlineManageAccounts } from "react-icons/md";
+import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
+import type { User } from "../../types/api";
+import { api } from "../../utils/api";
+import { localPhone, toInternational } from "../../utils/nigeria";
+import TextInput from "../form/TextInput";
+
+type EditProfileFormProps = { onClose?: () => void }; // no onClose = always open (Account Settings)
+
+const EditProfileForm = ({ onClose }: EditProfileFormProps) => {
+  const { user, setUser } = useAuth();
+  const { showToast } = useToast();
+  const [form, setForm] = useState({
+    firstName: user?.firstName ?? "",
+    lastName: user?.lastName ?? "",
+    email: user?.email ?? "",
+    phone: localPhone(user?.phone),
+  });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!form.firstName.trim() || !form.lastName.trim()) return setError("Please enter your first and last name.");
+
+    setError("");
+    setSaving(true);
+    try {
+      const reply = await api<{ message: string; user: User }>("/account/profile", {
+        method: "PATCH",
+        body: { firstName: form.firstName.trim(), lastName: form.lastName.trim(), email: form.email.trim(), phone: form.phone.trim() ? toInternational(form.phone) : "" },
+      });
+      const emailChanged = reply.user.email !== user?.email;
+      setUser(reply.user); // the new name shows everywhere at once (Navbar, menu, this page)
+      showToast({
+        type: "success",
+        title: "Your profile has been updated.",
+        // A new email isn't verified yet (server STEP 20 turns "Verified" off): say so
+        message: emailChanged ? "Please verify your new email address in Account Settings." : undefined,
+      });
+      onClose?.();
+    } catch (err) {
+      setError((err as Error).message); // e.g. 409 "That email is already in use."
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="rounded-2xl bg-panel p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-ink">
+          <MdOutlineManageAccounts size={20} aria-hidden="true" className="text-primary" /> Edit Profile Information
+        </h3>
+        {onClose && (
+          <button type="button" onClick={onClose} aria-label="Close" className="text-ink-soft hover:text-ink">
+            <MdClose size={22} />
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p role="alert" className="mb-4 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <TextInput label="First Name" autoComplete="given-name" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} />
+        <TextInput label="Last Name" autoComplete="family-name" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} />
+        <TextInput label="Email Address" type="email" autoComplete="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+        <TextInput label="Phone Number" type="tel" autoComplete="tel-national" placeholder="0803 123 4567" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+      </div>
+
+      <div className="mt-5 flex justify-end gap-3">
+        {onClose && (
+          <button type="button" onClick={onClose} className="h-11 rounded-xl px-5 font-medium text-ink hover:bg-field">
+            Cancel
+          </button>
+        )}
+        <button type="submit" disabled={saving} className="h-11 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover disabled:opacity-60">
+          {saving ? "Saving..." : "Save Changes"}
+        </button>
+      </div>
+    </form>
+  );
+};
+
+export default EditProfileForm;
+```
+
+```tsx
+// ProfileCard.tsx client/src/components/account/ProfileCard.tsx
+// The big profile card: initials, name, "Verified Customer", "Member since March 2026", name / email / phone,
+// and Edit Profile, which opens the edit form right under it.
+
+// STEP 39 (part 6): The profile card
+
+import { useState } from "react";
+import { MdEdit, MdVerified } from "react-icons/md";
+import { useAuth } from "../../context/AuthContext";
+import { localPhone } from "../../utils/nigeria";
+import EditProfileForm from "./EditProfileForm";
+
+const ProfileCard = () => {
+  const { user } = useAuth();
+  const [editing, setEditing] = useState(false);
+  if (!user) return null;
+
+  const memberSince = new Date(user.createdAt).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const details = [
+    { label: "Full legal name", value: `${user.firstName} ${user.lastName}` },
+    { label: "Email address", value: user.email },
+    { label: "Phone number", value: user.phone ? localPhone(user.phone) : "Not added yet" },
+  ];
+
+  return (
+    <section aria-labelledby="profile-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-5">
+        <div className="flex items-center gap-4">
+          <span className="flex size-16 items-center justify-center rounded-full bg-primary text-2xl font-bold text-white">
+            {user.firstName[0]}
+            {user.lastName[0]}
+          </span>
+          <div>
+            <h2 id="profile-title" className="flex flex-wrap items-center gap-2 text-2xl font-semibold text-ink">
+              {user.firstName} {user.lastName}
+              {user.isEmailVerified && (
+                <span className="flex items-center gap-1 rounded-full bg-mint/40 px-2 py-0.5 text-xs font-semibold text-forest">
+                  <MdVerified size={14} aria-hidden="true" /> Verified Customer
+                </span>
+              )}
+            </h2>
+            <p className="text-sm text-ink-soft">
+              {user.role === "admin" ? "Store Admin" : "Shopper"} · Member since {memberSince}
+            </p>
+          </div>
+        </div>
+        {!editing && (
+          <button type="button" onClick={() => setEditing(true)} className="flex h-10 items-center gap-2 rounded-xl bg-field px-4 text-sm font-semibold text-ink hover:bg-primary-light">
+            <MdEdit size={16} aria-hidden="true" /> Edit Profile
+          </button>
+        )}
+      </div>
+
+      <dl className="mt-5 grid gap-3 sm:grid-cols-3">
+        {details.map((detail) => (
+          <div key={detail.label} className="rounded-xl bg-panel px-4 py-3">
+            <dt className="text-xs font-bold tracking-wider text-ink-soft uppercase">{detail.label}</dt>
+            <dd className="mt-1 truncate text-[15px] font-medium text-ink">{detail.value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {editing && (
+        <div className="mt-5">
+          <EditProfileForm onClose={() => setEditing(false)} />
+        </div>
+      )}
+    </section>
+  );
+};
+
+export default ProfileCard;
+```
+
+```tsx
+// RecentOrderCard.tsx client/src/components/account/RecentOrderCard.tsx
+// One order in "Recent Orders": number, date, status, total, the items as small chips, a line that depends on the
+// status (delivery window / courier and waybill / delivered), and View Details.
+
+// STEP 39 (part 7): A recent order
+
+import { MdChevronRight, MdOutlineCalendarMonth, MdOutlineLocalShipping, MdOutlinePlace } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { Order } from "../../types/api";
+import { shortDate } from "../../utils/dates";
+import { naira } from "../../utils/format";
+import StatusPill from "../common/StatusPill";
+
+const RecentOrderCard = ({ order }: { order: Order }) => {
+  // The line under the items changes with the order's status
+  const detail =
+    order.status === "processing"
+      ? { icon: MdOutlineCalendarMonth, text: `Estimated delivery: ${shortDate(order.estimatedDelivery.from)} – ${shortDate(order.estimatedDelivery.to)}` }
+      : order.status === "shipped"
+        ? { icon: MdOutlineLocalShipping, text: `In transit with ${order.courier} (Waybill ${order.waybill})` }
+        : order.status === "delivered"
+          ? { icon: MdOutlinePlace, text: `Delivered to ${order.shippingAddress.city}${order.deliveredAt ? ` on ${shortDate(order.deliveredAt)}` : ""}` }
+          : { icon: MdOutlinePlace, text: "This order was cancelled" };
+
+  return (
+    <li className="rounded-3xl bg-surface p-5 shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
+        <p className="flex flex-wrap items-center gap-2">
+          <span className="text-lg font-bold text-ink">Order #{order.orderNumber}</span>
+          <span className="text-sm text-muted">· Placed {shortDate(order.createdAt)}</span>
+          <StatusPill status={order.status} />
+        </p>
+        <p className="text-lg font-bold text-ink">{naira(order.total)}</p>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <ul className="flex flex-wrap gap-2">
+            {order.items.map((item) => (
+              <li key={`${item.product}-${item.color}`} className="rounded-lg bg-panel px-3 py-1.5 text-sm text-ink">
+                {item.name} <span className="ml-1 font-semibold text-ink-soft">x{item.quantity}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 flex items-center gap-1.5 text-sm text-ink-soft">
+            <detail.icon size={16} aria-hidden="true" /> {detail.text}
+          </p>
+        </div>
+        <Link
+          to={`/account/orders/${order.orderNumber}`}
+          className={`flex h-10 shrink-0 items-center gap-1 rounded-xl px-4 text-sm font-semibold ${
+            order.status === "processing" ? "bg-primary text-white hover:bg-primary-hover" : "bg-field text-ink hover:bg-primary-light"
+          }`}
+        >
+          View Details <MdChevronRight size={18} aria-hidden="true" />
+        </Link>
+      </div>
+    </li>
+  );
+};
+
+export default RecentOrderCard;
+```
+
+```tsx
+// SavedAddressCard.tsx client/src/components/account/SavedAddressCard.tsx
+// The small "Delivery Address" card on the Overview: your default address and a link to manage them all.
+
+// STEP 39 (part 8): The default address card
+
+import { MdArrowForward, MdOutlinePlace } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { Address } from "../../types/api";
+import { localPhone } from "../../utils/nigeria";
+
+const SavedAddressCard = ({ address, total }: { address?: Address; total: number }) => {
+  return (
+    <section aria-labelledby="default-address-title" className="flex flex-col rounded-3xl bg-surface p-6 shadow-card">
+      <div className="mb-4 flex items-start justify-between">
+        <span className="flex size-11 items-center justify-center rounded-xl bg-primary-light text-primary">
+          <MdOutlinePlace size={22} aria-hidden="true" />
+        </span>
+        {address && <span className="rounded-full bg-primary-light px-2.5 py-1 text-xs font-semibold text-primary">Default Address</span>}
+      </div>
+      <h2 id="default-address-title" className="text-xl font-semibold text-ink">
+        Delivery Address
+      </h2>
+      {address ? (
+        <p className="mt-2 text-sm leading-6 text-ink-soft">
+          <span className="block font-semibold text-ink">{address.street}</span>
+          {address.city}, {address.state}, {address.country}
+          <span className="block">Contact: {localPhone(address.phone)}</span>
+        </p>
+      ) : (
+        <p className="mt-2 text-sm text-ink-soft">Add an address to check out faster.</p>
+      )}
+      <Link to="/account/addresses" className="mt-auto flex items-center gap-1 border-t border-line pt-4 text-sm font-semibold text-primary-hover hover:underline">
+        {total > 0 ? `Manage All (${total}) Addresses` : "Add an address"} <MdArrowForward size={16} aria-hidden="true" />
+      </Link>
+    </section>
+  );
+};
+
+export default SavedAddressCard;
+```
+
+```tsx
+// SecurityCard.tsx client/src/components/account/SecurityCard.tsx
+// "Password & Security": when the password was last changed, whether the email is verified, and links to fix either.
+
+// STEP 39 (part 9): The security card
+
+import { MdArrowForward, MdOutlineLockReset, MdOutlineMarkEmailRead, MdOutlineMarkEmailUnread } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+
+// "12 days ago", "today"
+const daysAgo = (iso: string) => {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+};
+
+const SecurityCard = () => {
+  const { user } = useAuth();
+  if (!user) return null;
+
+  return (
+    <section aria-labelledby="security-title" className="flex flex-col rounded-3xl bg-surface p-6 shadow-card">
+      <div className="mb-4 flex items-start justify-between">
+        <span className="flex size-11 items-center justify-center rounded-xl bg-primary-light text-primary">
+          <MdOutlineLockReset size={22} aria-hidden="true" />
+        </span>
+        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${user.isEmailVerified ? "bg-mint/40 text-forest" : "bg-[#fff4e0] text-[#8a5300]"}`}>
+          {user.isEmailVerified ? "Email Verified" : "Email Not Verified"}
+        </span>
+      </div>
+      <h2 id="security-title" className="text-xl font-semibold text-ink">
+        Password &amp; Security
+      </h2>
+      <p className="mt-2 text-sm text-ink-soft">
+        Password last updated: {user.passwordChangedAt ? daysAgo(user.passwordChangedAt) : `when you joined (${daysAgo(user.createdAt)})`}
+      </p>
+      {user.isEmailVerified ? (
+        <p className="mt-1 flex items-center gap-1.5 text-sm text-success">
+          <MdOutlineMarkEmailRead size={16} aria-hidden="true" /> {user.email} is verified
+        </p>
+      ) : (
+        <Link to="/verify-email" className="mt-1 flex items-center gap-1.5 text-sm font-semibold text-[#8a5300] hover:underline">
+          <MdOutlineMarkEmailUnread size={16} aria-hidden="true" /> Verify your email now
+        </Link>
+      )}
+      <Link to="/account/settings" className="mt-auto flex items-center gap-1 border-t border-line pt-4 text-sm font-semibold text-primary-hover hover:underline">
+        Update Security Settings <MdArrowForward size={16} aria-hidden="true" />
+      </Link>
+    </section>
+  );
+};
+
+export default SecurityCard;
+```
+
+- **`setUser(reply.user)`** after saving the profile: the new name appears in the Navbar initials, the account menu and the
+  card at once, because they all read the same user from `AuthContext`.
+- **Changing your email turns "Verified" off** (server STEP 20): the toast tells you, and the security card shows "Verify
+  your email now".
+- **`onClose?.()`**: `?.` calls it only if it was given. The same form is used on Account Settings without a close button.
+- **RecentOrderCard's second line depends on the status**: the delivery window while processing, the courier and waybill
+  once shipped, "Delivered to ..." once delivered.
+
+### 39.5 Password and addresses: `ChangePasswordForm.tsx`, `AddressForm.tsx`, `AddressCard.tsx`
+
+Replace the 3 placeholders in `src/components/account/`.
+
+```tsx
+// ChangePasswordForm.tsx client/src/components/account/ChangePasswordForm.tsx
+// "Change Password": current password, new password (with the strength meter), confirm.
+// PATCH /api/account/password (server STEP 20) answers with a NEW token: every other device is logged out, and
+// this one must save the new token to stay logged in.
+
+// STEP 39 (part 10): Change password
+
+import { useState, type FormEvent } from "react";
+import { MdOutlineLockReset } from "react-icons/md";
+import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
+import type { AuthResponse } from "../../types/api";
+import { api } from "../../utils/api";
+import { isPasswordValid } from "../../utils/password";
+import PasswordInput from "../form/PasswordInput";
+import PasswordStrength from "../form/PasswordStrength";
+
+const empty = { currentPassword: "", newPassword: "", confirmPassword: "" };
+
+const ChangePasswordForm = () => {
+  const { startSession } = useAuth();
+  const { showToast } = useToast();
+  const [form, setForm] = useState(empty);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!form.currentPassword) return setError("Please enter your current password.");
+    if (!isPasswordValid(form.newPassword)) return setError("Your new password needs at least 8 characters, an uppercase letter and a number.");
+    if (form.newPassword !== form.confirmPassword) return setError("Passwords do not match.");
+
+    setError("");
+    setSaving(true);
+    try {
+      const reply = await api<AuthResponse>("/account/password", { method: "PATCH", body: form });
+      startSession(reply); // save the NEW token (the old one stopped working the moment the password changed)
+      setForm(empty);
+      showToast({ type: "success", title: "Your password has been changed.", message: "Any other device was logged out." });
+    } catch (err) {
+      setError((err as Error).message); // e.g. "Your current password is incorrect."
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="rounded-3xl bg-surface p-6 shadow-card">
+      <h2 className="mb-1 flex items-center gap-2 text-xl font-semibold text-ink">
+        <MdOutlineLockReset size={22} aria-hidden="true" className="text-primary" /> Change Password
+      </h2>
+      <p className="mb-5 text-sm text-ink-soft">Changing it logs you out of every other device.</p>
+
+      {error && (
+        <p role="alert" className="mb-4 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-4">
+        <PasswordInput label="Current Password" autoComplete="current-password" value={form.currentPassword} onChange={(e) => setForm({ ...form, currentPassword: e.target.value })} />
+        <PasswordInput label="New Password" autoComplete="new-password" value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} />
+        {form.newPassword && <PasswordStrength password={form.newPassword} />}
+        <PasswordInput label="Confirm New Password" autoComplete="new-password" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} />
+      </div>
+
+      <button type="submit" disabled={saving} className="mt-5 h-11 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover disabled:opacity-60">
+        {saving ? "Saving..." : "Update Password"}
+      </button>
+    </form>
+  );
+};
+
+export default ChangePasswordForm;
+```
+
+```tsx
+// AddressForm.tsx client/src/components/account/AddressForm.tsx
+// Add a new address, or edit one (the same form, filled in). Sends POST or PATCH /api/account/addresses
+// (server STEP 20), which answers with the whole new list.
+
+// STEP 39 (part 11): The address form
+
+import { useState, type FormEvent } from "react";
+import { useAuth } from "../../context/AuthContext";
+import type { Address } from "../../types/api";
+import { api } from "../../utils/api";
+import { localPhone, NIGERIAN_STATES, toInternational } from "../../utils/nigeria";
+import Checkbox from "../form/Checkbox";
+import TextInput from "../form/TextInput";
+
+type AddressFormProps = {
+  address?: Address; // given = edit it; missing = add a new one
+  onDone: (message: string) => void;
+  onCancel: () => void;
+};
+
+const AddressForm = ({ address, onDone, onCancel }: AddressFormProps) => {
+  const { user, setUser } = useAuth();
+  const [form, setForm] = useState({
+    label: address?.label ?? "Home",
+    fullName: address?.fullName ?? `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim(),
+    phone: localPhone(address?.phone ?? user?.phone),
+    street: address?.street ?? "",
+    city: address?.city ?? "",
+    state: address?.state ?? "",
+    instructions: address?.instructions ?? "",
+    isDefault: address?.isDefault ?? (user?.addresses.length ?? 0) === 0, // the first address is the default
+  });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const set = (field: keyof typeof form, value: string | boolean) => setForm((current) => ({ ...current, [field]: value }));
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!form.fullName.trim() || !form.street.trim() || !form.city.trim() || !form.state || !form.phone.trim()) {
+      return setError("Please fill in the name, phone, street, city and state.");
+    }
+    setError("");
+    setSaving(true);
+    try {
+      const body = { ...form, phone: toInternational(form.phone), country: "Nigeria" };
+      const { addresses } = await api<{ addresses: Address[] }>(address ? `/account/addresses/${address._id}` : "/account/addresses", {
+        method: address ? "PATCH" : "POST",
+        body,
+      });
+      if (user) setUser({ ...user, addresses }); // the menu count, checkout and the Overview all use user.addresses
+      onDone(address ? "Address updated." : "Address added.");
+    } catch (err) {
+      setError((err as Error).message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="rounded-3xl bg-surface p-6 shadow-card">
+      <h2 className="mb-5 text-xl font-semibold text-ink">{address ? `Edit "${address.label}"` : "Add New Address"}</h2>
+
+      {error && (
+        <p role="alert" className="mb-4 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <TextInput label="Label (e.g. Home, Office)" value={form.label} onChange={(e) => set("label", e.target.value)} />
+        <TextInput label="Receiver's Full Name" autoComplete="name" value={form.fullName} onChange={(e) => set("fullName", e.target.value)} />
+        <TextInput label="Receiver's Phone" type="tel" autoComplete="tel-national" placeholder="0803 123 4567" value={form.phone} onChange={(e) => set("phone", e.target.value)} />
+        <TextInput label="Street Address" autoComplete="street-address" value={form.street} onChange={(e) => set("street", e.target.value)} />
+        <TextInput label="City / Neighborhood" autoComplete="address-level2" value={form.city} onChange={(e) => set("city", e.target.value)} />
+        <div>
+          <label htmlFor="address-state" className="mb-2 block text-sm font-medium text-ink">
+            State
+          </label>
+          <select
+            id="address-state"
+            value={form.state}
+            onChange={(e) => set("state", e.target.value)}
+            className="h-12 w-full cursor-pointer rounded-xl bg-field px-4 text-[15px] outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            <option value="">Choose a state</option>
+            {NIGERIAN_STATES.map((state) => (
+              <option key={state}>{state}</option>
+            ))}
+          </select>
+        </div>
+        <TextInput className="sm:col-span-2" label="Delivery Instructions (optional)" value={form.instructions} onChange={(e) => set("instructions", e.target.value)} />
+      </div>
+
+      <Checkbox className="mt-4" checked={form.isDefault} onChange={(e) => set("isDefault", e.target.checked)}>
+        Use as my default address
+      </Checkbox>
+
+      <div className="mt-5 flex justify-end gap-3">
+        <button type="button" onClick={onCancel} className="h-11 rounded-xl px-5 font-medium text-ink hover:bg-field">
+          Cancel
+        </button>
+        <button type="submit" disabled={saving} className="h-11 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover disabled:opacity-60">
+          {saving ? "Saving..." : "Save Address"}
+        </button>
+      </div>
+    </form>
+  );
+};
+
+export default AddressForm;
+```
+
+```tsx
+// AddressCard.tsx client/src/components/account/AddressCard.tsx
+// One saved address on the Delivery Addresses page: Edit, Set as default, Delete (with "are you sure?").
+
+// STEP 39 (part 12): An address card
+
+import { useState } from "react";
+import { MdDeleteOutline, MdEdit, MdOutlinePlace } from "react-icons/md";
+import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
+import type { Address } from "../../types/api";
+import { api } from "../../utils/api";
+import { localPhone } from "../../utils/nigeria";
+
+const AddressCard = ({ address, onEdit }: { address: Address; onEdit: () => void }) => {
+  const { user, setUser } = useAuth();
+  const { showToast } = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Both answer with the whole new list (server STEP 20), which becomes user.addresses
+  const update = async (method: "PATCH" | "DELETE", message: string) => {
+    setBusy(true);
+    try {
+      const { addresses } = await api<{ addresses: Address[] }>(`/account/addresses/${address._id}`, {
+        method,
+        body: method === "PATCH" ? { isDefault: true } : undefined,
+      });
+      if (user) setUser({ ...user, addresses });
+      showToast({ type: "success", title: message });
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't update the address", message: (err as Error).message });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className={`flex flex-col rounded-3xl bg-surface p-5 shadow-card ${address.isDefault ? "ring-2 ring-primary/30" : ""}`}>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-lg font-semibold text-ink">
+          <MdOutlinePlace size={20} aria-hidden="true" className="text-primary" /> {address.label}
+        </p>
+        {address.isDefault && <span className="rounded-full bg-primary-light px-2.5 py-1 text-xs font-semibold text-primary">Default</span>}
+      </div>
+      <p className="text-sm leading-6 text-ink-soft">
+        <span className="block font-medium text-ink">{address.fullName}</span>
+        {address.street}, {address.city}, {address.state}
+        <span className="block">{localPhone(address.phone)}</span>
+        {address.instructions && <span className="block italic">"{address.instructions}"</span>}
+      </p>
+
+      <div className="mt-auto flex flex-wrap items-center gap-3 border-t border-line pt-3 text-sm font-semibold">
+        {confirming ? (
+          <>
+            <span className="font-normal text-ink-soft">Delete this address?</span>
+            <button type="button" disabled={busy} onClick={() => update("DELETE", "Address deleted.")} className="text-danger hover:underline">
+              Yes, delete
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} className="text-ink-soft hover:underline">
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={onEdit} className="flex items-center gap-1 text-primary-hover hover:underline">
+              <MdEdit size={16} aria-hidden="true" /> Edit
+            </button>
+            {!address.isDefault && (
+              <button type="button" disabled={busy} onClick={() => update("PATCH", `"${address.label}" is now your default address.`)} className="text-ink hover:underline">
+                Set as default
+              </button>
+            )}
+            <button type="button" onClick={() => setConfirming(true)} aria-label={`Delete ${address.label}`} className="ml-auto flex items-center gap-1 text-danger hover:underline">
+              <MdDeleteOutline size={16} aria-hidden="true" /> Delete
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+};
+
+export default AddressCard;
+```
+
+- **Changing the password gives a new token.** The moment the password changes, every older token stops working
+  (`passwordChangedAt`, server STEP 18), including this browser's. The server sends a fresh one, and `startSession`
+  (STEP 37) saves it. Without that line you'd be logged out right after changing your password. My test checked both: the
+  old token gets "Your password was changed. Please log in again.", and the page stays logged in.
+- **Every address request answers with the whole list** (server STEP 20), which simply replaces `user.addresses`.
+  The server also keeps exactly one default: set a new one and the old one loses its badge; delete the default and the
+  first remaining address becomes the default.
+- **`key={editing}`** on the form (in `AddressesPage`): editing "Home" then "Office" gives a fresh form filled with Office,
+  instead of keeping Home's text.
+
+### 39.6 The 4 pages in `src/pages/account/`
+
+Replace the placeholders: `AccountOverviewPage.tsx`, `AccountSettingsPage.tsx`, `AddressesPage.tsx`, `SavedItemsPage.tsx`.
+
+```tsx
+// AccountOverviewPage.tsx client/src/pages/account/AccountOverviewPage.tsx
+// My Account → Overview (design: My Account & Profile Dashboard): welcome, stats, profile, recent orders,
+// the default address and security. The numbers come from GET /api/orders/summary (server STEP 22).
+
+// STEP 39 (part 13): The Overview page
+
+import { MdArrowForward, MdOutlineLocalShipping, MdVerified } from "react-icons/md";
+import { Link } from "react-router-dom";
+import AccountStats from "../../components/account/AccountStats";
+import ProfileCard from "../../components/account/ProfileCard";
+import RecentOrderCard from "../../components/account/RecentOrderCard";
+import SavedAddressCard from "../../components/account/SavedAddressCard";
+import SecurityCard from "../../components/account/SecurityCard";
+import { useAuth } from "../../context/AuthContext";
+import { useApi } from "../../hooks/useApi";
+import type { OrderSummaryResponse } from "../../types/api";
+
+const AccountOverviewPage = () => {
+  const { user } = useAuth();
+  const { data } = useApi<OrderSummaryResponse>("/orders/summary");
+  if (!user) return null;
+
+  const defaultAddress = user.addresses.find((address) => address.isDefault) ?? user.addresses[0];
+  // "Track Active Order": the newest order that hasn't arrived yet
+  const activeOrder = data?.recentOrders.find((order) => order.status === "processing" || order.status === "shipped");
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl bg-surface p-6 shadow-card">
+        <div>
+          <h1 className="flex items-center gap-2 text-3xl font-bold tracking-tight text-ink">
+            My Account
+            {user.isEmailVerified && (
+              <span className="flex items-center gap-1 rounded-full bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary">
+                <MdVerified size={14} aria-hidden="true" /> Verified
+              </span>
+            )}
+          </h1>
+          <p className="mt-1 text-ink-soft">Welcome back, {user.firstName}! Manage your profile, track shipments, and review your order history.</p>
+        </div>
+        {activeOrder && (
+          <Link to={`/account/orders/${activeOrder.orderNumber}`} className="flex h-11 items-center gap-2 rounded-xl bg-primary px-5 font-semibold text-white hover:bg-primary-hover">
+            <MdOutlineLocalShipping size={18} aria-hidden="true" /> Track Active Order
+          </Link>
+        )}
+      </div>
+
+      <AccountStats
+        totalOrders={data?.totalOrders ?? 0}
+        inProgress={data?.inProgress ?? 0}
+        delivered={data?.delivered ?? 0}
+        addresses={user.addresses.length}
+        defaultCity={defaultAddress?.city}
+        activeOrder={activeOrder?.orderNumber}
+      />
+
+      <ProfileCard />
+
+      <section aria-labelledby="recent-orders-title">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 id="recent-orders-title" className="flex items-center gap-2 text-2xl font-semibold text-ink">
+            Recent Orders
+            {data && data.totalOrders > 0 && (
+              <span className="rounded-full bg-field px-2 py-0.5 text-xs font-semibold text-ink-soft">
+                {data.recentOrders.length} of {data.totalOrders}
+              </span>
+            )}
+          </h2>
+          {data && data.totalOrders > 0 && (
+            <Link to="/account/orders" className="flex items-center gap-1 font-semibold text-primary-hover hover:underline">
+              View All Orders ({data.totalOrders}) <MdArrowForward size={18} aria-hidden="true" />
+            </Link>
+          )}
+        </div>
+        {!data ? (
+          <div aria-busy="true" className="h-40 animate-pulse rounded-3xl bg-surface shadow-card" />
+        ) : data.recentOrders.length === 0 ? (
+          <p className="rounded-3xl bg-surface p-6 text-ink-soft shadow-card">
+            No orders yet.{" "}
+            <Link to="/shop" className="font-semibold text-primary-hover hover:underline">
+              Start shopping
+            </Link>
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-4">
+            {data.recentOrders.map((order) => (
+              <RecentOrderCard key={order._id} order={order} />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <SavedAddressCard address={defaultAddress} total={user.addresses.length} />
+        <SecurityCard />
+      </div>
+    </div>
+  );
+};
+
+export default AccountOverviewPage;
+```
+
+```tsx
+// AccountSettingsPage.tsx client/src/pages/account/AccountSettingsPage.tsx
+// My Account → Account Settings: personal details, password, and email verification.
+
+// STEP 39 (part 14): The Account Settings page
+
+import ChangePasswordForm from "../../components/account/ChangePasswordForm";
+import EditProfileForm from "../../components/account/EditProfileForm";
+import SecurityCard from "../../components/account/SecurityCard";
+
+const AccountSettingsPage = () => {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="rounded-3xl bg-surface p-6 shadow-card">
+        <h1 className="text-3xl font-bold tracking-tight text-ink">Account Settings</h1>
+        <p className="mt-1 text-ink-soft">Update your personal details and keep your account secure.</p>
+      </div>
+      <div className="rounded-3xl bg-surface p-2 shadow-card">
+        <EditProfileForm />
+      </div>
+      <div className="grid items-start gap-6 xl:grid-cols-[1fr_360px]">
+        <ChangePasswordForm />
+        <SecurityCard />
+      </div>
+    </div>
+  );
+};
+
+export default AccountSettingsPage;
+```
+
+```tsx
+// AddressesPage.tsx client/src/pages/account/AddressesPage.tsx
+// My Account → Delivery Addresses: your saved addresses (used at checkout), add, edit, set default, delete.
+// The addresses are part of the logged-in user (user.addresses), so no extra loading is needed.
+
+// STEP 39 (part 15): The Delivery Addresses page
+
+import { useState } from "react";
+import { MdAdd, MdOutlineWrongLocation } from "react-icons/md";
+import AddressCard from "../../components/account/AddressCard";
+import AddressForm from "../../components/account/AddressForm";
+import EmptyState from "../../components/common/EmptyState";
+import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
+
+const AddressesPage = () => {
+  const { user } = useAuth();
+  const { showToast } = useToast();
+  // null = just the list; "new" = the add form; an id = editing that address
+  const [editing, setEditing] = useState<string | null>(null);
+  if (!user) return null;
+
+  const done = (message: string) => {
+    setEditing(null);
+    showToast({ type: "success", title: message });
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl bg-surface p-6 shadow-card">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-ink">Delivery Addresses</h1>
+          <p className="mt-1 text-ink-soft">Your default address is chosen automatically at checkout.</p>
+        </div>
+        {editing === null && (
+          <button type="button" onClick={() => setEditing("new")} className="flex h-11 items-center gap-2 rounded-xl bg-primary px-5 font-semibold text-white hover:bg-primary-hover">
+            <MdAdd size={20} aria-hidden="true" /> Add New Address
+          </button>
+        )}
+      </div>
+
+      {editing !== null ? (
+        <AddressForm
+          // key: switching from one address to another starts the form fresh with that address
+          key={editing}
+          address={user.addresses.find((address) => address._id === editing)}
+          onDone={done}
+          onCancel={() => setEditing(null)}
+        />
+      ) : user.addresses.length === 0 ? (
+        <EmptyState icon={MdOutlineWrongLocation} title="No saved addresses yet" text="Add one now to check out in seconds next time." />
+      ) : (
+        <ul className="grid gap-4 md:grid-cols-2">
+          {user.addresses.map((address) => (
+            <AddressCard key={address._id} address={address} onEdit={() => setEditing(address._id)} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default AddressesPage;
+```
+
+```tsx
+// SavedItemsPage.tsx client/src/pages/account/SavedItemsPage.tsx
+// My Account → Saved Items: the products you ♡ saved (STEP 35), from GET /api/account/saved (server STEP 20).
+
+// STEP 39 (part 16): The Saved Items page
+
+import { MdFavoriteBorder } from "react-icons/md";
+import { Link } from "react-router-dom";
+import EmptyState from "../../components/common/EmptyState";
+import ProductCard from "../../components/product/ProductCard";
+import SaveButton from "../../components/product/SaveButton";
+import { useAuth } from "../../context/AuthContext";
+import { useApi } from "../../hooks/useApi";
+import type { ProductSummary } from "../../types/api";
+
+const SavedItemsPage = () => {
+  const { user } = useAuth();
+  const { data, error } = useApi<{ products: ProductSummary[] }>("/account/saved");
+
+  // Un-saving (the ♡) updates user.savedItems at once, so hide those products without loading again
+  const products = (data?.products ?? []).filter((product) => user?.savedItems.includes(product._id));
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="rounded-3xl bg-surface p-6 shadow-card">
+        <h1 className="text-3xl font-bold tracking-tight text-ink">Saved Items</h1>
+        <p className="mt-1 text-ink-soft">Products you saved for later. They stay on your account, on every device.</p>
+      </div>
+
+      {error ? (
+        <p role="alert" className="rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          {error}
+        </p>
+      ) : !data ? (
+        <div aria-busy="true" className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+          {[1, 2, 3].map((n) => (
+            <div key={n} className="h-105 animate-pulse rounded-3xl bg-surface shadow-card" />
+          ))}
+        </div>
+      ) : products.length === 0 ? (
+        <EmptyState
+          icon={MdFavoriteBorder}
+          title="Nothing saved yet"
+          text="Tap the ♡ on any product to keep it here for later."
+          action={
+            <Link to="/shop" className="flex h-11 items-center rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              Browse products
+            </Link>
+          }
+        />
+      ) : (
+        <ul className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+          {products.map((product) => (
+            <li key={product._id} className="relative flex">
+              <ProductCard product={product} />
+              {/* The ♡ in the photo's corner: tap to remove it from Saved Items */}
+              <div className="absolute top-6 right-6">
+                <SaveButton productId={product._id} productName={product.name} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default SavedItemsPage;
+```
+
+**"In Progress" counts processing *and* shipped orders**: that's how your server's summary defines it (server STEP 22),
+since both are "not arrived yet". After `npm run seed`, Ada has one of each, so it says **2** (the design says 1).
+
+### 39.7 Test it
+
+`npm run seed`, both terminals running, logged in as Ada.
+
+| Do this                                                 | You should see                                              |
+| ------------------------------------------------------- | ----------------------------------------------------------- |
+| Navbar **AO** → My Account                               | Home › My Account; the menu with Order History **5**, Delivery Addresses **2**; "Welcome back, Ada!"; **Track Active Order**; stats 5 orders · 2 active · 3 packages · 2 locations (Default: Lekki Phase 1) |
+| The profile card                                         | Ada Obi, Verified Customer, Member since (this month), 0803 123 4567 |
+| **Edit Profile** → change the first name → Save Changes  | toast, and the new name in the card, the menu and everywhere else |
+| Recent Orders                                            | 3 of 5, newest first: Processing (delivery window), Shipped (courier + waybill), Delivered (delivered to ...); "View All Orders (5)" |
+| Account Settings → Change Password with a wrong current password | "Your current password is incorrect."                  |
+| With the right one                                       | "Your password has been changed." and you're **still logged in**; the security card says "today" |
+| Delivery Addresses → Add New Address (Save empty)         | "Please fill in the name, phone, street, city and state." |
+| Fill it in → Save                                        | 3 addresses; the menu says 3                                |
+| **Set as default** on the new one                         | only it has the Default badge                               |
+| **Edit** it, change the city → Save                       | updated                                                     |
+| **Delete** → Yes, delete                                  | gone, and one address is still the default                  |
+| ♡ a product, then **Saved Items**                         | it's there (menu: Saved Items 1); tap its ♡ → "Nothing saved yet" |
+
+(Change the name and password back afterwards, or `npm run seed`.)
+
+I tested all of this on a copy of your project against a throwaway database: **26 checks**. All the features passed;
+the only 2 "failures" were my test expecting the design's "1 active" (the server says 2, see 39.6) and a re-run without
+re-seeding. The screenshots match the design. `npm run build` and `npm run lint` pass.
+
+### 39.8 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 39: my account, settings, addresses, saved items"
+git push
+```
+
+➡️ **Next: STEP 40 (Order History with its tabs, search and sort; Order Details & Shipment Tracking with the Cancel button
+inside the 1-hour window; and Leave a Review / Buy Again).** Reply **NEXT** when 39.7 works.

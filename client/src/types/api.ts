@@ -40,6 +40,7 @@ export type User = {
   addresses: Address[];
   savedItems: string[]; // product ids
   createdAt: string; // dates arrive as text in JSON: "2026-11-15T16:09:36.218Z"
+  passwordChangedAt?: string; // "Password last updated ..." (STEP 39)
 };
 
 // POST /api/auth/login and /register -> { token, user }
@@ -187,4 +188,14 @@ export type OrderResponse = {
   order: Order;
   canCancel: boolean;
   cancelDeadline: string;
+};
+
+// STEP 39: My Account (server: getOrderSummary in orderController.ts)
+
+// GET /api/orders/summary -> the numbers and the 3 newest orders for the My Account overview
+export type OrderSummaryResponse = {
+  totalOrders: number;
+  inProgress: number;
+  delivered: number;
+  recentOrders: Order[];
 };
