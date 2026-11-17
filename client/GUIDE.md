@@ -43,8 +43,8 @@ then the admin.
 | ✅   | 34     | Shop page (filters, search, sort, pages) and Categories page |
 | ✅   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
 | ✅   | 36     | Cart page: items, promo code, summary, empty state |
-| ⬜   | **37** | **Forgot password, reset password, verify email** ← you are here |
-| ⬜   | 38     | Checkout and Order Confirmation                                                     |
+| ✅   | 37     | Forgot password, reset password, verify email |
+| ⬜   | **38** | **Checkout and Order Confirmation** ← you are here |
 | ⬜   | 39     | My Account: layout, overview, settings, addresses, saved items                       |
 | ⬜   | 40     | Order History, Order Details and tracking, cancel, leave a review                    |
 | ⬜   | 41     | Admin: login, layout, dashboard with the sales chart                                 |
@@ -6914,3 +6914,1361 @@ git push
 ➡️ **Next: STEP 38 (Checkout: contact details, a saved or new delivery address, Standard or Express delivery, card or
 Pay on Delivery (Lagos only), placing the order with your STEP 22 endpoint, and the Order Confirmation page).** Reply
 **NEXT** when 37.8 works.
+
+---
+
+## STEP 38: Checkout and Order Confirmation
+
+The moment it all comes together: a real order, placed with your STEP 22 endpoint.
+
+**Checkout** (`/checkout`, design: Checkout), in 4 numbered sections with the summary on the right:
+
+1. **Contact Information**: filled in from your account ("✓ Verified Customer" if your email is verified)
+2. **Delivery Address**: your saved addresses (the default chosen), or "Use a new address" with a State dropdown
+3. **Delivery Method**: Standard (free) or Express Same-Day (₦2,500), **Lagos only**
+4. **Payment Method**: Card (simulated: a number ending in 0000 is declined), or Pay on Delivery, **Lagos only**
+- **Order Summary**: the items, "QUICK25 Applied · Save ₦2,000" (the code from the cart), subtotal, delivery, discount,
+  **Total Due**, **PLACE ORDER NOW**. With the design's cart, the total is exactly the design's **₦115,500**.
+
+**Order Confirmation** (`/order-confirmation/QC-1042`, design: Order Confirmation & Receipt): "Your order has been
+placed!", the order number, date and payment, the items, the payment breakdown, the **order progress tracker**, the
+estimated delivery window, the address and instructions, "Continue Shopping" and "View Order Details".
+
+| New / changed file                                   | What it is                                                |
+| ---------------------------------------------------- | --------------------------------------------------------- |
+| `types/api.ts` (Order types), `types/checkout.ts`     | the order and the checkout form's shapes                   |
+| `utils/nigeria.ts`, `utils/dates.ts`                  | the 37 states, the Lagos rule, phone and date formats      |
+| `components/form/RadioCard.tsx`                       | the big choice cards                                       |
+| `components/checkout/CheckoutSection.tsx`, `ContactInfoForm.tsx`, `DeliveryAddressForm.tsx`, `DeliveryMethodForm.tsx`, `PaymentMethodForm.tsx`, `CheckOUTSummary.tsx` | the checkout pieces |
+| `components/order/OrderTracker.tsx`, `PriceBreakdown.tsx` | reused on Order Details (STEP 40)                     |
+| `pages/cart/CheckoutPage.tsx`, `OrderConfirmationPage.tsx` | the 2 pages                                           |
+
+**The server is the boss here.** The checkout sends only product **ids and quantities**, the address, the choices and the
+card. The server looks up the real prices, re-checks the stock, re-checks the promo code, re-checks the Lagos-only rules,
+"charges" the card, and works out the total itself (server STEP 22). Whatever someone changes in their browser, the order
+is right.
+
+### 38.1 Order types in `src/types/api.ts`
+
+Add at the bottom:
+
+```ts
+// STEP 38: Orders (server: models/Order.ts, orderController.ts)
+
+export type OrderStatus = "processing" | "shipped" | "delivered" | "cancelled";
+
+export type OrderItem = {
+  product: string; // the product's id
+  name: string; // a COPY taken when the order was placed (server STEP 22)
+  image: string;
+  sku: string;
+  price: number; // the price of one, when it was ordered
+  quantity: number;
+  color?: string;
+  lineTotal: number;
+};
+
+export type Order = {
+  _id: string;
+  orderNumber: string; // "QC-1042"
+  items: OrderItem[];
+  contact: { firstName: string; lastName: string; email: string; phone: string };
+  shippingAddress: Omit<Address, "_id" | "isDefault" | "label"> & { label?: string };
+  deliveryMethod: "standard" | "express";
+  payment: {
+    method: "card" | "pay_on_delivery";
+    status: "paid" | "pending" | "refunded";
+    cardBrand?: string;
+    cardLast4?: string;
+    reference?: string;
+    paidAt?: string;
+  };
+  subtotal: number;
+  deliveryFee: number;
+  discount: number;
+  promoCode?: string;
+  total: number;
+  status: OrderStatus;
+  statusHistory: { status: OrderStatus; note: string; at: string }[]; // the tracker
+  estimatedDelivery: { from: string; to: string };
+  courier?: string;
+  waybill?: string;
+  deliveredAt?: string;
+  cancelledAt?: string;
+  cancelReason?: string;
+  createdAt: string;
+};
+
+// POST /api/orders and GET /api/orders/:orderNumber -> the order + what the Cancel button needs
+export type OrderResponse = { order: Order; canCancel: boolean; cancelDeadline: string };
+```
+
+`Omit<Address, "_id" | "isDefault" | "label">`: an order's address is a **copy** of your address without its id
+(server STEP 22), so `Omit` makes the `Address` type without those fields.
+
+### 38.2 `src/types/checkout.ts`, `src/utils/nigeria.ts`, `src/utils/dates.ts`
+
+New files.
+
+```ts
+// checkout.ts client/src/types/checkout.ts
+// Everything the checkout form holds, in one object. The page owns it; each section shows and changes its part.
+
+// STEP 38 (part 2): The checkout form's shape
+
+export type CheckoutForm = {
+  // 1. Contact
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  // 2. Address: a saved address's _id, or "new" to type one
+  addressId: string;
+  street: string;
+  city: string;
+  state: string;
+  instructions: string;
+  // 3. Delivery
+  deliveryMethod: "standard" | "express";
+  // 4. Payment
+  paymentMethod: "card" | "pay_on_delivery";
+  cardNumber: string;
+  expiry: string;
+  cvv: string;
+};
+
+export type CheckoutErrors = Partial<Record<keyof CheckoutForm, string>>;
+
+// Every section changes the form the same way: onChange("city", "Ikeja")
+export type ChangeField = (field: keyof CheckoutForm, value: string) => void;
+```
+
+```ts
+// nigeria.ts client/src/utils/nigeria.ts
+// The 36 states and the FCT, for the State dropdown at checkout and in My Account → Addresses (STEP 39).
+
+// STEP 38 (part 1): Nigerian states
+
+export const NIGERIAN_STATES = [
+  "Abia State", "Adamawa State", "Akwa Ibom State", "Anambra State", "Bauchi State", "Bayelsa State", "Benue State",
+  "Borno State", "Cross River State", "Delta State", "Ebonyi State", "Edo State", "Ekiti State", "Enugu State",
+  "FCT Abuja", "Gombe State", "Imo State", "Jigawa State", "Kaduna State", "Kano State", "Katsina State", "Kebbi State",
+  "Kogi State", "Kwara State", "Lagos State", "Nasarawa State", "Niger State", "Ogun State", "Ondo State", "Osun State",
+  "Oyo State", "Plateau State", "Rivers State", "Sokoto State", "Taraba State", "Yobe State", "Zamfara State",
+];
+
+// Express delivery and Pay on Delivery are "Lagos Metro Only": the SAME rule as the server (isLagos, server STEP 22)
+export const isLagos = (state: string) => /lagos/i.test(state);
+
+// "+2348031234567" -> "0803 123 4567" (how people read a Nigerian number)
+export const localPhone = (phone = "") => {
+  const digits = phone.replace(/\D/g, "").replace(/^234/, "0");
+  return digits.length === 11 ? `${digits.slice(0, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}` : phone;
+};
+
+```
+
+```ts
+// dates.ts client/src/utils/dates.ts
+// Dates from the server arrive as text ("2026-10-24T09:14:00.000Z"). These show them the way the designs do.
+
+// STEP 38 (part 1): Dates
+
+// "October 24, 2026"
+export const longDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+// "Oct 24, 2026"
+export const shortDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+// "Oct 24, 10:14 AM"
+export const shortDateTime = (iso: string) =>
+  new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+// "10:14 AM"
+export const timeOnly = (iso: string) => new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+```
+
+- **One form object** (`CheckoutForm`) for the whole checkout, owned by the page. Each section gets the form and one
+  `onChange(field, value)` function. `keyof CheckoutForm` means `field` can only be one of the real field names:
+  `onChange("citty", ...)` is a TypeScript error.
+- **`isLagos` is the same rule as the server's** (`/lagos/i`), so the page greys out Express and Pay on Delivery exactly
+  when the server would refuse them.
+
+### 38.3 `src/components/form/RadioCard.tsx`
+
+Replace the placeholder.
+
+```tsx
+// RadioCard.tsx client/src/components/form/RadioCard.tsx
+// A big choice card with a radio button: "◉ Standard Delivery [Recommended] .......... Free". Used for delivery,
+// payment and saved addresses at checkout. Clicking anywhere on the card chooses it (it's all one <label>).
+
+// STEP 38 (part 4): A radio card
+
+import type { ReactNode } from "react";
+
+type RadioCardProps = {
+  name: string; // radios with the same name are one group: only one can be chosen
+  value: string;
+  checked: boolean;
+  onChange: (value: string) => void;
+  title: ReactNode;
+  badge?: ReactNode;
+  right?: ReactNode; // e.g. the price
+  description?: ReactNode;
+  disabled?: boolean;
+  children?: ReactNode; // extra content shown under it while it's chosen (e.g. the card number boxes)
+};
+
+const RadioCard = ({ name, value, checked, onChange, title, badge, right, description, disabled, children }: RadioCardProps) => {
+  return (
+    <div
+      className={`rounded-2xl border-2 transition-colors ${
+        checked ? "border-primary/40 bg-primary-light/30" : "border-line bg-surface"
+      } ${disabled ? "opacity-55" : ""}`}
+    >
+      <label className={`flex items-start gap-3 p-4 ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}>
+        <input
+          type="radio"
+          name={name}
+          value={value}
+          checked={checked}
+          disabled={disabled}
+          onChange={() => onChange(value)}
+          className="mt-1 size-4.5 shrink-0 accent-primary"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center justify-between gap-2">
+            <span className="flex flex-wrap items-center gap-2 text-lg font-semibold text-ink">
+              {title} {badge}
+            </span>
+            {right}
+          </span>
+          {description && <span className="mt-1 block text-sm text-ink-soft">{description}</span>}
+        </span>
+      </label>
+      {checked && children && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  );
+};
+
+export default RadioCard;
+```
+
+`children` only shows **while the card is chosen**: that's how the card number boxes appear under "Card Payment" and
+disappear when you pick Pay on Delivery.
+
+### 38.4 The checkout sections in `src/components/checkout/`
+
+Replace the 6 placeholders.
+
+```tsx
+// CheckoutSection.tsx client/src/components/checkout/CheckoutSection.tsx
+// The white numbered card around each part of the checkout: "① Contact Information / Order invoice & dispatch updates..."
+
+// STEP 38 (part 3): A checkout section
+
+import type { ReactNode } from "react";
+
+type CheckoutSectionProps = {
+  number: number;
+  title: string;
+  subtitle: string;
+  badge?: ReactNode; // the small note on the right, e.g. "✓ Verified Customer"
+  children: ReactNode;
+};
+
+const CheckoutSection = ({ number, title, subtitle, badge, children }: CheckoutSectionProps) => {
+  const id = `checkout-step-${number}`;
+  return (
+    <section aria-labelledby={id} className="overflow-hidden rounded-3xl bg-surface shadow-card">
+      <header className="flex items-start justify-between gap-4 border-b border-line bg-panel/60 px-6 py-5">
+        <div className="flex items-start gap-3">
+          <span aria-hidden="true" className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary-light font-semibold text-primary">
+            {number}
+          </span>
+          <div>
+            <h2 id={id} className="text-xl leading-7 font-semibold text-ink">
+              {title}
+            </h2>
+            <p className="text-sm text-ink-soft">{subtitle}</p>
+          </div>
+        </div>
+        {badge}
+      </header>
+      <div className="p-6">{children}</div>
+    </section>
+  );
+};
+
+export default CheckoutSection;
+```
+
+```tsx
+// ContactInfoForm.tsx client/src/components/checkout/ContactInfoForm.tsx
+// ① Contact Information: name, email and phone for the invoice and the dispatch updates. Filled in from your account.
+
+// STEP 38 (part 5): Contact information
+
+import { MdOutlineMail, MdOutlinePhone, MdVerified } from "react-icons/md";
+import type { ChangeField, CheckoutErrors, CheckoutForm } from "../../types/checkout";
+import TextInput from "../form/TextInput";
+import CheckoutSection from "./CheckoutSection";
+
+type ContactInfoFormProps = { form: CheckoutForm; errors: CheckoutErrors; onChange: ChangeField; verified: boolean };
+
+const ContactInfoForm = ({ form, errors, onChange, verified }: ContactInfoFormProps) => {
+  return (
+    <CheckoutSection
+      number={1}
+      title="Contact Information"
+      subtitle="Order invoice & dispatch updates will be sent here"
+      badge={
+        verified && (
+          <span className="flex shrink-0 items-center gap-1 rounded-full bg-mint/30 px-2.5 py-1 text-xs font-semibold text-forest">
+            <MdVerified size={14} aria-hidden="true" /> Verified Customer
+          </span>
+        )
+      }
+    >
+      <div className="grid gap-5 sm:grid-cols-2">
+        <TextInput label="First Name" autoComplete="given-name" value={form.firstName} onChange={(e) => onChange("firstName", e.target.value)} error={errors.firstName} />
+        <TextInput label="Last Name" autoComplete="family-name" value={form.lastName} onChange={(e) => onChange("lastName", e.target.value)} error={errors.lastName} />
+        <TextInput
+          className="sm:col-span-2"
+          label="Email Address"
+          type="email"
+          autoComplete="email"
+          icon={MdOutlineMail}
+          value={form.email}
+          onChange={(e) => onChange("email", e.target.value)}
+          error={errors.email}
+        />
+        <TextInput
+          className="sm:col-span-2"
+          label="Phone Number"
+          type="tel"
+          autoComplete="tel-national"
+          icon={MdOutlinePhone}
+          placeholder="0803 123 4567"
+          value={form.phone}
+          onChange={(e) => onChange("phone", e.target.value)}
+          error={errors.phone}
+        />
+      </div>
+      <p className="mt-2 text-sm text-muted">Our dispatch riders call this number when they arrive.</p>
+    </CheckoutSection>
+  );
+};
+
+export default ContactInfoForm;
+```
+
+```tsx
+// DeliveryAddressForm.tsx client/src/components/checkout/DeliveryAddressForm.tsx
+// ② Delivery Address: pick one of your saved addresses (My Account, server STEP 20), or type a new one.
+
+// STEP 38 (part 6): Delivery address
+
+import { MdOutlinePlace } from "react-icons/md";
+import type { Address } from "../../types/api";
+import type { ChangeField, CheckoutErrors, CheckoutForm } from "../../types/checkout";
+import { NIGERIAN_STATES } from "../../utils/nigeria";
+import RadioCard from "../form/RadioCard";
+import TextInput from "../form/TextInput";
+import CheckoutSection from "./CheckoutSection";
+
+type DeliveryAddressFormProps = { form: CheckoutForm; errors: CheckoutErrors; onChange: ChangeField; saved: Address[] };
+
+const DeliveryAddressForm = ({ form, errors, onChange, saved }: DeliveryAddressFormProps) => {
+  const typingNew = form.addressId === "new";
+
+  return (
+    <CheckoutSection number={2} title="Delivery Address" subtitle="Specify where you'd like your packages delivered">
+      <div className="flex flex-col gap-3">
+        {saved.map((address) => (
+          <RadioCard
+            key={address._id}
+            name="address"
+            value={address._id}
+            checked={form.addressId === address._id}
+            onChange={(value) => onChange("addressId", value)}
+            title={address.label}
+            badge={address.isDefault && <span className="rounded-full bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary">Default</span>}
+            description={`${address.fullName} · ${address.street}, ${address.city}, ${address.state}`}
+          />
+        ))}
+        {saved.length > 0 && (
+          <RadioCard name="address" value="new" checked={typingNew} onChange={(value) => onChange("addressId", value)} title="Use a new address" />
+        )}
+      </div>
+
+      {/* The address boxes: always when there are no saved addresses, otherwise only for "Use a new address" */}
+      {(typingNew || saved.length === 0) && (
+        <div className={`grid gap-5 sm:grid-cols-2 ${saved.length > 0 ? "mt-5" : ""}`}>
+          <TextInput
+            className="sm:col-span-2"
+            label="Street Address"
+            autoComplete="street-address"
+            icon={MdOutlinePlace}
+            placeholder="12 Admiralty Way"
+            value={form.street}
+            onChange={(e) => onChange("street", e.target.value)}
+            error={errors.street}
+          />
+          <TextInput
+            label="City / Neighborhood"
+            autoComplete="address-level2"
+            placeholder="Lekki Phase 1"
+            value={form.city}
+            onChange={(e) => onChange("city", e.target.value)}
+            error={errors.city}
+          />
+          <div>
+            <label htmlFor="checkout-state" className="mb-2 block text-sm font-medium text-ink">
+              State / Region
+            </label>
+            <select
+              id="checkout-state"
+              value={form.state}
+              onChange={(e) => onChange("state", e.target.value)}
+              aria-invalid={errors.state ? true : undefined}
+              className="h-12 w-full cursor-pointer rounded-xl bg-field px-4 text-[15px] text-ink outline-none focus:ring-2 focus:ring-primary/30 aria-invalid:ring-2 aria-invalid:ring-danger/40"
+            >
+              <option value="">Choose a state</option>
+              {NIGERIAN_STATES.map((state) => (
+                <option key={state}>{state}</option>
+              ))}
+            </select>
+            {errors.state && <p className="mt-1.5 text-[13px] text-danger">{errors.state}</p>}
+          </div>
+          <div className="sm:col-span-2">
+            <label htmlFor="checkout-instructions" className="mb-2 block text-sm font-medium text-ink">
+              Delivery Instructions <span className="font-normal text-muted">(Optional)</span>
+            </label>
+            <textarea
+              id="checkout-instructions"
+              rows={3}
+              maxLength={300}
+              placeholder="Gate code 4022. Please call upon arrival at reception."
+              value={form.instructions}
+              onChange={(e) => onChange("instructions", e.target.value)}
+              className="w-full rounded-xl bg-field px-4 py-3 text-[15px] outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+        </div>
+      )}
+    </CheckoutSection>
+  );
+};
+
+export default DeliveryAddressForm;
+```
+
+```tsx
+// DeliveryMethodForm.tsx client/src/components/checkout/DeliveryMethodForm.tsx
+// ③ Delivery Method: Standard (free, 2–3 business days) or Express Same-Day (₦2,500, Lagos only).
+// The prices and the Lagos rule are the server's own (DELIVERY_OPTIONS and isLagos, server STEP 22).
+
+// STEP 38 (part 7): Delivery method
+
+import { MdBolt, MdOutlineEventAvailable } from "react-icons/md";
+import type { CheckoutForm } from "../../types/checkout";
+import RadioCard from "../form/RadioCard";
+import CheckoutSection from "./CheckoutSection";
+
+type DeliveryMethodFormProps = {
+  value: CheckoutForm["deliveryMethod"];
+  lagos: boolean; // is the chosen address in Lagos?
+  onChange: (value: CheckoutForm["deliveryMethod"]) => void;
+};
+
+const DeliveryMethodForm = ({ value, lagos, onChange }: DeliveryMethodFormProps) => {
+  return (
+    <CheckoutSection number={3} title="Delivery Method" subtitle="Choose the delivery speed suited to your urgency">
+      <div className="flex flex-col gap-3">
+        <RadioCard
+          name="delivery"
+          value="standard"
+          checked={value === "standard"}
+          onChange={() => onChange("standard")}
+          title="Standard Delivery"
+          badge={<span className="rounded-full bg-mint px-2 py-0.5 text-xs font-semibold text-forest">Recommended</span>}
+          right={<span className="text-lg font-bold text-success">Free</span>}
+          description={
+            <>
+              2–3 business days anywhere in Nigeria · Tracking updates by email.
+              <span className="mt-1 flex items-center gap-1 text-xs font-medium text-ink-soft">
+                <MdOutlineEventAvailable size={14} aria-hidden="true" /> The exact dates are on your confirmation
+              </span>
+            </>
+          }
+        />
+        <RadioCard
+          name="delivery"
+          value="express"
+          checked={value === "express"}
+          onChange={() => onChange("express")}
+          disabled={!lagos}
+          title="Express Same-Day Dispatch"
+          badge={<span className="rounded-full bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary">Lagos only</span>}
+          right={<span className="text-lg font-bold text-ink">₦2,500</span>}
+          description={
+            lagos ? (
+              <span className="flex items-center gap-1 font-medium text-primary-hover">
+                <MdBolt size={15} aria-hidden="true" /> Delivered today across Lagos by a dedicated courier
+              </span>
+            ) : (
+              "Available for Lagos addresses only."
+            )
+          }
+        />
+      </div>
+    </CheckoutSection>
+  );
+};
+
+export default DeliveryMethodForm;
+```
+
+```tsx
+// PaymentMethodForm.tsx client/src/components/checkout/PaymentMethodForm.tsx
+// ④ Payment Method: Card, or Pay on Delivery (Lagos only).
+// The card payment is SIMULATED (server STEP 22): no real money moves, the server only keeps the brand and the last
+// 4 digits, and a card number ending in 0000 is declined so you can show what a failed payment looks like.
+
+// STEP 38 (part 8): Payment method
+
+import { MdLockOutline, MdOutlineCreditCard } from "react-icons/md";
+import type { ChangeField, CheckoutErrors, CheckoutForm } from "../../types/checkout";
+import RadioCard from "../form/RadioCard";
+import TextInput from "../form/TextInput";
+import CheckoutSection from "./CheckoutSection";
+
+// "4242424242424242" -> "4242 4242 4242 4242" (easier to read and check)
+const groupDigits = (value: string) =>
+  value
+    .replace(/\D/g, "")
+    .slice(0, 19)
+    .replace(/(\d{4})(?=\d)/g, "$1 ");
+
+// "0828" -> "08/28"
+const formatExpiry = (value: string) => {
+  const digits = value.replace(/\D/g, "").slice(0, 4);
+  return digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+};
+
+type PaymentMethodFormProps = { form: CheckoutForm; errors: CheckoutErrors; onChange: ChangeField; lagos: boolean };
+
+const PaymentMethodForm = ({ form, errors, onChange, lagos }: PaymentMethodFormProps) => {
+  return (
+    <CheckoutSection
+      number={4}
+      title="Payment Method"
+      subtitle="Card details go straight to our payment step, never stored"
+      badge={
+        <span className="flex shrink-0 items-center gap-1 text-xs font-semibold text-ink-soft">
+          <MdLockOutline size={14} aria-hidden="true" /> 256-Bit SSL
+        </span>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <RadioCard
+          name="payment"
+          value="card"
+          checked={form.paymentMethod === "card"}
+          onChange={() => onChange("paymentMethod", "card")}
+          title="Card Payment"
+          badge={<span className="rounded-full bg-mint px-2 py-0.5 text-xs font-semibold text-forest">Instant Confirmation</span>}
+          description="Pay securely with Mastercard, Visa or Verve."
+        >
+          <div className="grid gap-4 rounded-2xl bg-surface p-4 shadow-card sm:grid-cols-2">
+            <TextInput
+              className="sm:col-span-2"
+              label="Card Number"
+              inputMode="numeric"
+              autoComplete="cc-number"
+              icon={MdOutlineCreditCard}
+              placeholder="4242 4242 4242 4242"
+              value={form.cardNumber}
+              onChange={(e) => onChange("cardNumber", groupDigits(e.target.value))}
+              error={errors.cardNumber}
+            />
+            <TextInput
+              label="Expiry"
+              inputMode="numeric"
+              autoComplete="cc-exp"
+              placeholder="MM/YY"
+              value={form.expiry}
+              onChange={(e) => onChange("expiry", formatExpiry(e.target.value))}
+              error={errors.expiry}
+            />
+            <TextInput
+              label="CVV"
+              inputMode="numeric"
+              autoComplete="cc-csc"
+              placeholder="123"
+              maxLength={4}
+              value={form.cvv}
+              onChange={(e) => onChange("cvv", e.target.value.replace(/\D/g, ""))}
+              error={errors.cvv}
+            />
+          </div>
+          <p className="mt-3 rounded-xl bg-panel px-4 py-2.5 text-xs text-ink-soft">
+            Simulated payment for this capstone: no money moves. Try any valid-looking card; a number ending in{" "}
+            <strong>0000</strong> is declined.
+          </p>
+        </RadioCard>
+
+        <RadioCard
+          name="payment"
+          value="pay_on_delivery"
+          checked={form.paymentMethod === "pay_on_delivery"}
+          onChange={() => onChange("paymentMethod", "pay_on_delivery")}
+          disabled={!lagos}
+          title="Pay on Delivery (Cash or POS)"
+          badge={<span className="rounded-full bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary">Lagos Metro Only</span>}
+          description={lagos ? "Pay the rider by card or cash when your order arrives." : "Available for Lagos addresses only."}
+        />
+      </div>
+    </CheckoutSection>
+  );
+};
+
+export default PaymentMethodForm;
+```
+
+```tsx
+// CheckOUTSummary.tsx client/src/components/checkout/CheckOUTSummary.tsx
+// The Order Summary on the right of the checkout: what you're buying, the promo code, the totals, PLACE ORDER NOW.
+// (The file name has odd capitals because that's how the placeholder was made; the import uses the same spelling.)
+
+// STEP 38 (part 9): The checkout summary
+
+import { MdArrowBack, MdArrowForward, MdOutlineLocalOffer, MdOutlineVerifiedUser } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { CartItem } from "../../context/CartContext";
+import { naira, plural } from "../../utils/format";
+
+type CheckoutSummaryProps = {
+  items: CartItem[];
+  subtotal: number;
+  deliveryFee: number;
+  deliveryLabel: string;
+  promo: { code: string; discount: number } | null;
+  error: string; // the server's answer if placing the order failed (e.g. "Your card was declined...")
+  placing: boolean;
+  onPlace: () => void;
+};
+
+const CheckOUTSummary = ({ items, subtotal, deliveryFee, deliveryLabel, promo, error, placing, onPlace }: CheckoutSummaryProps) => {
+  const count = items.reduce((sum, item) => sum + item.quantity, 0);
+  const total = subtotal - (promo?.discount ?? 0) + deliveryFee;
+
+  return (
+    <aside aria-labelledby="checkout-summary-title" className="rounded-3xl bg-surface p-6 shadow-card lg:sticky lg:top-28">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 id="checkout-summary-title" className="flex items-center gap-2 text-xl font-semibold text-ink">
+          Order Summary <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-bold text-white">{plural(count, "Item")}</span>
+        </h2>
+        <Link to="/cart" className="text-sm font-semibold text-primary-hover hover:underline">
+          Edit Bag
+        </Link>
+      </div>
+
+      <ul className="flex flex-col gap-4">
+        {items.map((item) => (
+          <li key={item.key} className="flex items-center gap-3">
+            <span className="relative shrink-0">
+              <img src={item.image} alt="" className="size-14 rounded-xl bg-field object-cover" />
+              <span className="absolute -right-1 -bottom-1 rounded-md bg-ink px-1.5 text-[11px] font-bold text-white">x{item.quantity}</span>
+            </span>
+            <span className="min-w-0 flex-1 text-sm">
+              <span className="block truncate font-semibold text-ink">{item.name}</span>
+              {item.color && <span className="text-ink-soft">{item.color}</span>}
+            </span>
+            <span className="text-right font-bold text-ink">{naira(item.price * item.quantity)}</span>
+          </li>
+        ))}
+      </ul>
+
+      {promo && (
+        <p className="mt-4 flex items-center justify-between rounded-xl bg-primary-light/50 px-3 py-2 text-sm">
+          <span className="flex items-center gap-1.5 font-semibold text-primary">
+            <MdOutlineLocalOffer size={16} aria-hidden="true" /> {promo.code} Applied
+          </span>
+          <span className="rounded-md bg-surface px-2 py-0.5 text-xs font-bold text-danger">Save {naira(promo.discount)}</span>
+        </p>
+      )}
+
+      <dl className="mt-5 flex flex-col gap-2 border-t border-line pt-4 text-sm">
+        <div className="flex justify-between">
+          <dt className="text-ink-soft">Subtotal</dt>
+          <dd className="font-semibold text-ink">{naira(subtotal)}</dd>
+        </div>
+        <div className="flex justify-between">
+          <dt className="text-ink-soft">Delivery ({deliveryLabel})</dt>
+          <dd className={`font-semibold ${deliveryFee === 0 ? "text-success" : "text-ink"}`}>{deliveryFee === 0 ? "Free" : naira(deliveryFee)}</dd>
+        </div>
+        {promo && (
+          <div className="flex justify-between">
+            <dt className="text-ink-soft">Discount ({promo.code})</dt>
+            <dd className="font-semibold text-success">−{naira(promo.discount)}</dd>
+          </div>
+        )}
+      </dl>
+
+      <div className="mt-4 flex items-end justify-between rounded-2xl bg-panel p-4">
+        <p>
+          <span className="block text-lg font-semibold text-ink">Total Due</span>
+          <span className="text-xs text-muted">Includes VAT &amp; delivery</span>
+        </p>
+        <p className="text-3xl font-bold text-primary-hover">{naira(total)}</p>
+      </div>
+
+      {error && (
+        <p role="alert" className="mt-4 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={onPlace}
+        disabled={placing}
+        className="mt-5 flex h-13 w-full items-center justify-center gap-2 rounded-xl bg-primary text-base font-bold tracking-wide text-white uppercase transition-colors hover:bg-primary-hover disabled:opacity-60"
+      >
+        {placing ? "Placing your order..." : "Place Order Now"} <MdArrowForward size={20} aria-hidden="true" />
+      </button>
+
+      <p className="mt-3 rounded-xl bg-panel px-4 py-2.5 text-center text-xs text-ink-soft">
+        The server checks every price, the stock and your promo code again before charging.
+      </p>
+
+      <Link to="/cart" className="mx-auto mt-4 flex w-fit items-center gap-1.5 text-sm font-medium text-ink-soft hover:text-ink">
+        <MdArrowBack size={16} aria-hidden="true" /> Return to Cart
+      </Link>
+
+      <p className="mt-5 flex items-center justify-center gap-2 border-t border-line pt-4 text-xs font-semibold text-ink-soft">
+        <MdOutlineVerifiedUser size={16} aria-hidden="true" className="text-success" /> 100% Buyer Protection Guarantee
+      </p>
+    </aside>
+  );
+};
+
+export default CheckOUTSummary;
+```
+
+- **The card boxes format as you type**: `4242424242424242` → `4242 4242 4242 4242`, `0828` → `08/28`. The server
+  removes the spaces itself (`chargeCard`, server STEP 22).
+- **`autoComplete="cc-number"` / `"cc-exp"` / `"cc-csc"`** let the browser offer a saved card.
+- **The payment is simulated** (your server's `chargeCard`): nothing is charged, and the order keeps only the brand and
+  the last 4 digits. The page says so, so nobody types a real card thinking it's a real shop. A number ending in
+  **0000** is declined: a good way to show error handling in your demo.
+
+### 38.5 `src/pages/cart/CheckoutPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// CheckoutPage.tsx client/src/pages/cart/CheckoutPage.tsx
+// The checkout (design: Checkout): ① contact, ② address, ③ delivery, ④ payment, and the summary with PLACE ORDER NOW.
+// It sends POST /api/orders (server STEP 22). The server re-checks every price, the stock, the promo code and the
+// Lagos-only options, so nothing here can be faked from the browser. It's inside ProtectedRoute (login required).
+
+// STEP 38 (part 10): The Checkout page
+
+import { useEffect, useState } from "react";
+import { MdOutlineRemoveShoppingCart, MdVerifiedUser } from "react-icons/md";
+import { Link, useNavigate } from "react-router-dom";
+import CheckOUTSummary from "../../components/checkout/CheckOUTSummary";
+import ContactInfoForm from "../../components/checkout/ContactInfoForm";
+import DeliveryAddressForm from "../../components/checkout/DeliveryAddressForm";
+import DeliveryMethodForm from "../../components/checkout/DeliveryMethodForm";
+import PaymentMethodForm from "../../components/checkout/PaymentMethodForm";
+import EmptyState from "../../components/common/EmptyState";
+import StepTracker from "../../components/common/StepTracker";
+import { useAuth } from "../../context/AuthContext";
+import { useCart } from "../../context/CartContext";
+import type { OrderResponse } from "../../types/api";
+import type { ChangeField, CheckoutErrors, CheckoutForm } from "../../types/checkout";
+import { api } from "../../utils/api";
+import { isLagos, localPhone } from "../../utils/nigeria";
+import { clearSavedPromo, getSavedPromo, type PromoResult } from "../../utils/promo";
+
+const EMAIL_RULE = /^\S+@\S+\.\S+$/;
+const EXPRESS_FEE = 2500; // the server's price (DELIVERY_OPTIONS, server STEP 22); the server charges its own anyway
+
+const CheckoutPage = () => {
+  const { user } = useAuth();
+  const { items, subtotal, clearCart } = useCart();
+  const navigate = useNavigate();
+
+  const saved = user?.addresses ?? [];
+  const defaultAddress = saved.find((address) => address.isDefault) ?? saved[0];
+
+  // The form starts filled in from the account (ProtectedRoute guarantees there's a user)
+  const [form, setForm] = useState<CheckoutForm>(() => ({
+    firstName: user?.firstName ?? "",
+    lastName: user?.lastName ?? "",
+    email: user?.email ?? "",
+    phone: localPhone(user?.phone),
+    addressId: defaultAddress?._id ?? "new",
+    street: "",
+    city: "",
+    state: "",
+    instructions: "",
+    deliveryMethod: "standard",
+    paymentMethod: "card",
+    cardNumber: "",
+    expiry: "",
+    cvv: "",
+  }));
+  const [errors, setErrors] = useState<CheckoutErrors>({});
+  const [serverError, setServerError] = useState("");
+  const [placing, setPlacing] = useState(false);
+
+  const change: ChangeField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setErrors((current) => ({ ...current, [field]: undefined }));
+    setServerError("");
+  };
+
+  // Express and Pay on Delivery need a Lagos address. If the address isn't in Lagos, fall back to the other choice
+  // (worked out here, so switching back to a Lagos address brings your choice back).
+  const chosenState = form.addressId === "new" ? form.state : (saved.find((address) => address._id === form.addressId)?.state ?? "");
+  const lagos = isLagos(chosenState);
+  const deliveryMethod = lagos ? form.deliveryMethod : "standard";
+  const paymentMethod = lagos ? form.paymentMethod : "card";
+  const deliveryFee = deliveryMethod === "express" ? EXPRESS_FEE : 0;
+
+  // The promo code from the cart (STEP 36): ask the server what it's worth for this subtotal, to show it.
+  // (Same "labelled answer" pattern as the cart page. The order itself is checked again by the server.)
+  const [promoCode] = useState(getSavedPromo);
+  const [promo, setPromo] = useState<{ key: string; result: PromoResult | null } | null>(null);
+  const promoKey = `${promoCode}|${subtotal}`;
+  useEffect(() => {
+    if (!promoCode || subtotal <= 0) return;
+    let cancelled = false;
+    api<PromoResult>("/promo-codes/check", { method: "POST", body: { code: promoCode, subtotal } })
+      .then((result) => !cancelled && setPromo({ key: promoKey, result }))
+      .catch(() => !cancelled && setPromo({ key: promoKey, result: null })); // no longer valid: just don't use it
+    return () => {
+      cancelled = true;
+    };
+  }, [promoCode, subtotal, promoKey]);
+  const applied = promo?.key === promoKey ? promo.result : null;
+
+  const validate = () => {
+    const found: CheckoutErrors = {};
+    if (!form.firstName.trim()) found.firstName = "First name is required.";
+    if (!form.lastName.trim()) found.lastName = "Last name is required.";
+    if (!EMAIL_RULE.test(form.email.trim())) found.email = "Please enter a valid email address.";
+    if (form.phone.replace(/\D/g, "").length < 10) found.phone = "Please enter a phone number the rider can call.";
+    if (form.addressId === "new") {
+      if (!form.street.trim()) found.street = "Street address is required.";
+      if (!form.city.trim()) found.city = "City is required.";
+      if (!form.state) found.state = "Please choose a state.";
+    }
+    if (paymentMethod === "card") {
+      const digits = form.cardNumber.replace(/\D/g, "");
+      if (digits.length < 12 || digits.length > 19) found.cardNumber = "Please enter a valid card number.";
+      if (!/^\d{2}\/\d{2}$/.test(form.expiry)) found.expiry = "Use MM/YY, e.g. 08/28.";
+      if (!/^\d{3,4}$/.test(form.cvv)) found.cvv = "3 digits on the back.";
+    }
+    return found;
+  };
+
+  const placeOrder = async () => {
+    const found = validate();
+    setErrors(found);
+    if (Object.keys(found).length > 0) {
+      setServerError("Please check the highlighted fields.");
+      return;
+    }
+
+    setPlacing(true);
+    setServerError("");
+    try {
+      const reply = await api<OrderResponse>("/orders", {
+        method: "POST",
+        body: {
+          // Only ids and quantities: the server looks up the real prices itself
+          items: items.map((item) => ({ productId: item.productId, quantity: item.quantity, color: item.color })),
+          contact: { firstName: form.firstName.trim(), lastName: form.lastName.trim(), email: form.email.trim(), phone: form.phone.trim() },
+          ...(form.addressId === "new"
+            ? {
+                address: {
+                  fullName: `${form.firstName} ${form.lastName}`.trim(),
+                  phone: form.phone.trim(),
+                  street: form.street.trim(),
+                  city: form.city.trim(),
+                  state: form.state,
+                  country: "Nigeria",
+                  instructions: form.instructions.trim() || undefined,
+                },
+              }
+            : { addressId: form.addressId }),
+          deliveryMethod,
+          paymentMethod,
+          ...(paymentMethod === "card" ? { card: { number: form.cardNumber, expiry: form.expiry, cvv: form.cvv } } : {}),
+          ...(applied ? { promoCode: applied.code } : {}),
+        },
+      });
+
+      // Placed! Go to the confirmation, then empty the cart and forget the promo code
+      navigate(`/order-confirmation/${reply.order.orderNumber}`, { replace: true });
+      clearCart();
+      clearSavedPromo();
+    } catch (error) {
+      // e.g. 402 "Your card was declined. Please try another card." or 400 "Only 3 left of ..."
+      setServerError((error as Error).message);
+      setPlacing(false);
+    }
+  };
+
+  if (items.length === 0) {
+    return (
+      <div className="mx-auto max-w-360 px-4 py-16 md:px-12">
+        <EmptyState
+          icon={MdOutlineRemoveShoppingCart}
+          title="Your cart is empty"
+          text="Add something to your cart before checking out."
+          action={
+            <Link to="/shop" className="flex h-11 items-center rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              Start Shopping
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-6 pb-20 md:px-12">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-line pb-4">
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-success">
+          <MdVerifiedUser size={16} aria-hidden="true" /> Secure Checkout
+        </p>
+        <StepTracker current={2} />
+      </div>
+      <h1 className="sr-only">Checkout</h1>
+
+      <div className="grid items-start gap-8 lg:grid-cols-[1fr_380px]">
+        <div className="flex flex-col gap-6">
+          <ContactInfoForm form={form} errors={errors} onChange={change} verified={Boolean(user?.isEmailVerified)} />
+          <DeliveryAddressForm form={form} errors={errors} onChange={change} saved={saved} />
+          <DeliveryMethodForm value={deliveryMethod} lagos={lagos} onChange={(value) => change("deliveryMethod", value)} />
+          <PaymentMethodForm form={{ ...form, paymentMethod }} errors={errors} onChange={change} lagos={lagos} />
+        </div>
+
+        <CheckOUTSummary
+          items={items}
+          subtotal={subtotal}
+          deliveryFee={deliveryFee}
+          deliveryLabel={deliveryMethod === "express" ? "Express" : "Standard"}
+          promo={applied ? { code: applied.code, discount: applied.discount } : null}
+          error={serverError}
+          placing={placing}
+          onPlace={placeOrder}
+        />
+      </div>
+    </div>
+  );
+};
+
+export default CheckoutPage;
+```
+
+**Things worth understanding:**
+
+- **The Lagos-only choices are worked out, not stored**: `deliveryMethod = lagos ? form.deliveryMethod : "standard"`.
+  Choose Express, switch to a Kano address (Standard is used), switch back to Lagos: your Express choice comes back.
+- **`...(condition ? { a } : { b })`** adds different fields to the request body: `addressId` for a saved address, the
+  full `address` for a new one; `card` only for card payments; `promoCode` only if it's still valid.
+- **After the order**: go to the confirmation page *first*, then empty the cart and forget the promo code. (Emptying first
+  would flash "Your cart is empty" for a moment.)
+- **Every server error shows in the summary**: "Your card was declined. Please try another card." (402), "Only 3 left of
+  ..." (someone bought them in the meantime), and so on.
+
+### 38.6 The confirmation: `OrderTracker.tsx`, `PriceBreakdown.tsx` and `OrderConfirmationPage.tsx`
+
+Replace the 3 placeholders (`components/order/OrderTracker.tsx`, `components/order/PriceBreakdown.tsx`,
+`pages/cart/OrderConfirmationPage.tsx`).
+
+```tsx
+// OrderTracker.tsx client/src/components/order/OrderTracker.tsx
+// "Order Progress": Order Placed → Packing & Quality Check → Dispatched → Delivered, with the time of each step that
+// has happened (the order's statusHistory, server STEP 22 and the admin's moves in STEP 26).
+// Used on the Order Confirmation page, and Order Details in STEP 40.
+
+// STEP 38 (part 11): The order tracker
+
+import type { IconType } from "react-icons";
+import { MdCheck, MdClose, MdOutlineInventory2, MdOutlineLocalShipping, MdOutlinePlace } from "react-icons/md";
+import type { Order } from "../../types/api";
+import { shortDateTime } from "../../utils/dates";
+
+type Step = { title: string; text: string; icon: IconType; doneAt?: string };
+
+const OrderTracker = ({ order }: { order: Order }) => {
+  const timeOf = (status: Order["status"]) => order.statusHistory.find((update) => update.status === status)?.at;
+
+  if (order.status === "cancelled") {
+    return (
+      <div className="flex gap-4 rounded-2xl bg-danger-light p-4">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-danger text-white">
+          <MdClose size={20} aria-hidden="true" />
+        </span>
+        <p className="text-sm text-ink-soft">
+          <span className="block text-lg font-semibold text-ink">Order cancelled</span>
+          {order.cancelledAt && `${shortDateTime(order.cancelledAt)} · `}
+          {order.payment.status === "refunded" ? "Your payment is being refunded." : "You were not charged."}
+          {order.cancelReason && <span className="block">Reason: {order.cancelReason}</span>}
+        </p>
+      </div>
+    );
+  }
+
+  const steps: Step[] = [
+    { title: "Order Placed", text: "Payment confirmed & sent to the warehouse.", icon: MdCheck, doneAt: order.createdAt },
+    { title: "Packing & Quality Check", text: "Our fulfilment centre is preparing your box.", icon: MdOutlineInventory2, doneAt: order.createdAt },
+    {
+      title: "Dispatched",
+      text: order.courier ? `With ${order.courier} · Waybill ${order.waybill}` : "Courier allocation in progress.",
+      icon: MdOutlineLocalShipping,
+      doneAt: timeOf("shipped"),
+    },
+    { title: "Delivered", text: "Direct handover to the recipient.", icon: MdOutlinePlace, doneAt: order.deliveredAt ?? timeOf("delivered") },
+  ];
+
+  // The "current" step is the first one not done yet (the packing step counts as current while processing)
+  const current = order.status === "processing" ? 1 : order.status === "shipped" ? 3 : 4;
+
+  return (
+    <ol className="flex flex-col">
+      {steps.map((step, index) => {
+        const done = index < current || (index === current && order.status === "delivered");
+        const active = index === current && order.status !== "delivered";
+        return (
+          <li key={step.title} className="relative flex gap-4 pb-6 last:pb-0" aria-current={active ? "step" : undefined}>
+            {/* The line joining the circles (not after the last one) */}
+            {index < steps.length - 1 && (
+              <span aria-hidden="true" className={`absolute top-10 left-5 h-[calc(100%-2.5rem)] w-0.5 ${done ? "bg-primary" : "bg-line-soft"}`} />
+            )}
+            <span
+              className={`relative flex size-10 shrink-0 items-center justify-center rounded-full ${
+                done ? "bg-primary text-white" : active ? "bg-primary-light text-primary ring-4 ring-primary-light/50" : "bg-field text-muted"
+              }`}
+            >
+              <step.icon size={20} aria-hidden="true" />
+            </span>
+            <div className="pt-1">
+              <p className={`flex flex-wrap items-center gap-2 font-semibold ${done || active ? "text-ink" : "text-muted"} ${active ? "text-primary!" : ""}`}>
+                {step.title}
+                {active && <span className="rounded-md bg-primary-light px-1.5 py-0.5 text-[11px] text-primary">Current</span>}
+                {done && step.doneAt && index !== 1 && <span className="text-xs font-medium text-muted">{shortDateTime(step.doneAt)}</span>}
+              </p>
+              <p className={`text-sm ${done || active ? "text-ink-soft" : "text-muted"}`}>{step.text}</p>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+};
+
+export default OrderTracker;
+```
+
+```tsx
+// PriceBreakdown.tsx client/src/components/order/PriceBreakdown.tsx
+// "Payment Breakdown": subtotal, delivery, discount and the total of an order, exactly as the SERVER worked them out.
+// Used on the Order Confirmation page, and Order Details in STEP 40.
+
+// STEP 38 (part 12): The price breakdown
+
+import type { Order } from "../../types/api";
+import { naira, plural } from "../../utils/format";
+
+const PriceBreakdown = ({ order }: { order: Order }) => {
+  const count = order.items.reduce((sum, item) => sum + item.quantity, 0);
+  const paidLabel = order.payment.status === "paid" ? "Total Paid" : order.payment.status === "refunded" ? "Total (refunded)" : "Total to pay on delivery";
+
+  return (
+    <section aria-labelledby="breakdown-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <h2 id="breakdown-title" className="mb-4 text-xl font-semibold text-ink">
+        Payment Breakdown
+      </h2>
+      <dl className="flex flex-col gap-3 text-[15px]">
+        <div className="flex justify-between">
+          <dt className="text-ink-soft">Subtotal ({plural(count, "item")})</dt>
+          <dd className="text-ink">{naira(order.subtotal)}</dd>
+        </div>
+        <div className="flex justify-between">
+          <dt className="flex items-center gap-2 text-ink-soft">
+            Delivery
+            <span className="rounded-full bg-mint/40 px-2 py-0.5 text-xs font-semibold text-forest capitalize">{order.deliveryMethod}</span>
+          </dt>
+          <dd className={order.deliveryFee === 0 ? "font-semibold text-success" : "text-ink"}>{order.deliveryFee === 0 ? "FREE" : naira(order.deliveryFee)}</dd>
+        </div>
+        {order.discount > 0 && (
+          <div className="flex justify-between">
+            <dt className="flex items-center gap-2 text-ink-soft">
+              Discount <span className="rounded-md bg-primary-light px-1.5 py-0.5 font-mono text-xs font-bold text-primary">{order.promoCode}</span>
+            </dt>
+            <dd className="font-semibold text-danger">−{naira(order.discount)}</dd>
+          </div>
+        )}
+      </dl>
+      <div className="mt-5 flex items-end justify-between rounded-2xl bg-panel p-5">
+        <p>
+          <span className="block text-lg font-semibold text-ink">{paidLabel}</span>
+          <span className="text-xs text-muted">Includes VAT &amp; all delivery fees</span>
+        </p>
+        <p className="text-3xl font-bold text-primary-hover">{naira(order.total)}</p>
+      </div>
+    </section>
+  );
+};
+
+export default PriceBreakdown;
+```
+
+```tsx
+// OrderConfirmationPage.tsx client/src/pages/cart/OrderConfirmationPage.tsx
+// "Your order has been placed!" (design: Order Confirmation & Receipt). It loads the order from the server
+// (GET /api/orders/:orderNumber, server STEP 22), so a refresh shows the same page, and it's always the real order.
+
+// STEP 38 (part 13): The Order Confirmation page
+
+import { MdArrowForward, MdCalendarToday, MdCheckCircle, MdOutlineChatBubbleOutline, MdOutlineEventAvailable, MdOutlineInventory2, MdOutlineLocalShipping, MdOutlinePlace, MdOutlineReceiptLong, MdSearchOff } from "react-icons/md";
+import { Link, useParams } from "react-router-dom";
+import EmptyState from "../../components/common/EmptyState";
+import StepTracker from "../../components/common/StepTracker";
+import OrderTracker from "../../components/order/OrderTracker";
+import PriceBreakdown from "../../components/order/PriceBreakdown";
+import { useApi } from "../../hooks/useApi";
+import type { OrderResponse } from "../../types/api";
+import { longDate, timeOnly } from "../../utils/dates";
+import { naira, plural } from "../../utils/format";
+
+const OrderConfirmationPage = () => {
+  const { orderId = "" } = useParams(); // "QC-1042" (App.tsx calls it :orderId)
+  const { data, error } = useApi<OrderResponse>(`/orders/${orderId}`);
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-360 px-4 py-16 md:px-12">
+        <EmptyState
+          icon={MdSearchOff}
+          title="We couldn't find that order"
+          text={error}
+          action={
+            <Link to="/account/orders" className="flex h-11 items-center rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              My Orders
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (!data) {
+    return <div aria-busy="true" className="mx-auto my-10 h-96 max-w-[calc(90rem-6rem)] animate-pulse rounded-3xl bg-surface shadow-card" />;
+  }
+
+  const { order, canCancel, cancelDeadline } = data;
+  const address = order.shippingAddress;
+  const count = order.items.reduce((sum, item) => sum + item.quantity, 0);
+  const paymentText =
+    order.payment.method === "card"
+      ? `Payment: Confirmed (${order.payment.cardBrand} •••• ${order.payment.cardLast4})`
+      : "Payment: Pay on Delivery (cash or POS)";
+
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-6 pb-20 md:px-12">
+      <StepTracker current={3} />
+
+      {/* The big "placed" banner */}
+      <section className="relative mb-8 overflow-hidden rounded-3xl bg-surface px-6 py-12 text-center shadow-card">
+        <div aria-hidden="true" className="absolute -top-20 -right-20 size-96 rounded-full bg-mint/30 blur-3xl" />
+        <div className="relative">
+          <span className="mx-auto flex size-20 items-center justify-center rounded-full bg-mint/40">
+            <MdCheckCircle size={56} aria-hidden="true" className="text-success" />
+          </span>
+          <p className="mx-auto mt-5 w-fit rounded-full bg-mint/40 px-3 py-1 text-xs font-bold tracking-wider text-forest uppercase">Order confirmed</p>
+          <h1 className="mt-3 text-4xl font-extrabold tracking-tight text-ink md:text-5xl">Your order has been placed!</h1>
+          <p className="mt-3 text-lg text-ink-soft">
+            Thank you {order.contact.firstName}, we have received your order and started preparing it for delivery.
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3 text-sm">
+            <span className="flex items-center gap-1.5 rounded-xl bg-primary-light/60 px-4 py-2">
+              <MdOutlineReceiptLong size={18} aria-hidden="true" /> Order Number: <strong className="text-lg text-primary-hover">#{order.orderNumber}</strong>
+            </span>
+            <span className="flex items-center gap-1.5 rounded-xl bg-primary-light/60 px-4 py-2">
+              <MdCalendarToday size={16} aria-hidden="true" /> Date: <span className="text-ink-soft">{longDate(order.createdAt)}</span>
+            </span>
+          </div>
+          <p className="mx-auto mt-3 flex w-fit items-center gap-1.5 rounded-full bg-mint/40 px-4 py-1.5 text-sm font-medium text-forest">
+            <MdCheckCircle size={16} aria-hidden="true" /> {paymentText}
+          </p>
+          <p className="mt-4 text-sm text-muted">
+            A confirmation email is on its way to {order.contact.email}.
+            {canCancel && ` Changed your mind? You can cancel free until ${timeOnly(cancelDeadline)} from My Orders.`}
+          </p>
+        </div>
+      </section>
+
+      <div className="grid items-start gap-8 lg:grid-cols-[1fr_440px]">
+        <div className="flex flex-col gap-6">
+          <section aria-labelledby="items-title" className="rounded-3xl bg-surface p-6 shadow-card">
+            <div className="mb-4 flex items-center justify-between rounded-2xl bg-panel px-4 py-3">
+              <h2 id="items-title" className="flex items-center gap-2 text-lg font-semibold text-ink">
+                <MdOutlineInventory2 size={20} aria-hidden="true" className="text-primary" /> Items in this order
+              </h2>
+              <span className="rounded-full bg-primary-light px-2.5 py-0.5 text-sm font-semibold text-primary">{plural(count, "item")}</span>
+            </div>
+            <ul className="flex flex-col gap-3">
+              {order.items.map((item) => (
+                <li key={`${item.product}-${item.color}`} className="flex items-center gap-4 rounded-2xl bg-panel/60 p-4">
+                  <img src={item.image} alt="" className="size-18 shrink-0 rounded-xl bg-field object-cover" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-ink">{item.name}</p>
+                    <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-ink-soft">
+                      {item.color}
+                      <span className="rounded-md bg-surface px-2 py-0.5 font-semibold text-ink">Qty: {item.quantity}</span>
+                    </p>
+                  </div>
+                  <p className="text-right">
+                    <span className="block text-lg font-bold text-ink">{naira(item.lineTotal)}</span>
+                    {item.quantity > 1 && <span className="text-sm text-muted">{naira(item.price)} each</span>}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <PriceBreakdown order={order} />
+        </div>
+
+        <div className="flex flex-col gap-6">
+          <section aria-labelledby="progress-title" className="rounded-3xl bg-surface p-6 shadow-card">
+            <h2 id="progress-title" className="mb-5 text-xl font-semibold text-ink">
+              Order Progress
+            </h2>
+            <OrderTracker order={order} />
+          </section>
+
+          <section aria-label="Delivery details" className="rounded-3xl bg-surface p-6 shadow-card">
+            <div className="mb-5 flex gap-4 rounded-2xl bg-panel p-4">
+              <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-primary text-white">
+                <MdOutlineEventAvailable size={22} aria-hidden="true" />
+              </span>
+              <p>
+                <span className="block text-xs font-bold tracking-wider text-ink-soft uppercase">Estimated delivery window</span>
+                <span className="text-xl font-bold text-primary-hover">
+                  {order.estimatedDelivery.from === order.estimatedDelivery.to
+                    ? longDate(order.estimatedDelivery.from)
+                    : `${longDate(order.estimatedDelivery.from)} – ${longDate(order.estimatedDelivery.to)}`}
+                </span>
+              </p>
+            </div>
+
+            <dl className="flex flex-col gap-4 text-[15px]">
+              <div className="flex gap-3">
+                <MdOutlinePlace size={20} aria-hidden="true" className="mt-0.5 shrink-0 text-ink-soft" />
+                <div>
+                  <dt className="font-semibold text-ink">Delivery Address</dt>
+                  <dd className="text-ink-soft">
+                    {address.fullName}
+                    <br />
+                    {address.street}, {address.city}, {address.state}, {address.country}
+                  </dd>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <MdOutlineLocalShipping size={20} aria-hidden="true" className="mt-0.5 shrink-0 text-ink-soft" />
+                <div>
+                  <dt className="font-semibold text-ink">Shipping Method</dt>
+                  <dd className="text-ink-soft">{order.deliveryMethod === "express" ? "Express Same-Day Dispatch (Lagos)" : "Standard Doorstep Delivery"}</dd>
+                </div>
+              </div>
+              {address.instructions && (
+                <div className="flex gap-3 rounded-2xl bg-panel p-3">
+                  <MdOutlineChatBubbleOutline size={20} aria-hidden="true" className="mt-0.5 shrink-0 text-ink-soft" />
+                  <div>
+                    <dt className="font-semibold text-ink">Delivery Instructions</dt>
+                    <dd className="text-ink-soft">"{address.instructions}"</dd>
+                  </div>
+                </div>
+              )}
+            </dl>
+
+            <Link to="/shop" className="mt-6 flex h-12 items-center justify-center gap-2 rounded-xl bg-primary font-semibold text-white hover:bg-primary-hover">
+              Continue Shopping <MdArrowForward size={18} aria-hidden="true" />
+            </Link>
+            <Link
+              to={`/account/orders/${order.orderNumber}`}
+              className="mt-3 flex h-11 items-center justify-center gap-2 rounded-xl bg-primary-light/60 font-medium text-ink hover:bg-primary-light"
+            >
+              <MdOutlineReceiptLong size={18} aria-hidden="true" /> View Order Details
+            </Link>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default OrderConfirmationPage;
+```
+
+- **The page loads the order from the server** with the number in the address. A refresh shows the same page, and the
+  numbers are always the server's (it's the same `GET /api/orders/:orderNumber` as Postman).
+- **The tracker follows `status`**: processing → "Packing & Quality Check" is current; shipped → Dispatched with the
+  courier and waybill; delivered → all done; cancelled → a red box. When the admin moves the order (STEP 26, and the admin
+  pages in STEP 43), this tracker moves.
+- **"Cancel free until 1:13 PM"** comes from the server's `cancelDeadline` (1 hour, server STEP 22). The Cancel button is
+  on Order Details (STEP 40).
+
+### 38.7 Test it
+
+`npm run seed`, both terminals running. As Ada, add 2 headphones, the sneakers and the mug, apply **QUICK25** in the cart.
+
+| Do this                                                | You should see                                              |
+| ------------------------------------------------------ | ----------------------------------------------------------- |
+| Logged out → `/checkout`                                | the login page, then back to checkout                       |
+| Checkout with an empty cart                             | "Your cart is empty"                                        |
+| Checkout with the design's cart                         | Ada, Obi, her email, 0803 123 4567 filled in; Home (Default), Office, Use a new address; summary "4 Items", ₦117,500, "QUICK25 Applied · Save ₦2,000", **Total Due ₦115,500**; ② Checkout highlighted, ① ticked |
+| Choose **Express**                                      | "Delivery (Express) ₦2,500", total ₦118,000                  |
+| "Use a new address" + **Kano State**                    | Express and Pay on Delivery greyed out ("Lagos only"), back to Standard, ₦115,500 |
+| **Place Order Now** with empty boxes                    | messages under the street, city and card boxes, "Please check the highlighted fields." |
+| Back to Home, card `4242 4242 4242 0000`, 08/30, 123     | "Your card was declined. Please try another card." (still on checkout) |
+| Card `4242 4242 4242 4242`                              | `/order-confirmation/QC-1042`: "Your order has been placed!", "Thank you Ada", #QC-1042, "Payment: Confirmed (Visa •••• 4242)", the items (₦45,000 each), QUICK25 −₦2,000, **Total Paid ₦115,500**, Packing & Quality Check *Current*, the delivery window, 12 Admiralty Way, "Gate code 4022..." |
+| The bag in the Navbar                                   | empty                                                        |
+| Refresh                                                 | the same confirmation                                        |
+| New order: Express + Pay on Delivery                    | no card boxes; confirmation "Pay on Delivery", "Total to pay on delivery ₦120,000" |
+| `/order-confirmation/QC-9999`                           | "We couldn't find that order"                                |
+
+Then check the server side:
+
+- Ada's inbox (or the server terminal without a Brevo key): "Order #QC-1042 confirmed" (server STEP 22).
+- `GET /api/admin/orders` in Postman (admin): QC-1042 is there. Mark it **shipped** (`PATCH .../status`), refresh the
+  confirmation page: the tracker shows **Dispatched** with the courier and waybill.
+
+I tested all of this on a copy of your project against a throwaway database: **26 checks, all passed** on the first run
+(2 real orders placed, a declined card, the Lagos rules, validation), and the screenshots match both designs.
+`npm run build` and `npm run lint` pass.
+
+### 38.8 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 38: checkout and order confirmation"
+git push
+```
+
+➡️ **Next: STEP 39 (My Account: the account menu on the left, the overview with your stats and recent orders, account
+settings (profile and password), delivery addresses and saved items).** Reply **NEXT** when 38.7 works.

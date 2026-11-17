@@ -128,3 +128,63 @@ export type CanReviewResponse = {
   reason: string | null;
   review: Review | null;
 };
+
+// STEP 38: Orders (server: models/Order.ts, orderController.ts)
+
+export type OrderStatus = "processing" | "shipped" | "delivered" | "cancelled";
+
+export type OrderItem = {
+  product: string; // the product's id
+  name: string; // a COPY taken when the order was placed (server STEP 22)
+  image: string;
+  sku: string;
+  price: number; // the price of one, when it was ordered
+  quantity: number;
+  color?: string;
+  lineTotal: number;
+};
+
+export type Order = {
+  _id: string;
+  orderNumber: string; // "QC-1042"
+  items: OrderItem[];
+  contact: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string;
+  };
+  shippingAddress: Omit<Address, "_id" | "isDefault" | "label"> & {
+    label?: string;
+  };
+  deliveryMethod: "standard" | "express";
+  payment: {
+    method: "card" | "pay_on_delivery";
+    status: "paid" | "pending" | "refunded";
+    cardBrand?: string;
+    cardLast4?: string;
+    reference?: string;
+    paidAt?: string;
+  };
+  subtotal: number;
+  deliveryFee: number;
+  discount: number;
+  promoCode?: string;
+  total: number;
+  status: OrderStatus;
+  statusHistory: { status: OrderStatus; note: string; at: string }[]; // the tracker
+  estimatedDelivery: { from: string; to: string };
+  courier?: string;
+  waybill?: string;
+  deliveredAt?: string;
+  cancelledAt?: string;
+  cancelReason?: string;
+  createdAt: string;
+};
+
+// POST /api/orders and GET /api/orders/:orderNumber -> the order + what the Cancel button needs
+export type OrderResponse = {
+  order: Order;
+  canCancel: boolean;
+  cancelDeadline: string;
+};
