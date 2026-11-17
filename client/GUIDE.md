@@ -40,9 +40,9 @@ then the admin.
 | ✅   | 31     | Logged-in user: AuthContext, Login and Register pages, protected routes |
 | ✅   | 32     | The cart (saved in the browser), toasts, product cards, Featured products |
 | ✅   | 33     | The rest of the Home page sections |
-| ⬜   | **34** | **Shop page (filters, search, sort, pages) and Categories page** ← you are here |
-| ⬜   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
-| ⬜   | 36     | Cart page: items, promo code, summary, empty state                                  |
+| ✅   | 34     | Shop page (filters, search, sort, pages) and Categories page |
+| ✅   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
+| ⬜   | **36** | **Cart page: items, promo code, summary, empty state** ← you are here |
 | ⬜   | 37     | Forgot password, reset password, verify email                                       |
 | ⬜   | 38     | Checkout and Order Confirmation                                                     |
 | ⬜   | 39     | My Account: layout, overview, settings, addresses, saved items                       |
@@ -4059,3 +4059,2099 @@ git push
 ➡️ **Next: STEP 35 (Product Details: the photo gallery, colours, quantity, Add to Cart, the ♡ save button, the specs
 and highlights, reviews with the star bars and "Write a review", Frequently Bought Together, Related Products, and
 Recently Viewed on the Home page).** Reply **NEXT** when 34.7 works.
+
+---
+
+## STEP 35: The Product Details page
+
+`/product/wireless-noise-cancelling-headphones` becomes the full page from the design, using
+`GET /api/products/:slug` (server STEP 16) and your reviews API (server STEP 23):
+
+- **Breadcrumb**: Home › Electronics › Wireless Noise-Cancelling Headphones
+- **Gallery**: the big photo, thumbnails to switch, the badge, ♡ **Save** (to your account) and **Share**
+- **Info box**: category, SKU, stars, "248 reviews · Write a review", price with ~~old price~~ and -25%, the stock line,
+  description, ✓ features, **colour** pills, **quantity**, **Add to Cart • ₦45,000** (the total updates), **Buy Now**
+- **Highlights**: the 3 feature cards
+- **Tabs**: Full Specifications (grouped), **Customer Reviews** (the 4.8 with the 5★–1★ bars, the written reviews, and
+  **Write a review** for people whose order was delivered), Shipping & Returns
+- **Frequently Bought Together**: tick boxes, the bundle total, "Add All 3 to Cart"
+- **Related Products**, and **Recently Viewed** (also on the Home page now)
+
+The design's "Customers Also Viewed" row isn't built: we don't record what other customers look at, so the page shows
+*your* Recently Viewed instead (real data, not a made-up row).
+
+| New file                                           | What it is                                               |
+| -------------------------------------------------- | -------------------------------------------------------- |
+| `utils/recentlyViewed.ts`                          | the last 6 products you opened, in the browser            |
+| `utils/highlightIcons.ts`                          | the highlight cards' icon names → icons                    |
+| `components/common/Breadcrumb.tsx`, `QuantityStepper.tsx` | reused by the cart and checkout later              |
+| `components/product/SaveButton.tsx`                | the ♡ (your server's saved items)                          |
+| `components/product/ProductGallery.tsx`, `ColorSelector.tsx`, `ProductInfo.tsx`, `ProductHighlights.tsx` | the top of the page |
+| `components/product/ProductTabs.tsx`, `ProductReviews.tsx`, `ReviewForm.tsx` | the tabs and reviews             |
+| `components/product/BundleOffer.tsx`               | Frequently Bought Together                                |
+| `components/home/RecentlyViewed.tsx`               | Recently Viewed                                           |
+| `pages/shop/ProductDetailsPage.tsx`                | puts it all together                                      |
+
+(`components/product/WhiteReview.tsx` is a placeholder you made earlier, probably meant as "WriteReview". This step
+calls the form `ReviewForm.tsx`, so you can delete `WhiteReview.tsx`, or keep it until the STEP 44 clean-up.)
+
+### 35.1 Types in `src/types/api.ts`
+
+Add at the bottom:
+
+```ts
+// STEP 35: One product, and its reviews (server: productController.ts getProduct, reviewController.ts)
+
+export type ProductSpec = { group: string; label: string; value: string }; // a row of "Full Specifications"
+export type ProductHighlight = { icon: string; title: string; text: string }; // the 3 feature cards
+
+// GET /api/products/:idOrSlug -> { product }: everything for the Product Details page
+export type Product = ProductSummary & {
+  description: string;
+  features: string[]; // the ✓ bullet points
+  specs: ProductSpec[];
+  highlights: ProductHighlight[];
+  sku: string;
+  gallery: string[]; // big photos (empty = use images)
+  lowStockThreshold: number;
+  ratingCounts: number[]; // how many 5, 4, 3, 2 and 1 star reviews, in that order
+  category: { _id: string; name: string; slug: string; icon: string };
+  bundleProducts: ProductSummary[]; // "Frequently Bought Together"
+  relatedProducts: ProductSummary[]; // "Related Products"
+};
+
+export type ProductResponse = { product: Product };
+
+export type Review = {
+  _id: string;
+  name: string; // "Ada O." (first name + initial, server STEP 23)
+  rating: number; // 1 to 5
+  title?: string;
+  comment: string;
+  createdAt: string;
+};
+
+// GET /api/reviews/product/:idOrSlug
+export type ReviewsResponse = {
+  summary: { ratings: number; reviewCount: number; ratingCounts: number[] };
+  reviews: Review[];
+  total: number;
+  page: number;
+  pages: number;
+};
+
+// GET /api/reviews/can-review/:productId
+export type CanReviewResponse = { canReview: boolean; reason: string | null; review: Review | null };
+```
+
+`Product = ProductSummary & { ... }`: a full product has everything a card has, **plus** these fields. The `&` joins the
+two shapes, so a `Product` can go anywhere a `ProductSummary` can (like `addItem`).
+
+### 35.2 `src/utils/recentlyViewed.ts` and `src/utils/highlightIcons.ts`
+
+New files.
+
+```ts
+// recentlyViewed.ts client/src/utils/recentlyViewed.ts
+// The last 6 products you opened, kept in the browser (no account needed), for "Recently Viewed" on the Home page.
+// The Product Details page adds to it; the Home page reads it.
+
+// STEP 35 (part 1): Recently viewed
+
+import type { ProductSummary } from "../types/api";
+
+const KEY = "quickcart_recently_viewed";
+const MAX = 6;
+
+// What we keep about each product: enough to draw a small card (the server is asked again when you open it)
+export type ViewedProduct = Pick<ProductSummary, "_id" | "slug" | "name" | "price"> & { image: string };
+
+export const getRecentlyViewed = (): ViewedProduct[] => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch {
+    return []; // broken data -> empty list, never a crash (like the cart)
+  }
+};
+
+// Put a product at the front. Seen before? It moves to the front instead of appearing twice.
+export const addRecentlyViewed = (product: ProductSummary) => {
+  const item: ViewedProduct = { _id: product._id, slug: product.slug, name: product.name, price: product.price, image: product.images[0] ?? "" };
+  const others = getRecentlyViewed().filter((viewed) => viewed._id !== product._id);
+  localStorage.setItem(KEY, JSON.stringify([item, ...others].slice(0, MAX)));
+};
+
+export const clearRecentlyViewed = () => {
+  localStorage.removeItem(KEY);
+};
+```
+
+```ts
+// highlightIcons.ts client/src/utils/highlightIcons.ts
+// The 3 feature cards on a product page ("Hybrid Active Noise Cancelling"...) each have a Material icon name from the
+// server (products.ts, server STEP 10). This turns those names into icons, like categoryIcons.ts does for categories.
+
+// STEP 35 (part 2): Highlight icons
+
+import type { IconType } from "react-icons";
+import {
+  MdAir, MdBackpack, MdBatteryChargingFull, MdBluetooth, MdBolt, MdCable, MdChair, MdCheckroom, MdCoffee, MdDevices,
+  MdEco, MdEdit, MdFavoriteBorder, MdFitnessCenter, MdGraphicEq, MdHearing, MdKeyboard, MdLightMode,
+  MdLocalFireDepartment, MdMenuBook, MdOutlineVerified, MdPalette, MdRecycling, MdSelfImprovement, MdShield,
+  MdSoupKitchen, MdSpa, MdStraighten, MdThermostat, MdTimer, MdVerified, MdWatch, MdWaterDrop, MdWorkspacePremium,
+} from "react-icons/md";
+
+const highlightIcons: Record<string, IconType> = {
+  air: MdAir,
+  backpack: MdBackpack,
+  battery_charging_full: MdBatteryChargingFull,
+  bluetooth: MdBluetooth,
+  bolt: MdBolt,
+  cable: MdCable,
+  chair: MdChair,
+  checkroom: MdCheckroom,
+  coffee: MdCoffee,
+  devices: MdDevices,
+  eco: MdEco,
+  edit: MdEdit,
+  favorite: MdFavoriteBorder,
+  fitness_center: MdFitnessCenter,
+  graphic_eq: MdGraphicEq,
+  hearing: MdHearing,
+  keyboard: MdKeyboard,
+  light_mode: MdLightMode,
+  local_fire_department: MdLocalFireDepartment,
+  menu_book: MdMenuBook,
+  palette: MdPalette,
+  recycling: MdRecycling,
+  self_improvement: MdSelfImprovement,
+  shield: MdShield,
+  soup_kitchen: MdSoupKitchen,
+  spa: MdSpa,
+  straighten: MdStraighten,
+  thermostat: MdThermostat,
+  timer: MdTimer,
+  verified: MdVerified,
+  watch: MdWatch,
+  water_drop: MdWaterDrop,
+  workspace_premium: MdWorkspacePremium,
+};
+
+// A name we don't know (e.g. a new product from the admin, STEP 42) gets a tick
+export const getHighlightIcon = (name: string): IconType => highlightIcons[name] ?? MdOutlineVerified;
+```
+
+### 35.3 `src/components/common/Breadcrumb.tsx` and `src/components/common/QuantityStepper.tsx`
+
+Replace both placeholders.
+
+```tsx
+// Breadcrumb.tsx client/src/components/common/Breadcrumb.tsx
+// "Home › Electronics › Wireless Noise-Cancelling Headphones": where you are, with links back up.
+//   <Breadcrumb items={[{ label: "Home", to: "/" }, { label: "Electronics", to: "/shop?category=electronics" }, { label: name }]} />
+// The last item has no link: it's the page you're on.
+
+// STEP 35 (part 3): Breadcrumb
+
+import { MdChevronRight } from "react-icons/md";
+import { Link } from "react-router-dom";
+
+type BreadcrumbProps = { items: { label: string; to?: string }[] };
+
+const Breadcrumb = ({ items }: BreadcrumbProps) => {
+  return (
+    <nav aria-label="Breadcrumb" className="mb-6">
+      <ol className="flex flex-wrap items-center gap-1 text-[13px] text-muted">
+        {items.map((item, index) => (
+          <li key={item.label} className="flex items-center gap-1">
+            {index > 0 && <MdChevronRight size={16} aria-hidden="true" />}
+            {item.to ? (
+              <Link to={item.to} className="hover:text-primary">
+                {item.label}
+              </Link>
+            ) : (
+              <span aria-current="page" className="font-medium text-ink">
+                {item.label}
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+};
+
+export default Breadcrumb;
+```
+
+```tsx
+// QuantityStepper.tsx client/src/components/common/QuantityStepper.tsx
+// "−  1  +": choose how many. Used on the product page and in the cart (STEP 36).
+//   <QuantityStepper value={quantity} max={10} onChange={setQuantity} />
+
+// STEP 35 (part 4): Quantity stepper
+
+import { MdAdd, MdRemove } from "react-icons/md";
+
+type QuantityStepperProps = {
+  value: number;
+  max: number;
+  onChange: (value: number) => void;
+  label?: string; // for screen readers, e.g. "Quantity of Wireless Headphones"
+  size?: "md" | "sm";
+};
+
+const QuantityStepper = ({ value, max, onChange, label = "Quantity", size = "md" }: QuantityStepperProps) => {
+  const button =
+    size === "md"
+      ? "flex size-9 items-center justify-center rounded-full bg-surface text-ink shadow-card disabled:opacity-40"
+      : "flex size-7 items-center justify-center rounded-full bg-surface text-ink shadow-card disabled:opacity-40";
+
+  return (
+    <div role="group" aria-label={label} className={`flex items-center gap-3 rounded-full bg-field ${size === "md" ? "h-12 px-2" : "h-9 px-1.5"}`}>
+      <button type="button" onClick={() => onChange(value - 1)} disabled={value <= 1} aria-label="One less" className={button}>
+        <MdRemove size={18} />
+      </button>
+      {/* aria-live: a screen reader says the new number after each click */}
+      <span aria-live="polite" className="min-w-6 text-center text-base font-semibold text-ink">
+        {value}
+      </span>
+      <button type="button" onClick={() => onChange(value + 1)} disabled={value >= max} aria-label="One more" className={button}>
+        <MdAdd size={18} />
+      </button>
+    </div>
+  );
+};
+
+export default QuantityStepper;
+```
+
+### 35.4 `src/components/product/SaveButton.tsx`
+
+New file.
+
+```tsx
+// SaveButton.tsx client/src/components/product/SaveButton.tsx
+// The ♡ on a product: save it for later (My Account → Saved Items, STEP 39). Uses your server's saved items
+// (POST / DELETE /api/account/saved/:productId, server STEP 20), so it's kept on the account, on every device.
+// Logged out: it sends you to log in first, and back here afterwards.
+
+// STEP 35 (part 5): The save (heart) button
+
+import { useState } from "react";
+import { MdFavorite, MdFavoriteBorder } from "react-icons/md";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
+import { api } from "../../utils/api";
+
+const SaveButton = ({ productId, productName }: { productId: string; productName: string }) => {
+  const { user, setUser } = useAuth();
+  const { showToast } = useToast();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [busy, setBusy] = useState(false);
+
+  const saved = user?.savedItems.includes(productId) ?? false;
+
+  const toggle = async () => {
+    if (!user) {
+      navigate("/login", { state: { from: location } });
+      return;
+    }
+    setBusy(true);
+    try {
+      // The server answers with the new list of saved product ids
+      const { savedItems } = await api<{ savedItems: string[] }>(`/account/saved/${productId}`, { method: saved ? "DELETE" : "POST" });
+      setUser({ ...user, savedItems }); // update the logged-in user everywhere
+      showToast({ type: "success", title: saved ? "Removed from Saved Items" : "Saved for later", message: productName });
+    } catch (error) {
+      showToast({ type: "error", title: "Couldn't update Saved Items", message: (error as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      aria-pressed={saved} // a toggle button: screen readers say "pressed" when it's saved
+      aria-label={saved ? `Remove ${productName} from Saved Items` : `Save ${productName} for later`}
+      className="flex size-10 items-center justify-center rounded-full bg-surface text-ink shadow-card transition-colors hover:text-danger disabled:opacity-60"
+    >
+      {saved ? <MdFavorite key="saved" size={20} className="animate-heart text-danger" /> : <MdFavoriteBorder size={20} />}
+    </button>
+  );
+};
+
+export default SaveButton;
+```
+
+- **Saved items live on the account** (server STEP 20), not in the browser: save on your laptop, see it on your phone.
+- **`setUser({ ...user, savedItems })`**: the server answers with the new list, and we put it in the logged-in user
+  (the `setUser` you added to AuthContext in STEP 31 for exactly this). Every heart on the site updates at once.
+- **`aria-pressed`** makes it a toggle button for screen readers ("Save for later, pressed").
+
+### 35.5 `src/components/product/ProductGallery.tsx` and `src/components/product/ColorSelector.tsx`
+
+Replace both placeholders.
+
+```tsx
+// ProductGallery.tsx client/src/components/product/ProductGallery.tsx
+// The big photo and the thumbnails under it. Clicking a thumbnail shows it big. The badge sits on the photo,
+// and the ♡ save and share buttons on the right.
+
+// STEP 35 (part 6): The photo gallery
+
+import { useState } from "react";
+import { MdOutlineImageNotSupported, MdShare } from "react-icons/md";
+import { useToast } from "../../context/ToastContext";
+import type { Product } from "../../types/api";
+import SaveButton from "./SaveButton";
+
+const ProductGallery = ({ product }: { product: Product }) => {
+  const { showToast } = useToast();
+  const photos = product.gallery.length > 0 ? product.gallery : product.images; // the model: empty gallery = use images
+  const [current, setCurrent] = useState(0);
+
+  // Share: the phone's share sheet when there is one, otherwise copy the link
+  const share = async () => {
+    const url = window.location.href;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: product.name, url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        showToast({ type: "success", title: "Link copied", message: "Paste it anywhere to share this product." });
+      }
+    } catch {
+      // the shopper closed the share sheet, or the clipboard is blocked: nothing to do
+    }
+  };
+
+  return (
+    <div>
+      <div className="relative overflow-hidden rounded-3xl bg-field shadow-card">
+        {photos[current] ? (
+          <img src={photos[current]} alt={product.name} className="aspect-square w-full object-cover" />
+        ) : (
+          <span className="flex aspect-square items-center justify-center text-muted">
+            <MdOutlineImageNotSupported size={56} aria-label="No photo yet" />
+          </span>
+        )}
+
+        {product.badge && (
+          <span className="absolute top-4 left-4 rounded-full bg-primary px-3 py-1 text-xs font-bold text-white uppercase">{product.badge}</span>
+        )}
+
+        <div className="absolute top-4 right-4 flex flex-col gap-2">
+          <SaveButton productId={product._id} productName={product.name} />
+          <button
+            type="button"
+            onClick={share}
+            aria-label="Share this product"
+            className="flex size-10 items-center justify-center rounded-full bg-surface text-ink shadow-card hover:text-primary"
+          >
+            <MdShare size={20} />
+          </button>
+        </div>
+      </div>
+
+      {photos.length > 1 && (
+        <ul className="mt-4 grid grid-cols-4 gap-3 sm:grid-cols-5">
+          {photos.map((photo, index) => (
+            <li key={photo}>
+              <button
+                type="button"
+                onClick={() => setCurrent(index)}
+                aria-label={`Show photo ${index + 1} of ${photos.length}`}
+                aria-current={index === current}
+                className={`block overflow-hidden rounded-2xl border-2 bg-field transition-colors ${
+                  index === current ? "border-primary" : "border-transparent hover:border-primary-light"
+                }`}
+              >
+                <img src={photo} alt="" loading="lazy" className="aspect-square w-full object-cover" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default ProductGallery;
+```
+
+```tsx
+// ColorSelector.tsx client/src/components/product/ColorSelector.tsx
+// "Color: Midnight Black" and a pill per colour, with a dot of that colour. One can be chosen (radio buttons).
+
+// STEP 35 (part 7): The colour picker
+
+import type { ProductColor } from "../../types/api";
+
+type ColorSelectorProps = {
+  colors: ProductColor[];
+  value: string;
+  onChange: (name: string) => void;
+};
+
+const ColorSelector = ({ colors, value, onChange }: ColorSelectorProps) => {
+  return (
+    // <fieldset> + <legend>: the HTML way to group radio buttons under one question
+    <fieldset>
+      <legend className="mb-3 text-sm font-semibold text-ink">
+        Color: <span className="text-primary-hover">{value}</span>
+      </legend>
+      <div className="flex flex-wrap gap-3">
+        {colors.map((color) => (
+          <label
+            key={color.name}
+            // has-checked: Tailwind styles the label when the radio inside it is checked, no extra state needed
+            className="flex cursor-pointer items-center gap-2 rounded-full border-2 border-line-soft px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-primary-light has-checked:border-primary has-checked:bg-primary-light/40 has-checked:text-ink has-focus-visible:ring-2 has-focus-visible:ring-primary/40"
+          >
+            <input type="radio" name="color" value={color.name} checked={value === color.name} onChange={() => onChange(color.name)} className="sr-only" />
+            <span aria-hidden="true" className="size-4 rounded-full border border-black/10" style={{ backgroundColor: color.hex }} />
+            {color.name}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+};
+
+export default ColorSelector;
+```
+
+- **`navigator.share`** opens the phone's own share sheet (WhatsApp, SMS...). Computers usually don't have it, so the
+  link is copied instead.
+- **The colour pills are real radio buttons**, hidden with `sr-only`, inside a `<label>`. So the keyboard's arrow keys
+  work, and `has-checked:` (Tailwind) styles the pill whose radio is checked.
+
+### 35.6 `src/components/product/ProductInfo.tsx` and `src/components/product/ProductHighlights.tsx`
+
+Replace both placeholders.
+
+```tsx
+// ProductInfo.tsx client/src/components/product/ProductInfo.tsx
+// The white box on the right of the photos: category, SKU, name, stars, price, stock, description, features,
+// colour, quantity, Add to Cart and Buy Now. (Design: Product Details)
+
+// STEP 35 (part 8): The product info box
+
+import { useState } from "react";
+import { MdCheck, MdOutlineFlashOn, MdOutlineLocalMall, MdOutlineVerifiedUser } from "react-icons/md";
+import { useNavigate } from "react-router-dom";
+import { useCart } from "../../context/CartContext";
+import { useToast } from "../../context/ToastContext";
+import type { Product } from "../../types/api";
+import { naira } from "../../utils/format";
+import QuantityStepper from "../common/QuantityStepper";
+import RatingStars from "../common/RatingStars";
+import ColorSelector from "./ColorSelector";
+
+type ProductInfoProps = {
+  product: Product;
+  onShowReviews: () => void; // "248 reviews" / "Write a review" open the Reviews tab below
+};
+
+const ProductInfo = ({ product, onShowReviews }: ProductInfoProps) => {
+  const { addItem, items } = useCart();
+  const { showToast } = useToast();
+  const navigate = useNavigate();
+
+  const [color, setColor] = useState(product.colors[0]?.name ?? "");
+  const [quantity, setQuantity] = useState(1);
+
+  const soldOut = product.trackStock && product.stock === 0;
+  const lowStock = product.trackStock && product.stock > 0 && product.stock <= product.lowStockThreshold;
+  const percentOff = product.oldPrice && product.oldPrice > product.price ? Math.round((1 - product.price / product.oldPrice) * 100) : 0;
+
+  // The most you can still add: the stock (and 10), minus what's already in your cart in this colour
+  const key = color ? `${product._id}:${color}` : product._id;
+  const inCart = items.find((item) => item.key === key)?.quantity ?? 0;
+  const maxQuantity = Math.max(1, Math.min(10, product.trackStock ? product.stock : 10) - inCart);
+
+  const add = () => {
+    const result = addItem(product, { color: color || undefined, quantity });
+    if (!result.ok) {
+      showToast({ type: "error", title: "Couldn't add to cart", message: result.message });
+      return false;
+    }
+    setQuantity(1);
+    return true;
+  };
+
+  // Buy Now = add to cart and go straight to checkout (which asks you to log in first, STEP 31)
+  const buyNow = () => {
+    if (add()) navigate("/checkout");
+  };
+
+  return (
+    <div className="rounded-3xl bg-surface p-6 shadow-card md:p-8">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <span className="rounded-full bg-primary-light px-3 py-1 text-xs font-bold tracking-wide text-ink uppercase">{product.category.name}</span>
+        <span className="text-sm text-muted">SKU: {product.sku}</span>
+      </div>
+
+      <h1 className="text-3xl leading-10 font-bold tracking-tight text-ink">{product.name}</h1>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+        <RatingStars rating={product.ratings} />
+        <span className="font-semibold text-ink">{product.ratings.toFixed(1)}</span>
+        <span aria-hidden="true" className="text-muted">·</span>
+        <button type="button" onClick={onShowReviews} className="font-medium text-primary-hover hover:underline">
+          {product.reviewCount} reviews
+        </button>
+        <span aria-hidden="true" className="text-muted">·</span>
+        <button type="button" onClick={onShowReviews} className="text-ink-soft hover:text-primary">
+          Write a review
+        </button>
+      </div>
+
+      <p className="mt-5 flex flex-wrap items-center gap-3">
+        <span className="text-3xl font-bold text-ink">{naira(product.price)}</span>
+        {percentOff > 0 && (
+          <>
+            <del className="text-lg text-muted">{naira(product.oldPrice!)}</del>
+            <span className="rounded-full bg-danger px-2 py-0.5 text-xs font-bold text-white">-{percentOff}%</span>
+          </>
+        )}
+      </p>
+
+      {/* Stock: sold out (red), only a few left (amber), or in stock (green) */}
+      <p
+        className={`mt-3 flex w-fit items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ${
+          soldOut ? "bg-danger-light text-danger" : lowStock ? "bg-[#fff4e0] text-[#8a5300]" : "bg-mint/40 text-forest"
+        }`}
+      >
+        <span aria-hidden="true" className={`size-2 rounded-full ${soldOut ? "bg-danger" : lowStock ? "bg-warning" : "bg-success"}`} />
+        {soldOut
+          ? "Out of stock"
+          : lowStock
+            ? `Only ${product.stock} left, ships within 24 hours`
+            : product.trackStock
+              ? `In Stock — ${product.stock} units left, ships within 24 hours`
+              : "In Stock — ships within 24 hours"}
+      </p>
+
+      <p className="mt-5 text-base leading-7 text-ink-soft">{product.description}</p>
+
+      {product.features.length > 0 && (
+        <ul className="mt-4 grid gap-x-4 gap-y-1.5 border-b border-line pb-5 sm:grid-cols-2">
+          {product.features.map((feature) => (
+            <li key={feature} className="flex items-center gap-2 text-sm text-ink-soft">
+              <MdCheck size={16} aria-hidden="true" className="shrink-0 text-success" /> {feature}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {product.colors.length > 0 && (
+        <div className="mt-5">
+          <ColorSelector
+            colors={product.colors}
+            value={color}
+            onChange={(name) => {
+              setColor(name);
+              setQuantity(1); // another colour is another cart line, with its own limit
+            }}
+          />
+        </div>
+      )}
+
+      <div className="mt-6 flex flex-wrap gap-3">
+        <QuantityStepper value={Math.min(quantity, maxQuantity)} max={maxQuantity} onChange={setQuantity} label={`Quantity of ${product.name}`} />
+        <button
+          type="button"
+          onClick={add}
+          disabled={soldOut}
+          className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-6 text-base font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
+        >
+          <MdOutlineLocalMall size={20} aria-hidden="true" />
+          {soldOut ? "Out of stock" : `Add to Cart • ${naira(product.price * Math.min(quantity, maxQuantity))}`}
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={buyNow}
+        disabled={soldOut}
+        className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-navy text-base font-semibold text-white transition-colors hover:bg-footer disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <MdOutlineFlashOn size={20} aria-hidden="true" /> Buy Now
+      </button>
+
+      <p className="mt-4 flex items-center justify-center gap-1.5 text-[13px] text-muted">
+        <MdOutlineVerifiedUser size={15} aria-hidden="true" /> Guaranteed authentic with official Nigerian warranty coverage
+      </p>
+    </div>
+  );
+};
+
+export default ProductInfo;
+```
+
+```tsx
+// ProductHighlights.tsx client/src/components/product/ProductHighlights.tsx
+// The 3 feature cards under the photos ("Hybrid Active Noise Cancelling", "Speed Fuel USB-C Charging"...).
+
+// STEP 35 (part 9): Highlights
+
+import type { ProductHighlight } from "../../types/api";
+import { getHighlightIcon } from "../../utils/highlightIcons";
+
+// A different soft colour for each card, like the design
+const TILES = ["bg-primary-light text-primary", "bg-info-light text-primary", "bg-mint text-forest"];
+
+const ProductHighlights = ({ highlights }: { highlights: ProductHighlight[] }) => {
+  if (highlights.length === 0) return null;
+
+  return (
+    <section aria-label="Highlights">
+      <ul className="grid gap-6 md:grid-cols-3">
+        {highlights.map((highlight, index) => {
+          const Icon = getHighlightIcon(highlight.icon);
+          return (
+            <li key={highlight.title} className="rounded-3xl bg-surface p-6 shadow-card">
+              <span className={`mb-4 flex size-11 items-center justify-center rounded-xl ${TILES[index % TILES.length]}`}>
+                <Icon size={22} aria-hidden="true" />
+              </span>
+              <h2 className="text-lg leading-6 font-semibold text-ink">{highlight.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-ink-soft">{highlight.text}</p>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+};
+
+export default ProductHighlights;
+```
+
+- **The stock line has 4 versions**: out of stock (red), "Only 3 left" (amber, when stock ≤ the product's
+  `lowStockThreshold`), "In Stock — 124 units left" (green), and "In Stock" for products that don't count stock.
+- **`maxQuantity`** takes away what's already in your cart, so the **+** stops where the cart would refuse.
+- **Buy Now** = add to cart, then go to `/checkout`. Logged out? `ProtectedRoute` (STEP 31) sends you to log in first,
+  then to checkout.
+
+### 35.7 The tabs and reviews: `ProductTabs.tsx`, `ProductReviews.tsx`, `ReviewForm.tsx`
+
+Replace the `ProductTabs` placeholder; the other two are new files (all in `src/components/product/`).
+
+```tsx
+// ProductTabs.tsx client/src/components/product/ProductTabs.tsx
+// "Full Specifications | Customer Reviews (248) | Shipping & Returns". Only one panel shows at a time.
+// The page decides which tab is open, so "Write a review" at the top can open the Reviews tab.
+
+// STEP 35 (part 12): The tabs
+
+import { MdOutlineLocalShipping, MdOutlineRateReview, MdTune } from "react-icons/md";
+import type { Product } from "../../types/api";
+import ProductReviews from "./ProductReviews";
+
+export type TabName = "specs" | "reviews" | "shipping";
+
+type ProductTabsProps = {
+  product: Product;
+  tab: TabName;
+  onTabChange: (tab: TabName) => void;
+  onReviewed: () => void;
+};
+
+const ProductTabs = ({ product, tab, onTabChange, onReviewed }: ProductTabsProps) => {
+  const tabs = [
+    { name: "specs" as const, label: "Full Specifications", icon: MdTune },
+    { name: "reviews" as const, label: `Customer Reviews (${product.reviewCount})`, icon: MdOutlineRateReview },
+    { name: "shipping" as const, label: "Shipping & Returns", icon: MdOutlineLocalShipping },
+  ];
+
+  // The specs come as one list: group them by "group" ("Audio & Connectivity", "Power, Build & Box Contents")
+  const groups = new Map<string, Product["specs"]>();
+  for (const spec of product.specs) {
+    groups.set(spec.group, [...(groups.get(spec.group) ?? []), spec]);
+  }
+
+  return (
+    <section id="product-tabs" className="scroll-mt-28 rounded-3xl bg-surface p-6 shadow-card md:p-8">
+      {/* role="tablist" / "tab" / "tabpanel": screen readers announce "tab 2 of 3, selected" */}
+      <div role="tablist" aria-label="Product information" className="mb-6 flex gap-6 overflow-x-auto border-b border-line">
+        {tabs.map((item) => (
+          <button
+            key={item.name}
+            type="button"
+            role="tab"
+            id={`tab-${item.name}`}
+            aria-selected={tab === item.name}
+            aria-controls={`panel-${item.name}`}
+            onClick={() => onTabChange(item.name)}
+            className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 pb-3 text-base font-semibold transition-colors ${
+              tab === item.name ? "border-primary text-primary" : "border-transparent text-ink-soft hover:text-ink"
+            }`}
+          >
+            <item.icon size={18} aria-hidden="true" /> {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+        {tab === "specs" &&
+          (product.specs.length === 0 ? (
+            <p className="text-ink-soft">No specifications listed for this product.</p>
+          ) : (
+            <div className="grid gap-x-10 gap-y-8 md:grid-cols-2">
+              {[...groups].map(([group, specs]) => (
+                <div key={group}>
+                  <h3 className="mb-2 font-semibold text-ink">{group}</h3>
+                  {/* <dl>: a "description list", the HTML for label/value pairs */}
+                  <dl>
+                    {specs.map((spec) => (
+                      <div key={spec.label} className="flex justify-between gap-4 border-b border-line py-2.5 text-sm">
+                        <dt className="text-muted">{spec.label}</dt>
+                        <dd className="text-right font-medium text-ink">{spec.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              ))}
+            </div>
+          ))}
+
+        {tab === "reviews" && <ProductReviews product={product} onReviewed={onReviewed} />}
+
+        {/* The same rules as the server's checkout (DELIVERY_OPTIONS and the 1-hour cancel, server STEP 22) */}
+        {tab === "shipping" && (
+          <div className="grid gap-6 text-[15px] leading-6 text-ink-soft md:grid-cols-3">
+            <div>
+              <h3 className="mb-1 font-semibold text-ink">Standard Delivery: Free</h3>
+              <p>2–3 business days anywhere in Nigeria.</p>
+            </div>
+            <div>
+              <h3 className="mb-1 font-semibold text-ink">Express Same-Day: ₦2,500</h3>
+              <p>Delivered today in Lagos. Pay on Delivery is also available in Lagos.</p>
+            </div>
+            <div>
+              <h3 className="mb-1 font-semibold text-ink">Changed your mind?</h3>
+              <p>Cancel free of charge within 1 hour of placing your order, from My Orders.</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+};
+
+export default ProductTabs;
+```
+
+```tsx
+// ProductReviews.tsx client/src/components/product/ProductReviews.tsx
+// The "Customer Reviews" tab: the average with the 5★–1★ bars, "Write a review" (for buyers of a delivered order),
+// and the reviews themselves, newest first, 5 at a time.
+
+// STEP 35 (part 11): Reviews
+
+import { useState } from "react";
+import { MdOutlineRateReview, MdVerified } from "react-icons/md";
+import { Link, useLocation } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useApi } from "../../hooks/useApi";
+import type { CanReviewResponse, Product, ReviewsResponse } from "../../types/api";
+import Pagination from "../common/Pagination";
+import RatingStars from "../common/RatingStars";
+import ReviewForm from "./ReviewForm";
+
+type ProductReviewsProps = {
+  product: Product;
+  onReviewed: () => void; // a new review changes the product's stars: the page reloads the product
+};
+
+const SORTS = [
+  { value: "newest", label: "Newest" },
+  { value: "highest", label: "Highest rating" },
+  { value: "lowest", label: "Lowest rating" },
+];
+
+const ProductReviews = ({ product, onReviewed }: ProductReviewsProps) => {
+  const { user } = useAuth();
+  const location = useLocation();
+  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState("newest");
+
+  const reviews = useApi<ReviewsResponse>(`/reviews/product/${product._id}?limit=5&page=${page}&sort=${sort}`);
+  // Only ask "can I review this?" when logged in (null = don't load)
+  const canReview = useApi<CanReviewResponse>(user ? `/reviews/can-review/${product._id}` : null);
+
+  const summary = reviews.data?.summary ?? { ratings: product.ratings, reviewCount: product.reviewCount, ratingCounts: product.ratingCounts };
+  const counts = summary.ratingCounts.length === 5 ? summary.ratingCounts : [0, 0, 0, 0, 0];
+
+  const afterReview = () => {
+    reviews.reload();
+    canReview.reload();
+    onReviewed();
+  };
+
+  return (
+    <div className="grid gap-10 lg:grid-cols-[320px_1fr]">
+      {/* Left: the average and the bars */}
+      <div>
+        <div className="flex items-center gap-4">
+          <p className="text-5xl font-bold text-ink">{summary.ratings.toFixed(1)}</p>
+          <div>
+            <RatingStars rating={summary.ratings} size={18} />
+            <p className="mt-1 text-sm text-muted">{summary.reviewCount} ratings</p>
+          </div>
+        </div>
+
+        <ul className="mt-5 flex flex-col gap-2">
+          {counts.map((count, index) => {
+            const stars = 5 - index; // the list is [5★, 4★, 3★, 2★, 1★]
+            const percent = summary.reviewCount > 0 ? Math.round((count / summary.reviewCount) * 100) : 0;
+            return (
+              <li key={stars} className="flex items-center gap-3 text-sm">
+                <span className="w-3 text-ink-soft">{stars}</span>
+                <span className="h-2 flex-1 overflow-hidden rounded-full bg-info-light" aria-hidden="true">
+                  <span className="block h-full rounded-full bg-success" style={{ width: `${percent}%` }} />
+                </span>
+                <span className="w-10 text-right text-muted">{percent}%</span>
+                <span className="sr-only">
+                  {stars} stars: {count} ratings
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+
+        {/* Write a review: logged out / can review / can't (with the server's reason) */}
+        <div className="mt-6">
+          {!user ? (
+            <p className="rounded-2xl bg-panel p-4 text-sm text-ink-soft">
+              <Link to="/login" state={{ from: location }} className="font-semibold text-primary-hover hover:underline">
+                Log in
+              </Link>{" "}
+              to review a product you've received.
+            </p>
+          ) : canReview.data?.canReview ? (
+            <ReviewForm productId={product._id} onDone={afterReview} />
+          ) : (
+            canReview.data?.reason && <p className="rounded-2xl bg-panel p-4 text-sm text-ink-soft">{canReview.data.reason}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Right: the reviews */}
+      <div>
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h3 className="text-lg font-semibold text-ink">
+            {reviews.data ? `${reviews.data.total} written ${reviews.data.total === 1 ? "review" : "reviews"}` : "Reviews"}
+          </h3>
+          <label className="flex items-center gap-2 text-sm text-ink-soft">
+            Sort
+            <select
+              value={sort}
+              onChange={(event) => {
+                setSort(event.target.value);
+                setPage(1);
+              }}
+              className="h-10 rounded-xl bg-field px-3 font-medium text-ink outline-none"
+            >
+              {SORTS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {reviews.error ? (
+          <p role="alert" className="text-sm text-danger">
+            {reviews.error}
+          </p>
+        ) : reviews.data && reviews.data.reviews.length === 0 ? (
+          <div className="flex flex-col items-center rounded-2xl bg-panel px-6 py-10 text-center">
+            <MdOutlineRateReview size={32} aria-hidden="true" className="mb-3 text-primary" />
+            <p className="font-semibold text-ink">No written reviews yet</p>
+            <p className="mt-1 text-sm text-ink-soft">Bought it? Once it's delivered, you can be the first to review it.</p>
+          </div>
+        ) : (
+          <ul className={`flex flex-col gap-4 ${reviews.loading ? "opacity-50" : ""}`}>
+            {reviews.data?.reviews.map((review) => (
+              <li key={review._id} className="rounded-2xl border border-line p-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold text-ink">{review.name}</p>
+                  {/* Every review is from a delivered order (the server checks), so every one is verified */}
+                  <p className="flex items-center gap-1 text-xs font-semibold text-success">
+                    <MdVerified size={15} aria-hidden="true" /> Verified Buyer
+                  </p>
+                </div>
+                <div className="mt-1 flex items-center gap-2">
+                  <RatingStars rating={review.rating} size={15} />
+                  <span className="text-xs text-muted">
+                    {new Date(review.createdAt).toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })}
+                  </span>
+                </div>
+                {review.title && <p className="mt-3 font-semibold text-ink">{review.title}</p>}
+                <p className="mt-1 text-[15px] leading-6 text-ink-soft">{review.comment}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {reviews.data && (
+          <div className="mt-6 flex justify-center">
+            <Pagination page={reviews.data.page} pages={reviews.data.pages} onChange={setPage} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ProductReviews;
+```
+
+```tsx
+// ReviewForm.tsx client/src/components/product/ReviewForm.tsx
+// "Write a review": stars, a title and a comment. Sent to POST /api/reviews (server STEP 23), which only accepts
+// it from someone whose order with this product was DELIVERED, once per product.
+
+// STEP 35 (part 10): The review form
+
+import { useState, type FormEvent } from "react";
+import { MdStar, MdStarOutline } from "react-icons/md";
+import { useToast } from "../../context/ToastContext";
+import { api } from "../../utils/api";
+
+const STAR_WORDS = ["", "Poor", "Fair", "Good", "Very good", "Excellent"];
+
+type ReviewFormProps = {
+  productId: string;
+  onDone: () => void; // reload the reviews and the product's stars
+};
+
+const ReviewForm = ({ productId, onDone }: ReviewFormProps) => {
+  const { showToast } = useToast();
+  const [rating, setRating] = useState(0);
+  const [hover, setHover] = useState(0); // the star under the mouse, to preview
+  const [title, setTitle] = useState("");
+  const [comment, setComment] = useState("");
+  const [error, setError] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (rating === 0) return setError("Please choose a star rating.");
+    if (!comment.trim()) return setError("Please tell other shoppers what you think.");
+
+    setError("");
+    setSending(true);
+    try {
+      await api("/reviews", { method: "POST", body: { productId, rating, title: title.trim(), comment: comment.trim() } });
+      showToast({ type: "success", title: "Thank you for your review!", message: "It's now on the product page." });
+      onDone();
+    } catch (err) {
+      setError((err as Error).message); // e.g. "You have already reviewed this product..."
+      setSending(false);
+    }
+  };
+
+  const shown = hover || rating;
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4 rounded-2xl bg-panel p-5">
+      <h3 className="text-lg font-semibold text-ink">Write a review</h3>
+
+      <fieldset>
+        <legend className="mb-2 text-sm font-medium text-ink">Your rating</legend>
+        <div className="flex items-center gap-1" onMouseLeave={() => setHover(0)}>
+          {[1, 2, 3, 4, 5].map((star) => (
+            <button
+              key={star}
+              type="button"
+              onClick={() => setRating(star)}
+              onMouseEnter={() => setHover(star)}
+              aria-label={`${star} star${star === 1 ? "" : "s"}: ${STAR_WORDS[star]}`}
+              aria-pressed={rating === star}
+              className="text-warning transition-transform hover:scale-110"
+            >
+              {star <= shown ? <MdStar size={30} /> : <MdStarOutline size={30} />}
+            </button>
+          ))}
+          {shown > 0 && <span className="ml-2 text-sm font-medium text-ink-soft">{STAR_WORDS[shown]}</span>}
+        </div>
+      </fieldset>
+
+      <div>
+        <label htmlFor="review-title" className="mb-2 block text-sm font-medium text-ink">
+          Title <span className="font-normal text-muted">(optional)</span>
+        </label>
+        <input
+          id="review-title"
+          value={title}
+          maxLength={100} // the server's limit (server STEP 23)
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder="Sums it up in a few words"
+          className="h-12 w-full rounded-xl bg-surface px-4 text-[15px] outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+
+      <div>
+        <label htmlFor="review-comment" className="mb-2 block text-sm font-medium text-ink">
+          Your review
+        </label>
+        <textarea
+          id="review-comment"
+          value={comment}
+          maxLength={1000}
+          rows={4}
+          onChange={(event) => setComment(event.target.value)}
+          placeholder="What did you like or dislike? How did you use it?"
+          className="w-full rounded-xl bg-surface px-4 py-3 text-[15px] outline-none focus:ring-2 focus:ring-primary/30"
+        />
+        <p className="mt-1 text-right text-xs text-muted">{comment.length}/1000</p>
+      </div>
+
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <button
+        type="submit"
+        disabled={sending}
+        className="h-12 rounded-xl bg-primary font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-60"
+      >
+        {sending ? "Posting..." : "Post review"}
+      </button>
+    </form>
+  );
+};
+
+export default ReviewForm;
+```
+
+**Things worth understanding:**
+
+- **The tab is chosen by the page** (`tab` and `onTabChange` props), not inside `ProductTabs`. That's what lets
+  "248 reviews" in the info box open the Reviews tab and scroll to it. It's called *lifting state up*.
+- **The specs arrive as one list.** A `Map` groups them by `group`, which keeps the order they were written in.
+- **`useApi(user ? ... : null)`**: "can I review this?" is only asked when someone's logged in. Remember `null` =
+  "don't load" (STEP 30).
+- **Write a review has 3 outcomes**: logged out → "Log in to review a product you've received"; allowed → the form;
+  not allowed → the **server's own reason** ("Only customers who have received this product can review it.", "You have
+  already reviewed this product.").
+- **After posting**, the reviews, the "can I review?" answer and the product itself are all reloaded, so the stars, "(32)"
+  and the bars update straight away. The product reloads **without** the page going blank: `useApi` keeps the old data
+  while it loads.
+- **The 248 ratings vs "1 written review"**: the demo products came with ratings (server STEP 10) but no written reviews.
+  New reviews are added on top (server STEP 23 adjusts the average), which is why the bars and the count are both
+  real.
+
+### 35.8 `src/components/product/BundleOffer.tsx`
+
+Replace the placeholder.
+
+```tsx
+// BundleOffer.tsx client/src/components/product/BundleOffer.tsx
+// "BUNDLE & SAVE / Frequently Bought Together": the product's bundleProducts (server STEP 8) with tick boxes,
+// the total of this product + the ticked ones, and "Add All 3 to Cart".
+
+// STEP 35 (part 13): Frequently bought together
+
+import { useState } from "react";
+import { MdOutlineImageNotSupported } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useCart } from "../../context/CartContext";
+import { useToast } from "../../context/ToastContext";
+import type { Product } from "../../types/api";
+import { naira } from "../../utils/format";
+
+const BundleOffer = ({ product }: { product: Product }) => {
+  const { addItem } = useCart();
+  const { showToast } = useToast();
+  // Which extras are ticked, by id. The first two start ticked, like the design.
+  const [picked, setPicked] = useState<string[]>(() => product.bundleProducts.slice(0, 2).map((item) => item._id));
+
+  if (product.bundleProducts.length === 0) return null;
+
+  const chosen = product.bundleProducts.filter((item) => picked.includes(item._id));
+  const total = product.price + chosen.reduce((sum, item) => sum + item.price, 0);
+  const count = chosen.length + 1; // the extras + this product
+
+  const toggle = (id: string) => {
+    setPicked((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+  };
+
+  const addAll = () => {
+    // Add this product and every ticked extra. Collect any problems (e.g. sold out) to show at the end.
+    const problems = [product, ...chosen]
+      .map((item) => addItem(item, { color: item.colors[0]?.name }))
+      .flatMap((result) => (result.ok ? [] : [result.message]));
+    if (problems.length > 0) {
+      showToast({ type: "error", title: "Some items weren't added", message: problems.join(" ") });
+    }
+  };
+
+  return (
+    <section aria-labelledby="bundle-title" className="rounded-3xl bg-surface p-6 shadow-card md:p-8">
+      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-xs font-bold tracking-wider text-primary uppercase">Bundle &amp; Save</p>
+          <h2 id="bundle-title" className="text-2xl leading-8 font-semibold text-ink">
+            Frequently Bought Together
+          </h2>
+        </div>
+        <div className="flex items-center gap-4 rounded-2xl bg-panel py-2 pr-2 pl-4">
+          <p className="text-right text-sm text-ink-soft">
+            Bundle Total ({count} items):
+            <span className="block text-lg font-bold text-primary-hover">{naira(total)}</span>
+          </p>
+          <button type="button" onClick={addAll} className="h-11 rounded-xl bg-primary px-5 font-semibold text-white transition-colors hover:bg-primary-hover">
+            Add All {count} to Cart
+          </button>
+        </div>
+      </div>
+
+      <ul className="grid gap-4 md:grid-cols-3">
+        {product.bundleProducts.map((item) => (
+          <li key={item._id}>
+            {/* The whole card is the label: clicking anywhere on it ticks the box */}
+            <label className="flex cursor-pointer items-center gap-4 rounded-2xl border border-line bg-panel p-4 transition-colors has-checked:border-primary-light">
+              <input
+                type="checkbox"
+                checked={picked.includes(item._id)}
+                onChange={() => toggle(item._id)}
+                aria-label={`Add ${item.name} to the bundle`}
+                className="size-4.5 shrink-0 accent-primary"
+              />
+              {item.images[0] ? (
+                <img src={item.images[0]} alt="" loading="lazy" className="size-16 shrink-0 rounded-xl bg-field object-cover" />
+              ) : (
+                <span className="flex size-16 shrink-0 items-center justify-center rounded-xl bg-field text-muted">
+                  <MdOutlineImageNotSupported size={24} aria-hidden="true" />
+                </span>
+              )}
+              <span className="min-w-0">
+                <Link to={`/product/${item.slug}`} className="block truncate font-medium text-ink hover:text-primary">
+                  {item.name}
+                </Link>
+                {item.tagline && <span className="block truncate text-xs text-muted">{item.tagline}</span>}
+                <span className="mt-1 block font-bold text-ink">{naira(item.price)}</span>
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+export default BundleOffer;
+```
+
+**Bundle Total = this product + the ticked extras**: ₦45,000 + ₦6,500 + ₦2,200 = **₦53,700**, exactly the design's
+number.
+
+### 35.9 `src/components/home/RecentlyViewed.tsx`
+
+Replace the placeholder.
+
+```tsx
+// RecentlyViewed.tsx client/src/components/home/RecentlyViewed.tsx
+// "Recently Viewed" (Home design): the last products you opened, with "Clear History". Hidden when there are none.
+// The list is in the browser (utils/recentlyViewed.ts); the Product Details page adds to it.
+
+// STEP 35 (part 14): Recently viewed
+
+import { useState } from "react";
+import { MdHistory } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { naira } from "../../utils/format";
+import { clearRecentlyViewed, getRecentlyViewed } from "../../utils/recentlyViewed";
+
+const RecentlyViewed = ({ excludeId }: { excludeId?: string }) => {
+  // Read once when the section appears (useState with a function = only on the first render)
+  const [items, setItems] = useState(getRecentlyViewed);
+  const shown = items.filter((item) => item._id !== excludeId); // on a product page, don't show that same product
+
+  if (shown.length === 0) return null;
+
+  const clear = () => {
+    clearRecentlyViewed();
+    setItems([]);
+  };
+
+  return (
+    <section aria-labelledby="recent-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <div className="mb-5 flex items-center justify-between">
+        <h2 id="recent-title" className="flex items-center gap-2 text-xl font-semibold text-ink">
+          <MdHistory size={22} aria-hidden="true" className="text-ink-soft" /> Recently Viewed
+        </h2>
+        <button type="button" onClick={clear} className="text-sm text-muted hover:text-ink">
+          Clear History
+        </button>
+      </div>
+
+      <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        {shown.map((item) => (
+          <li key={item._id}>
+            <Link to={`/product/${item.slug}`} className="group block">
+              <img src={item.image} alt="" loading="lazy" className="aspect-[4/3.4] w-full rounded-2xl bg-field object-cover" />
+              <p className="mt-2 truncate text-sm font-semibold text-ink group-hover:text-primary">{item.name}</p>
+              <p className="text-sm font-bold text-primary-hover">{naira(item.price)}</p>
+              <span className="mt-2 block rounded-lg bg-field py-1.5 text-center text-sm font-medium text-ink transition-colors group-hover:bg-primary-light">
+                View again
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+export default RecentlyViewed;
+```
+
+Add it to the Home page, in `src/pages/home/HomePage.tsx`:
+
+```tsx
+import RecentlyViewed from "../../components/home/RecentlyViewed";
+```
+
+```tsx
+      <RecommendedForYou />
+      <RecentlyViewed />
+```
+
+### 35.10 `src/pages/shop/ProductDetailsPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// ProductDetailsPage.tsx client/src/pages/shop/ProductDetailsPage.tsx
+// /product/wireless-noise-cancelling-headphones: everything about one product. (Design: Product Details)
+// It loads GET /api/products/:idOrSlug (server STEP 16) and puts the pieces together.
+
+// STEP 35 (part 15): The Product Details page
+
+import { useEffect, useState } from "react";
+import { MdArrowForward, MdSearchOff } from "react-icons/md";
+import { Link, useParams } from "react-router-dom";
+import Breadcrumb from "../../components/common/Breadcrumb";
+import EmptyState from "../../components/common/EmptyState";
+import SectionHeader from "../../components/common/SectionHeader";
+import RecentlyViewed from "../../components/home/RecentlyViewed";
+import BundleOffer from "../../components/product/BundleOffer";
+import ProductCard from "../../components/product/ProductCard";
+import ProductGallery from "../../components/product/ProductGallery";
+import ProductHighlights from "../../components/product/ProductHighlights";
+import ProductInfo from "../../components/product/ProductInfo";
+import ProductTabs, { type TabName } from "../../components/product/ProductTabs";
+import { useApi } from "../../hooks/useApi";
+import type { ProductResponse } from "../../types/api";
+import { addRecentlyViewed } from "../../utils/recentlyViewed";
+
+const ProductDetailsPage = () => {
+  // App.tsx calls it :productId, but it can be the slug or the id (the server accepts both)
+  const { productId = "" } = useParams();
+  const { data, error, reload } = useApi<ProductResponse>(`/products/${productId}`);
+  const [tab, setTab] = useState<TabName>("specs");
+  // Another product opened (e.g. from Related Products): back to the first tab. The page itself stays on screen
+  // (only the address changed), so its state is reset by hand, the same "follow a value" pattern as the Shop search.
+  const [tabFor, setTabFor] = useState(productId);
+  if (tabFor !== productId) {
+    setTabFor(productId);
+    setTab("specs");
+  }
+
+  // The previous product stays in "data" while the next one loads (STEP 30): only use it if it's the one in the address
+  const product = data && (data.product.slug === productId || data.product._id === productId) ? data.product : null;
+
+  // When a product opens: remember it for "Recently Viewed", and show its name in the browser tab
+  useEffect(() => {
+    if (!product) return;
+    addRecentlyViewed(product);
+    document.title = `${product.name} | QuickCart`;
+    return () => {
+      document.title = "QuickCart | Everyday essentials, delivered fast";
+    };
+  }, [product]);
+
+  const showReviews = () => {
+    setTab("reviews");
+    document.getElementById("product-tabs")?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-360 px-4 py-16 md:px-12">
+        <EmptyState
+          icon={MdSearchOff}
+          title={error === "Product not found" ? "We couldn't find that product" : "Something went wrong"}
+          text={error === "Product not found" ? "It may have been removed, or the link is wrong." : error}
+          action={
+            <Link to="/shop" className="flex h-11 items-center rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              Browse all products
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (!product) {
+    return (
+      <div aria-busy="true" className="mx-auto grid max-w-360 gap-8 px-4 py-10 md:px-12 lg:grid-cols-2">
+        <div className="aspect-square animate-pulse rounded-3xl bg-surface shadow-card" />
+        <div className="h-140 animate-pulse rounded-3xl bg-surface shadow-card" />
+      </div>
+    );
+  }
+
+  return (
+    // key={product._id}: opening another product (e.g. from Related Products) starts every part fresh:
+    // first photo, first colour, quantity 1
+    <div key={product._id} className="mx-auto flex max-w-360 flex-col gap-10 px-4 pt-8 pb-20 md:px-12">
+      <div>
+        <Breadcrumb
+          items={[
+            { label: "Home", to: "/" },
+            { label: product.category.name, to: `/shop?category=${product.category.slug}` },
+            { label: product.name },
+          ]}
+        />
+        <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_1fr]">
+          <ProductGallery product={product} />
+          <ProductInfo product={product} onShowReviews={showReviews} />
+        </div>
+      </div>
+
+      <ProductHighlights highlights={product.highlights} />
+      <ProductTabs product={product} tab={tab} onTabChange={setTab} onReviewed={reload} />
+      <BundleOffer product={product} />
+
+      {product.relatedProducts.length > 0 && (
+        <section aria-labelledby="related-title">
+          <SectionHeader eyebrow="Similar gear" title="Related Products" titleId="related-title">
+            <Link
+              to={`/shop?category=${product.category.slug}`}
+              className="flex shrink-0 items-center gap-1 text-sm font-semibold text-primary-hover hover:underline"
+            >
+              More in {product.category.name} <MdArrowForward size={16} aria-hidden="true" />
+            </Link>
+          </SectionHeader>
+          <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            {product.relatedProducts.map((related) => (
+              <li key={related._id} className="flex">
+                <ProductCard product={related} details={related.tagline ? <p className="text-[13px] text-muted">{related.tagline}</p> : undefined} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <RecentlyViewed excludeId={product._id} />
+    </div>
+  );
+};
+
+export default ProductDetailsPage;
+```
+
+**Things worth understanding:**
+
+- **`key={product._id}`** on the page's content: clicking a Related Product keeps you on the same page *component*
+  (only the address changes), so React would keep the old photo number, colour and quantity. A new `key` makes React
+  start those parts fresh.
+- **The tab is outside that `key`**, so it's reset with the same "follow a value" pattern as the Shop search
+  (`tabFor`). My test caught this: without it, opening a related product kept the previous product's tab.
+- **`document.title`** puts the product's name in the browser tab (nice in bookmarks and history). The clean-up puts the
+  normal title back when you leave.
+- **"We couldn't find that product"** for a wrong address, instead of an error message.
+
+### 35.11 Test it
+
+`npm run seed`, both terminals running.
+
+| Do this                                                         | You should see                                         |
+| --------------------------------------------------------------- | ------------------------------------------------------ |
+| Open the headphones from the Home page                           | the browser tab says "Wireless Noise-Cancelling Headphones \| QuickCart"; breadcrumb; SKU QC-AU-9042; ₦45,000 ~~₦60,000~~ -25%; "In Stock — 124 units left"; the 4 features; Color: Midnight Black |
+| Click the 3rd thumbnail                                          | the big photo changes                                  |
+| Choose **Silver Frost**, press **+** twice                       | "Add to Cart • ₦135,000"                               |
+| **Add to Cart**                                                  | "Added to Cart!": Color: Silver Frost, Qty: 3, ₦135,000; the quantity goes back to 1 |
+| Specifications / Shipping & Returns tabs                         | the 2 spec groups side by side / delivery prices and the 1-hour cancel |
+| Click **248 reviews**                                            | the Reviews tab opens and the page scrolls to it: 4.8, 248 ratings, 82% / 12% / 4% / 1% / 1%, "No written reviews yet", "Log in to review..." |
+| Frequently Bought Together                                       | 2 extras ticked, "Bundle Total (3 items): ₦53,700"; tick the 3rd → ₦61,700, "Add All 4 to Cart" adds 4 lines |
+| Related Products                                                 | Over-Ear Studio Monitors, True Wireless ANC Earbuds, Magnetic Headphone Stand..., Hi-Res DAC Audio Adapter |
+| Click ♡ while logged out                                         | the login page; after logging in as Ada you're **back on the product** |
+| Click ♡ as Ada                                                   | it fills red, toast "Saved for later"; click again to remove |
+| Reviews tab as Ada on the headphones                             | "Only customers who have received this product can review it." |
+| Open **Ceramic Mug Set** (Ada has a delivered demo order with it) → Reviews | the **Write a review** form. Post without stars → "Please choose a star rating."; with 5 stars, a title and a comment → toast, the review shows as "Ada O. · Verified Buyer", the tab says (32), and the form is replaced by "You have already reviewed this product." |
+| Home page                                                        | **Recently Viewed** (Ceramic Mug Set first); **Clear History** hides it |
+| Open a Related Product after choosing the Shipping tab           | the new product opens at the top, on Full Specifications |
+| **Buy Now** (logged in)                                          | you go to `/checkout` (STEP 38 builds it)              |
+| `/product/nope`                                                  | "We couldn't find that product" + Browse all products   |
+
+I tested all of this on a copy of your project against a throwaway database: **37 checks, all passed**, after one
+fix (the tab reset above). The screenshots match the design, on a computer and a phone. `npm run build` and
+`npm run lint` pass.
+
+### 35.12 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 35: product details page, reviews, saved items, recently viewed"
+git push
+```
+
+➡️ **Next: STEP 36 (The Cart page: each line with its quantity stepper and remove button, the empty cart, the promo
+code box that asks your server, and the summary with "Proceed to Checkout").** Reply **NEXT** when 35.11 works.
+
+---
+
+## STEP 36: The Cart page
+
+> **Before you start:** finish STEP 35 first. `RecentlyViewed.tsx` and `ProductDetailsPage.tsx` (35.9, 35.10) and the
+> `<RecentlyViewed />` line in `HomePage.tsx` were still missing when I checked, and STEP 35 wasn't committed.
+
+`/cart` becomes the two designs (Cart, Cart empty state):
+
+- Home › Cart, and the **checkout steps** "① Review Cart › ② Checkout › ③ Confirmation" (reused by STEP 38)
+- **"Your Shopping Cart (4 items)"**, the green free-delivery bar with how much the sale prices save you
+- each line: photo, name, colour, unit price (~~old price~~), the **− 2 +** stepper, the line total, **Remove**
+- **Order Summary**: subtotal, free delivery, the **promo code** box (asks your server), the discount, the total,
+  **Proceed to Checkout**
+- **Clear Entire Cart** (with an "are you sure?"), **Continue Shopping**
+- the **empty cart**: Start Shopping, Explore Trending Deals, and real categories
+
+| New / changed file                     | What it is                                                   |
+| -------------------------------------- | ------------------------------------------------------------ |
+| `utils/promo.ts`                       | remembers the applied code until checkout                     |
+| `components/common/StepTracker.tsx`    | ① ② ③ (cart, checkout, confirmation)                          |
+| `components/cart/CartItem.tsx`         | one line                                                      |
+| `components/cart/FreeDeliveryBar.tsx`  | the green bar                                                 |
+| `components/cart/PromoCodeForm.tsx`    | the voucher box                                               |
+| `components/cart/CartSummary.tsx`      | the Order Summary                                             |
+| `components/cart/EmptyCart.tsx`        | the empty cart                                                |
+| `pages/cart/CartPage.tsx`              | the page                                                      |
+
+**Honest numbers:** the design's bar says "You qualify for Free Express Shipping" and the summary says "Free for
+orders over ₦50,000". Your server makes **Standard** delivery free on **every** order, and Express costs ₦2,500 (server
+STEP 22), so the page says exactly that. The design's "Items reserved for 14:57 mins" isn't true either (nothing is
+reserved until checkout), so it's left out.
+
+### 36.1 `src/utils/promo.ts`
+
+New file.
+
+```ts
+// promo.ts client/src/utils/promo.ts
+// Remembers the promo code applied in the cart until checkout (STEP 38), for this browser tab only (sessionStorage:
+// closing the tab forgets it). The SERVER always checks the code again when the order is placed (server STEP 22),
+// so changing it here can't fake a discount.
+
+// STEP 36 (part 1): Remember the promo code
+
+const KEY = "quickcart_promo";
+
+export const getSavedPromo = () => sessionStorage.getItem(KEY) ?? "";
+export const savePromo = (code: string) => sessionStorage.setItem(KEY, code);
+export const clearSavedPromo = () => sessionStorage.removeItem(KEY);
+
+// POST /api/promo-codes/check -> what the server answers (server STEP 21)
+export type PromoResult = { code: string; description: string; discount: number; subtotalAfterDiscount: number };
+```
+
+**`sessionStorage`** is like `localStorage`, but forgotten when the tab closes. A promo code is for *this* shopping trip.
+
+### 36.2 `src/components/common/StepTracker.tsx`
+
+Replace the placeholder.
+
+```tsx
+// StepTracker.tsx client/src/components/common/StepTracker.tsx
+// "① Review Cart › ② Checkout › ③ Confirmation" at the top of the cart, checkout and confirmation pages.
+//   <StepTracker current={1} />
+
+// STEP 36 (part 2): The checkout steps
+
+import { MdCheck, MdChevronRight } from "react-icons/md";
+
+const STEPS = ["Review Cart", "Checkout", "Confirmation"];
+
+const StepTracker = ({ current }: { current: 1 | 2 | 3 }) => {
+  return (
+    <ol aria-label="Checkout steps" className="mb-6 flex flex-wrap items-center gap-2 text-sm">
+      {STEPS.map((label, index) => {
+        const number = index + 1;
+        const done = number < current;
+        const active = number === current;
+        return (
+          <li key={label} className="flex items-center gap-2" aria-current={active ? "step" : undefined}>
+            {index > 0 && <MdChevronRight size={16} aria-hidden="true" className="text-muted" />}
+            <span
+              className={`flex size-7 items-center justify-center rounded-full text-xs font-bold ${
+                active ? "bg-primary text-white" : done ? "bg-success text-white" : "bg-primary-light text-muted"
+              }`}
+            >
+              {done ? <MdCheck size={16} aria-label="done" /> : number}
+            </span>
+            <span className={active ? "font-semibold text-ink" : "text-muted"}>{label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+};
+
+export default StepTracker;
+```
+
+### 36.3 The cart pieces in `src/components/cart/`
+
+Replace the 5 placeholders: `CartItem.tsx`, `FreeDeliveryBar.tsx`, `PromoCodeForm.tsx`, `CartSummary.tsx`, `EmptyCart.tsx`.
+
+```tsx
+// CartItem.tsx client/src/components/cart/CartItem.tsx
+// One line of the cart: photo, name, colour, unit price, the "− 2 +" stepper, the line total and Remove.
+
+// STEP 36 (part 3): A cart line
+
+import { MdDeleteOutline } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useCart, type CartItem as CartItemType } from "../../context/CartContext";
+import { naira } from "../../utils/format";
+import QuantityStepper from "../common/QuantityStepper";
+
+const CartItem = ({ item }: { item: CartItemType }) => {
+  const { updateQuantity, removeItem } = useCart();
+  const link = `/product/${item.slug}`;
+
+  return (
+    <li className="flex gap-4 rounded-3xl bg-surface p-4 shadow-card sm:gap-5">
+      <Link to={link} className="shrink-0">
+        <img src={item.image} alt={item.name} className="size-24 rounded-2xl bg-field object-cover sm:size-32" />
+      </Link>
+
+      <div className="flex min-w-0 flex-1 flex-col justify-between gap-3 sm:flex-row">
+        <div className="min-w-0">
+          <h2 className="text-lg leading-6 font-semibold text-ink">
+            <Link to={link} className="hover:text-primary">
+              {item.name}
+            </Link>
+          </h2>
+          {item.color && <p className="mt-1 text-sm text-ink-soft">Color: {item.color}</p>}
+          <p className="mt-2 text-sm text-ink-soft">
+            Unit Price: <span className="text-ink">{naira(item.price)}</span>
+            {item.oldPrice && item.oldPrice > item.price && <del className="ml-2 text-muted">{naira(item.oldPrice)}</del>}
+          </p>
+          {item.quantity >= item.maxQuantity && (
+            <p className="mt-1 text-xs font-medium text-[#8a5300]">
+              {item.maxQuantity < 10 ? `Only ${item.maxQuantity} in stock` : "Maximum 10 per order"}
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-end">
+          <QuantityStepper
+            size="sm"
+            value={item.quantity}
+            max={item.maxQuantity}
+            onChange={(quantity) => updateQuantity(item.key, quantity)}
+            label={`Quantity of ${item.name}`}
+          />
+          <p className="text-xl font-bold text-ink">{naira(item.price * item.quantity)}</p>
+          <button
+            type="button"
+            onClick={() => removeItem(item.key)}
+            aria-label={`Remove ${item.name} from your cart`}
+            className="flex items-center gap-1 text-sm font-semibold text-danger hover:underline"
+          >
+            <MdDeleteOutline size={16} aria-hidden="true" /> Remove
+          </button>
+        </div>
+      </div>
+    </li>
+  );
+};
+
+export default CartItem;
+```
+
+```tsx
+// FreeDeliveryBar.tsx client/src/components/cart/FreeDeliveryBar.tsx
+// The green bar above the cart lines. Your server makes Standard Delivery free on every order (DELIVERY_OPTIONS,
+// server STEP 22), so it says that, and how much the sale prices are saving you.
+
+// STEP 36 (part 4): The delivery bar
+
+import { MdOutlineLocalShipping } from "react-icons/md";
+import { naira } from "../../utils/format";
+
+const FreeDeliveryBar = ({ saved }: { saved: number }) => {
+  return (
+    <div className="rounded-3xl bg-surface p-4 shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        <p className="flex items-center gap-2 font-medium text-success">
+          <MdOutlineLocalShipping size={20} aria-hidden="true" /> Good news! Standard delivery is free on your order
+        </p>
+        {saved > 0 && <p className="font-semibold tracking-wide text-ink-soft">Saved {naira(saved)}</p>}
+      </div>
+      <div aria-hidden="true" className="mt-2 h-1.5 origin-left animate-grow-x rounded-full bg-success" />
+    </div>
+  );
+};
+
+export default FreeDeliveryBar;
+```
+
+```tsx
+// PromoCodeForm.tsx client/src/components/cart/PromoCodeForm.tsx
+// "DISCOUNT VOUCHER": type a code, press Apply. The cart page asks the server (POST /api/promo-codes/check).
+// Once applied, it shows the code with a Remove button instead of the box.
+
+// STEP 36 (part 5): The promo code box
+
+import { useState, type FormEvent } from "react";
+import { MdClose, MdOutlineLocalOffer } from "react-icons/md";
+import type { PromoResult } from "../../utils/promo";
+
+type PromoCodeFormProps = {
+  applied: PromoResult | null;
+  error: string;
+  checking: boolean;
+  onApply: (code: string) => void;
+  onRemove: () => void;
+};
+
+const PromoCodeForm = ({ applied, error, checking, onApply, onRemove }: PromoCodeFormProps) => {
+  const [code, setCode] = useState("");
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (code.trim()) onApply(code.trim());
+  };
+
+  if (applied) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-xl bg-mint/30 px-4 py-3">
+        <p className="text-sm">
+          <span className="font-mono font-bold text-forest">{applied.code}</span>
+          <span className="block text-xs text-ink-soft">{applied.description}</span>
+        </p>
+        <button type="button" onClick={onRemove} aria-label={`Remove code ${applied.code}`} className="text-ink-soft hover:text-danger">
+          <MdClose size={20} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSubmit} noValidate>
+      <label htmlFor="promo-code" className="mb-2 block text-xs font-bold tracking-wider text-ink-soft uppercase">
+        Discount voucher
+      </label>
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <MdOutlineLocalOffer size={18} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted" />
+          <input
+            id="promo-code"
+            value={code}
+            onChange={(event) => setCode(event.target.value.toUpperCase())}
+            placeholder="Promo code (try QUICK10)"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "promo-error" : undefined}
+            className="h-12 w-full rounded-xl bg-field pr-3 pl-10 text-[15px] uppercase outline-none placeholder:normal-case focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+        <button type="submit" disabled={checking} className="h-12 rounded-xl bg-primary-light px-5 font-semibold text-ink hover:bg-info-light disabled:opacity-60">
+          {checking ? "..." : "Apply"}
+        </button>
+      </div>
+      {error && (
+        <p id="promo-error" role="alert" className="mt-2 text-[13px] text-danger">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+};
+
+export default PromoCodeForm;
+```
+
+```tsx
+// CartSummary.tsx client/src/components/cart/CartSummary.tsx
+// "Order Summary": subtotal, delivery, discount, the promo box, the total and "Proceed to Checkout".
+
+// STEP 36 (part 6): The order summary
+
+import type { ReactNode } from "react";
+import { MdLockOutline, MdOutlineVerifiedUser } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { naira, plural } from "../../utils/format";
+
+type CartSummaryProps = {
+  units: number;
+  subtotal: number;
+  discount: number;
+  promoCode?: string;
+  promoForm: ReactNode; // the promo box, given by the page (it owns the promo state)
+};
+
+const CartSummary = ({ units, subtotal, discount, promoCode, promoForm }: CartSummaryProps) => {
+  const total = subtotal - discount;
+
+  return (
+    <aside aria-labelledby="summary-title" className="rounded-3xl bg-surface p-6 shadow-card lg:sticky lg:top-28">
+      <div className="mb-5 flex items-center justify-between">
+        <h2 id="summary-title" className="text-2xl font-semibold text-ink">
+          Order Summary
+        </h2>
+        <span className="rounded-full bg-field px-3 py-1 text-xs font-semibold text-ink-soft">{plural(units, "Unit")}</span>
+      </div>
+
+      <dl className="flex flex-col gap-3 text-[15px]">
+        <div className="flex justify-between">
+          <dt className="text-ink-soft">Items Subtotal</dt>
+          <dd className="font-semibold text-ink">{naira(subtotal)}</dd>
+        </div>
+        <div className="flex justify-between">
+          <dt className="text-ink-soft">
+            Estimated Delivery
+            <span className="block text-xs text-success">Standard delivery is free (Express ₦2,500 at checkout)</span>
+          </dt>
+          <dd className="font-semibold text-success">FREE</dd>
+        </div>
+        {discount > 0 && (
+          <div className="flex justify-between">
+            <dt className="text-ink-soft">Discount ({promoCode})</dt>
+            <dd className="font-semibold text-success">−{naira(discount)}</dd>
+          </div>
+        )}
+      </dl>
+
+      <div className="my-5">{promoForm}</div>
+
+      <div className="flex items-end justify-between rounded-2xl bg-panel p-5">
+        <p>
+          <span className="block text-lg font-semibold text-ink">Total</span>
+          <span className="text-xs text-muted">Includes VAT where applicable</span>
+        </p>
+        <p className="text-3xl font-bold text-primary-hover">{naira(total)}</p>
+      </div>
+
+      <Link
+        to="/checkout"
+        className="mt-5 flex h-13 items-center justify-center gap-2 rounded-xl bg-primary text-lg font-semibold text-white shadow-[0_4px_12px_rgba(50,43,208,0.25)] transition-colors hover:bg-primary-hover"
+      >
+        <MdLockOutline size={20} aria-hidden="true" /> Proceed to Checkout
+      </Link>
+
+      <div className="mt-5 flex gap-3 rounded-2xl bg-panel p-4">
+        <MdOutlineVerifiedUser size={22} aria-hidden="true" className="shrink-0 text-success" />
+        <p className="text-sm text-ink-soft">
+          <span className="block font-semibold text-ink">QuickCart Buyer Protection</span>
+          Full refund if the item is not as described or delayed past the promised date.
+        </p>
+      </div>
+
+      <p className="mt-4 flex flex-wrap items-center gap-2 text-xs text-muted">
+        Accepted:
+        {["Visa", "Mastercard", "Verve", "Pay on Delivery"].map((method) => (
+          <span key={method} className="rounded-md bg-field px-2 py-1 font-semibold text-ink-soft uppercase">
+            {method}
+          </span>
+        ))}
+      </p>
+    </aside>
+  );
+};
+
+export default CartSummary;
+```
+
+```tsx
+// EmptyCart.tsx client/src/components/cart/EmptyCart.tsx
+// "Your shopping cart is empty" (design: Cart empty state): Start Shopping, Explore Trending Deals, and a few
+// real categories to jump to.
+
+// STEP 36 (part 7): The empty cart
+
+import { MdOutlineLocalFireDepartment, MdOutlineRemoveShoppingCart, MdOutlineStorefront } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useApi } from "../../hooks/useApi";
+import type { CategoriesResponse } from "../../types/api";
+
+const EmptyCart = () => {
+  const { data } = useApi<CategoriesResponse>("/categories");
+
+  return (
+    <div className="mx-auto flex max-w-230 flex-col items-center rounded-3xl bg-surface px-6 py-14 text-center shadow-card">
+      <span className="relative mb-6 flex size-28 items-center justify-center rounded-full bg-primary-light/60">
+        <MdOutlineRemoveShoppingCart size={44} aria-hidden="true" className="text-primary" />
+        <span aria-hidden="true" className="absolute top-2 right-2 flex size-7 items-center justify-center rounded-full bg-surface text-sm font-semibold text-ink-soft shadow-card">
+          0
+        </span>
+      </span>
+      <h2 className="text-3xl font-bold tracking-tight text-ink">Your shopping cart is empty</h2>
+      <p className="mt-3 max-w-125 text-base leading-7 text-ink-soft">
+        Looks like you haven't added anything yet. Discover our curated collections today and fill your cart with handpicked
+        essentials!
+      </p>
+
+      <div className="mt-8 flex flex-wrap justify-center gap-3">
+        <Link to="/shop" className="flex h-13 items-center gap-2 rounded-xl bg-primary px-7 font-semibold text-white hover:bg-primary-hover">
+          <MdOutlineStorefront size={20} aria-hidden="true" /> Start Shopping
+        </Link>
+        <Link to="/#flash-sale" className="flex h-13 items-center gap-2 rounded-xl bg-primary-light px-7 font-semibold text-ink hover:bg-info-light">
+          <MdOutlineLocalFireDepartment size={20} aria-hidden="true" /> Explore Trending Deals
+        </Link>
+      </div>
+
+      {data && (
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-2 text-sm">
+          <span className="font-medium text-ink-soft">Popular categories:</span>
+          {data.categories.slice(0, 4).map((category) => (
+            <Link key={category._id} to={`/shop?category=${category.slug}`} className="rounded-full bg-field px-3 py-1 font-semibold text-ink hover:bg-primary-light">
+              {category.name}
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default EmptyCart;
+```
+
+- **`type CartItem as CartItemType`**: the component is called `CartItem` and so is the type from `CartContext`. `as`
+  renames the type in this file, so the two names don't clash.
+- **The stepper's max** is the line's `maxQuantity` (stock, and 10): the **+** greys out exactly where the server would
+  refuse. A small amber note says why ("Only 26 in stock").
+- **`promoForm` is passed into `CartSummary` as a prop**: the summary only *shows* the box; the page owns the promo state
+  (the summary and the total both need it).
+
+### 36.4 `src/pages/cart/CartPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// CartPage.tsx client/src/pages/cart/CartPage.tsx
+// "Your Shopping Cart": the lines, the summary with the promo code, or the empty cart. (Designs: Cart, Cart empty state)
+// The cart itself lives in CartContext (STEP 32); this page shows it and lets you change it.
+
+// STEP 36 (part 8): The Cart page
+
+import { useEffect, useState } from "react";
+import { MdArrowBack, MdOutlineAutorenew, MdOutlineLocalShipping, MdOutlineRemoveShoppingCart, MdOutlineVerified } from "react-icons/md";
+import { Link } from "react-router-dom";
+import CartItem from "../../components/cart/CartItem";
+import CartSummary from "../../components/cart/CartSummary";
+import EmptyCart from "../../components/cart/EmptyCart";
+import FreeDeliveryBar from "../../components/cart/FreeDeliveryBar";
+import PromoCodeForm from "../../components/cart/PromoCodeForm";
+import Breadcrumb from "../../components/common/Breadcrumb";
+import StepTracker from "../../components/common/StepTracker";
+import { useCart } from "../../context/CartContext";
+import { api } from "../../utils/api";
+import { plural } from "../../utils/format";
+import { clearSavedPromo, getSavedPromo, savePromo, type PromoResult } from "../../utils/promo";
+
+const perks = [
+  { title: "30-Day Easy Returns", text: "Hassle-free pickups", icon: MdOutlineAutorenew },
+  { title: "Fast Dispatch", text: "Within 24–48 hours", icon: MdOutlineLocalShipping },
+  { title: "100% Authentic", text: "Direct from brands", icon: MdOutlineVerified },
+];
+
+const CartPage = () => {
+  const { items, count, subtotal, clearCart } = useCart();
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  // ---- The promo code ----
+  // The code to use (remembered from earlier in this tab), and the server's last answer, labelled with the
+  // code and subtotal it was for. When the subtotal changes (you change a quantity), the code is checked again:
+  // QUICK25 needs ₦25,000, so removing items can make it stop working.
+  const [code, setCode] = useState(getSavedPromo);
+  const [check, setCheck] = useState<{ key: string; result?: PromoResult; error?: string } | null>(null);
+  const key = `${code}|${subtotal}`;
+
+  useEffect(() => {
+    if (!code || subtotal <= 0) return;
+    let cancelled = false; // set by the clean-up if a newer check starts before this one answers
+    api<PromoResult>("/promo-codes/check", { method: "POST", body: { code, subtotal } })
+      .then((result) => {
+        if (cancelled) return;
+        setCheck({ key, result });
+        savePromo(result.code); // remember it for checkout
+      })
+      .catch((error: Error) => {
+        if (cancelled) return;
+        setCheck({ key, error: error.message }); // e.g. "QUICK25 needs an order of at least ₦25,000. Add ₦5,000 more..."
+        clearSavedPromo();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, subtotal, key]);
+
+  // Worked out from the answer (like useApi): no answer for THIS code and subtotal yet = still checking
+  const checking = Boolean(code) && check?.key !== key;
+  const applied = !checking && check?.result ? check.result : null;
+  const promoError = !checking && check?.error ? check.error : "";
+
+  const removePromo = () => {
+    setCode("");
+    setCheck(null);
+    clearSavedPromo();
+  };
+
+  // How much the sale prices save: (old price − price) × quantity, for the items on sale
+  const saved = items.reduce((sum, item) => sum + (item.oldPrice && item.oldPrice > item.price ? (item.oldPrice - item.price) * item.quantity : 0), 0);
+
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-8 pb-20 md:px-12">
+      <Breadcrumb items={[{ label: "Home", to: "/" }, { label: "Cart" }]} />
+      <StepTracker current={1} />
+
+      <p className="text-xs font-bold tracking-wider text-primary uppercase">Checkout pipeline</p>
+      <h1 className="mt-1 mb-8 text-4xl font-extrabold tracking-tight text-ink md:text-5xl">
+        Your Shopping Cart <span className="text-2xl font-normal text-ink-soft">({plural(count, "item")})</span>
+      </h1>
+
+      {items.length === 0 ? (
+        <EmptyCart />
+      ) : (
+        <div className="grid items-start gap-8 lg:grid-cols-[1fr_400px]">
+          <div className="flex flex-col gap-4">
+            <FreeDeliveryBar saved={saved} />
+
+            <ul className="flex flex-col gap-4">
+              {items.map((item) => (
+                <CartItem key={item.key} item={item} />
+              ))}
+            </ul>
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Link to="/shop" className="flex items-center gap-1.5 text-lg font-medium text-primary-hover hover:underline">
+                <MdArrowBack size={20} aria-hidden="true" /> Continue Shopping
+              </Link>
+
+              {/* Two clicks to empty the cart, so it can't happen by accident (no browser pop-up needed) */}
+              {confirmClear ? (
+                <p className="flex items-center gap-3 text-sm">
+                  <span className="text-ink-soft">Remove everything?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearCart();
+                      removePromo();
+                      setConfirmClear(false);
+                    }}
+                    className="font-semibold text-danger hover:underline"
+                  >
+                    Yes, clear cart
+                  </button>
+                  <button type="button" onClick={() => setConfirmClear(false)} className="font-semibold text-ink-soft hover:underline">
+                    Cancel
+                  </button>
+                </p>
+              ) : (
+                <button type="button" onClick={() => setConfirmClear(true)} className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft hover:text-danger">
+                  <MdOutlineRemoveShoppingCart size={18} aria-hidden="true" /> Clear Entire Cart
+                </button>
+              )}
+            </div>
+
+            <ul className="mt-4 grid gap-4 sm:grid-cols-3">
+              {perks.map((perk) => (
+                <li key={perk.title} className="flex items-center gap-3 rounded-2xl bg-panel p-4">
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-surface text-primary">
+                    <perk.icon size={20} aria-hidden="true" />
+                  </span>
+                  <span className="text-sm">
+                    <span className="block font-semibold text-ink">{perk.title}</span>
+                    <span className="text-ink-soft">{perk.text}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <CartSummary
+            units={count}
+            subtotal={subtotal}
+            discount={applied?.discount ?? 0}
+            promoCode={applied?.code}
+            promoForm={<PromoCodeForm applied={applied} error={promoError} checking={checking} onApply={setCode} onRemove={removePromo} />}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default CartPage;
+```
+
+**Things worth understanding:**
+
+- **The promo code is checked again when the subtotal changes.** QUICK25 needs ₦25,000: remove items and it stops
+  working, with the server's own message ("QUICK25 needs an order of at least ₦25,000. Add ₦16,000 more to use it.").
+  The effect runs whenever `code` or `subtotal` changes.
+- **`key` = code + subtotal**, the same trick as `useApi` (STEP 30): the last answer is labelled with what it was for, so
+  "still checking" is worked out instead of stored, and an old answer can never be shown for a new subtotal.
+- **`let cancelled`** + the clean-up: change the quantity twice quickly and two checks start. The clean-up marks the first
+  as cancelled, so only the newest answer is used.
+- **QUICK10 on ₦117,500** gives ₦5,000, not ₦11,750: the code has a ₦5,000 cap (server STEP 21). The server does the maths;
+  the page just shows it.
+- **The applied code is saved for checkout** (`savePromo`), and forgotten when it stops working or is removed. The
+  checkout (STEP 38) sends it with the order, and the server checks it one last time.
+- **Clear Entire Cart asks first** with two buttons on the page, instead of `window.confirm()` (which blocks the whole
+  browser and can't be styled).
+
+### 36.5 Test it
+
+`npm run seed`, both terminals running. Add the headphones twice, the sneakers and the mug (like the design).
+
+| Do this                                                    | You should see                                            |
+| ---------------------------------------------------------- | --------------------------------------------------------- |
+| Open the cart with nothing in it                            | "(0 items)", "Your shopping cart is empty", Start Shopping, Explore Trending Deals, Popular categories: Electronics, Fashion, Home & Living, Beauty |
+| With the 3 products                                         | "(4 items)"; Wireless Noise-Cancelling Headphones ×2 = ₦90,000 (Unit Price ₦45,000 ~~₦60,000~~); subtotal **₦117,500**; "Saved ₦30,000"; ① Review Cart highlighted |
+| Promo `FREEMONEY` → Apply                                   | `"FREEMONEY" is not a valid promo code.`                  |
+| Promo `quick10` → Apply                                     | the box becomes **QUICK10** with ✕; "Discount (QUICK10) −₦5,000"; Total **₦112,500** |
+| Refresh                                                     | QUICK10 is still applied                                   |
+| **+** on the headphones                                     | the line becomes ₦135,000, the total ₦157,500 (checked again) |
+| ✕ the code, apply `QUICK25`                                 | −₦2,000                                                    |
+| Remove the headphones and the sneakers (₦9,000 left)        | "QUICK25 needs an order of at least ₦25,000. Add ₦16,000 more to use it." and the discount disappears |
+| Keep pressing **+** on the mug                              | it stops at the stock (or 10), with "Only ... in stock"    |
+| **Clear Entire Cart** → Cancel / → Yes, clear cart          | nothing changes / the empty cart                           |
+| Logged out → **Proceed to Checkout**                        | the login page (then back to `/checkout`)                  |
+| Phone width                                                 | the summary goes under the lines                           |
+
+I tested this on a copy of your project (with the STEP 35 code from this guide) against a throwaway database: **22
+checks, all passed** on the first run, and the screenshots match both designs. `npm run build` and `npm run lint` pass.
+
+### 36.6 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 36: cart page with promo codes"
+git push
+```
+
+(If STEP 35 isn't committed yet, commit it first with its own message, so each step stays separate in your history.)
+
+➡️ **Next: STEP 37 (Forgot password, the reset-password link page, and email verification with the 6-digit code,
+using your STEP 19 endpoints and Brevo).** Reply **NEXT** when 36.5 works.

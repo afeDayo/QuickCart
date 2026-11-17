@@ -81,3 +81,50 @@ export type ProductsResponse = {
   page: number;
   pages: number;
 };
+
+// STEP 35: One product, and its reviews (server: productController.ts getProduct, reviewController.ts)
+
+export type ProductSpec = { group: string; label: string; value: string }; // a row of "Full Specifications"
+export type ProductHighlight = { icon: string; title: string; text: string }; // the 3 feature cards
+
+// GET /api/products/:idOrSlug -> { product }: everything for the Product Details page
+export type Product = ProductSummary & {
+  description: string;
+  features: string[]; // the ✓ bullet points
+  specs: ProductSpec[];
+  highlights: ProductHighlight[];
+  sku: string;
+  gallery: string[]; // big photos (empty = use images)
+  lowStockThreshold: number;
+  ratingCounts: number[]; // how many 5, 4, 3, 2 and 1 star reviews, in that order
+  category: { _id: string; name: string; slug: string; icon: string };
+  bundleProducts: ProductSummary[]; // "Frequently Bought Together"
+  relatedProducts: ProductSummary[]; // "Related Products"
+};
+
+export type ProductResponse = { product: Product };
+
+export type Review = {
+  _id: string;
+  name: string; // "Ada O." (first name + initial, server STEP 23)
+  rating: number; // 1 to 5
+  title?: string;
+  comment: string;
+  createdAt: string;
+};
+
+// GET /api/reviews/product/:idOrSlug
+export type ReviewsResponse = {
+  summary: { ratings: number; reviewCount: number; ratingCounts: number[] };
+  reviews: Review[];
+  total: number;
+  page: number;
+  pages: number;
+};
+
+// GET /api/reviews/can-review/:productId
+export type CanReviewResponse = {
+  canReview: boolean;
+  reason: string | null;
+  review: Review | null;
+};
