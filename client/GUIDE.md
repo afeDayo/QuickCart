@@ -45,9 +45,9 @@ then the admin.
 | ✅   | 36     | Cart page: items, promo code, summary, empty state |
 | ✅   | 37     | Forgot password, reset password, verify email |
 | ✅   | 38     | Checkout and Order Confirmation |
-| ⬜   | **39** | **My Account: layout, overview, settings, addresses, saved items** ← you are here |
-| ⬜   | 40     | Order History, Order Details and tracking, cancel, leave a review                    |
-| ⬜   | 41     | Admin: login, layout, dashboard with the sales chart                                 |
+| ✅   | 39     | My Account: layout, overview, settings, addresses, saved items |
+| ✅   | 40     | Order History, Order Details and tracking, cancel, leave a review |
+| ⬜   | **41** | **Admin: login, layout, dashboard with the sales chart** ← you are here |
 | ⬜   | 42     | Admin: products table, add / edit product, photo upload                              |
 | ⬜   | 43     | Admin: orders, customers, categories, settings                                       |
 | ⬜   | 44     | Demo panel, help pages, 404, final polish (loading, empty and error states, phones)  |
@@ -9507,3 +9507,1939 @@ git push
 
 ➡️ **Next: STEP 40 (Order History with its tabs, search and sort; Order Details & Shipment Tracking with the Cancel button
 inside the 1-hour window; and Leave a Review / Buy Again).** Reply **NEXT** when 39.7 works.
+
+---
+
+## STEP 40: Order History and Order Details
+
+The customer's side of an order after checkout, using your STEP 22 endpoints:
+
+**Order History** (`/account/orders`, design: Full Order History & Filters): search by order number or product name, Sort
+(Most Recent / Oldest), the tabs **All Orders (5) · In Progress (1) · Shipped (1) · Delivered (3) · Cancelled (0)**, and
+each order as a card with a line for its status (delivery window / courier and waybill / delivered on ... / cancelled),
+its items, and the buttons that make sense: **View Details**, **Track Order**, **Leave Review**, **Buy Again**.
+
+**Order Details** (`/account/orders/QC-1042`, design: Order Details & Shipment Tracking): the header with the status and
+"Placed on ... at ...", **Print Invoice** and **Need Help?**, the **shipment tracker** (carrier, estimated delivery,
+waybill, the 4 steps side by side, the latest update), the package contents, Delivery Destination, Payment Record,
+Price Breakdown, **Buy Again**, and **Cancel Order** with "(31 mins remaining)" while the server allows it.
+
+| New / changed file                                      | What it is                                                  |
+| ------------------------------------------------------- | ----------------------------------------------------------- |
+| `types/api.ts` (`MyOrdersResponse`)                     | the order list's shape                                      |
+| `hooks/useBuyAgain.ts`                                  | puts an old order's items back in the cart, at today's price |
+| `components/order/OrderCard.tsx`                        | one order in the history                                    |
+| `components/order/ShipmentTracker.tsx`, `PackageContents.tsx`, `DeliveryDestination.tsx`, `PaymentInfo.tsx`, `CancelOrderPanel.tsx` | the Order Details pieces |
+| `pages/account/OrderHistoryPage.tsx`, `OrderDetailsPage.tsx` | the 2 pages                                            |
+| `pages/shop/ProductDetailsPage.tsx`                     | opens on the Reviews tab for `#reviews` links                |
+
+(`components/order/` also has placeholders called `DeliveryInfo`, `OrderInvoice`, `OrderItemList` and
+`OrderPriceSummary`. They aren't needed: their jobs are done by the components above. STEP 44 lists them for deleting.)
+
+### 40.1 The order list type in `src/types/api.ts`
+
+Add at the bottom:
+
+```ts
+// STEP 40: Order History (server: getMyOrders in orderController.ts)
+
+// GET /api/orders -> my orders + the numbers on the tabs
+export type MyOrdersResponse = {
+  orders: Order[];
+  counts: { all: number; "in-progress": number; shipped: number; delivered: number; cancelled: number };
+};
+```
+
+### 40.2 `src/hooks/useBuyAgain.ts`
+
+New file.
+
+```ts
+// useBuyAgain.ts client/src/hooks/useBuyAgain.ts
+// "Buy Again" on an old order: put its items back in the cart at TODAY's price and stock.
+// An order only keeps a copy of each item (server STEP 22), so we ask the server for each product first.
+//   const buyAgain = useBuyAgain();  ...  onClick={() => buyAgain(order.items)}
+
+// STEP 40 (part 1): Buy again
+
+import { useCart } from "../context/CartContext";
+import { useToast } from "../context/ToastContext";
+import type { OrderItem, ProductResponse } from "../types/api";
+import { api } from "../utils/api";
+
+export const useBuyAgain = () => {
+  const { addItem } = useCart();
+  const { showToast } = useToast();
+
+  return async (items: OrderItem[]) => {
+    const problems: string[] = [];
+
+    // One request per product, all at the same time. allSettled: one missing product doesn't stop the others.
+    const results = await Promise.allSettled(items.map((item) => api<ProductResponse>(`/products/${item.product}`)));
+
+    results.forEach((result, index) => {
+      const item = items[index];
+      if (result.status === "rejected") {
+        problems.push(`"${item.name}" is no longer available.`); // deleted, or turned into a draft by the admin
+        return;
+      }
+      const added = addItem(result.value.product, { color: item.color, quantity: item.quantity });
+      if (!added.ok) problems.push(added.message); // e.g. sold out
+    });
+
+    if (problems.length > 0) {
+      showToast({ type: "error", title: problems.length === items.length ? "Nothing could be added" : "Some items weren't added", message: problems.join(" ") });
+    }
+    // Anything that was added opens the "Added to Cart!" box by itself (STEP 32)
+  };
+};
+```
+
+- **Why ask the server first?** An order keeps a *copy* of each item from the day you bought it (server STEP 22). Buying
+  again must use **today's** price and stock, and the product might be gone. So each product is loaded fresh, then added
+  to the cart with the same colour and quantity.
+- **`Promise.allSettled`** (not `Promise.all`): if one product was deleted, the others are still added, and the toast
+  says which one is missing.
+
+### 40.3 `src/components/order/OrderCard.tsx` and `src/pages/account/OrderHistoryPage.tsx`
+
+Replace both placeholders.
+
+```tsx
+// OrderCard.tsx client/src/components/order/OrderCard.tsx
+// One order on the Order History page (design: Full Order History & Filters): number, status, date, item count, total,
+// a coloured line for the status, the items, and the buttons that make sense for that status.
+
+// STEP 40 (part 2): An order card
+
+import { MdCheckCircleOutline, MdOutlineCancel, MdOutlineLocalShipping, MdOutlineRateReview, MdOutlineReplay, MdOutlineTrackChanges } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useBuyAgain } from "../../hooks/useBuyAgain";
+import type { Order } from "../../types/api";
+import { longDate, shortDate } from "../../utils/dates";
+import { naira, plural } from "../../utils/format";
+import StatusPill from "../common/StatusPill";
+
+const OrderCard = ({ order }: { order: Order }) => {
+  const buyAgain = useBuyAgain();
+  const count = order.items.reduce((sum, item) => sum + item.quantity, 0);
+  const details = `/account/orders/${order.orderNumber}`;
+
+  // The line under the header, like the design
+  const band =
+    order.status === "processing" ? (
+      <p className="flex flex-wrap items-center gap-1.5 rounded-xl bg-panel px-4 py-2.5 text-sm text-ink">
+        <MdOutlineLocalShipping size={18} aria-hidden="true" className="text-primary" />
+        <span className="font-semibold text-primary">Estimated fulfilment &amp; delivery:</span>
+        {shortDate(order.estimatedDelivery.from)} – {shortDate(order.estimatedDelivery.to)}
+      </p>
+    ) : order.status === "shipped" ? (
+      <p className="flex flex-wrap items-center gap-1.5 rounded-xl bg-panel px-4 py-2.5 text-sm text-ink">
+        <MdOutlineLocalShipping size={18} aria-hidden="true" className="text-primary" />
+        Assigned Courier: {order.courier} (Waybill: <span className="font-semibold text-primary">{order.waybill}</span>)
+      </p>
+    ) : order.status === "delivered" ? (
+      <p className="flex items-center gap-1.5 text-sm text-success">
+        <MdCheckCircleOutline size={18} aria-hidden="true" /> Successfully delivered to {order.shippingAddress.city}
+        {order.deliveredAt && ` on ${longDate(order.deliveredAt)}`}
+      </p>
+    ) : (
+      <p className="flex items-center gap-1.5 text-sm text-danger">
+        <MdOutlineCancel size={18} aria-hidden="true" /> Cancelled{order.cancelledAt && ` on ${longDate(order.cancelledAt)}`}
+        {order.payment.status === "refunded" && " · payment refunded"}
+      </p>
+    );
+
+  return (
+    <li className="overflow-hidden rounded-3xl bg-surface shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-panel/70 px-5 py-4">
+        <p className="flex flex-wrap items-center gap-2 text-sm text-ink-soft">
+          <span className="text-xl font-bold text-ink">#{order.orderNumber}</span>
+          <StatusPill status={order.status} />
+          <span>· Placed {longDate(order.createdAt)}</span>
+          <span>· {plural(count, "item")}</span>
+        </p>
+        <p className="text-sm text-ink-soft">
+          TOTAL: <span className="text-xl font-bold text-ink">{naira(order.total)}</span>
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-4 p-5">
+        {band}
+
+        <ul className="grid gap-3 md:grid-cols-2">
+          {order.items.map((item) => (
+            <li key={`${item.product}-${item.color}`} className="flex items-center gap-3 rounded-2xl bg-panel/60 p-3">
+              <img src={item.image} alt="" className="size-16 shrink-0 rounded-xl bg-field object-cover" />
+              <span className="min-w-0 text-sm">
+                <span className="block truncate font-semibold text-ink">{item.name}</span>
+                <span className="text-ink-soft">
+                  Qty: {item.quantity}
+                  {item.color && ` · ${item.color}`}
+                </span>
+                <span className="block font-bold text-primary-hover">{naira(item.lineTotal)}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        <div className="flex flex-wrap justify-end gap-2 border-t border-line pt-4">
+          <Link to={details} className="flex h-10 items-center rounded-xl bg-field px-4 text-sm font-semibold text-ink hover:bg-primary-light">
+            View Details
+          </Link>
+          {order.status === "delivered" && (
+            // #reviews: the product page opens on its Reviews tab (STEP 40 adds that to ProductDetailsPage)
+            <Link
+              to={`/product/${order.items[0].product}#reviews`}
+              className="flex h-10 items-center gap-1.5 rounded-xl bg-field px-4 text-sm font-semibold text-ink hover:bg-primary-light"
+            >
+              <MdOutlineRateReview size={16} aria-hidden="true" /> Leave Review
+            </Link>
+          )}
+          {order.status !== "processing" && (
+            <button
+              type="button"
+              onClick={() => buyAgain(order.items)}
+              className={`flex h-10 items-center gap-1.5 rounded-xl px-4 text-sm font-semibold ${
+                order.status === "delivered" ? "bg-navy text-white hover:bg-footer" : "bg-field text-ink hover:bg-primary-light"
+              }`}
+            >
+              <MdOutlineReplay size={16} aria-hidden="true" /> Buy Again
+            </button>
+          )}
+          {(order.status === "processing" || order.status === "shipped") && (
+            <Link to={details} className="flex h-10 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-semibold text-white hover:bg-primary-hover">
+              <MdOutlineTrackChanges size={16} aria-hidden="true" /> {order.status === "shipped" ? "Track Shipment" : "Track Order"}
+            </Link>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+};
+
+export default OrderCard;
+```
+
+```tsx
+// OrderHistoryPage.tsx client/src/pages/account/OrderHistoryPage.tsx
+// My Account → Order History (design: Full Order History & Filters): search, sort, the tabs with their numbers, and
+// every order as a card. GET /api/orders?status=&search=&sort= (server STEP 22). The filters live in the address bar,
+// like the Shop page (STEP 34).
+
+// STEP 40 (part 3): The Order History page
+
+import { useEffect, useRef, useState } from "react";
+import { MdOutlineReceiptLong, MdSearch, MdVerified } from "react-icons/md";
+import { Link, useSearchParams } from "react-router-dom";
+import EmptyState from "../../components/common/EmptyState";
+import OrderCard from "../../components/order/OrderCard";
+import { useApi } from "../../hooks/useApi";
+import type { MyOrdersResponse } from "../../types/api";
+
+// The tabs: the server's names (server STEP 22) and what they say
+const TABS = [
+  { value: "", label: "All Orders", count: "all" },
+  { value: "in-progress", label: "In Progress", count: "in-progress" },
+  { value: "shipped", label: "Shipped", count: "shipped" },
+  { value: "delivered", label: "Delivered", count: "delivered" },
+  { value: "cancelled", label: "Cancelled", count: "cancelled" },
+] as const;
+
+const OrderHistoryPage = () => {
+  const [params, setParams] = useSearchParams();
+  const status = params.get("status") ?? "";
+  const search = params.get("search") ?? "";
+  const sort = params.get("sort") ?? "";
+
+  const update = (key: string, value: string) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  // The search box waits until you stop typing (the same pattern as the Shop page, STEP 34)
+  const [searchText, setSearchText] = useState(search);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleSearch = (value: string) => {
+    setSearchText(value);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => update("search", value.trim()), 400);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const query = new URLSearchParams();
+  if (status) query.set("status", status);
+  if (search) query.set("search", search);
+  if (sort) query.set("sort", sort);
+  const { data, error, loading, reload } = useApi<MyOrdersResponse>(`/orders?${query}`);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-4xl font-bold tracking-tight text-ink">Order History</h1>
+          <p className="mt-1 text-ink-soft">Track past packages, print invoices, and reorder your favourite everyday essentials.</p>
+        </div>
+        <span className="flex items-center gap-1.5 rounded-full bg-mint/40 px-3 py-1 text-sm font-medium text-forest">
+          <MdVerified size={16} aria-hidden="true" /> Verified Local Delivery
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-4 rounded-3xl bg-surface p-5 shadow-card">
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="relative flex-1">
+            <label htmlFor="order-search" className="sr-only">
+              Search orders
+            </label>
+            <MdSearch size={20} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted" />
+            <input
+              id="order-search"
+              type="search"
+              value={searchText}
+              onChange={(event) => handleSearch(event.target.value)}
+              placeholder="Search by order number (e.g. #QC-1042) or product name..."
+              className="h-12 w-full rounded-full bg-field pr-4 pl-11 text-[15px] outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <label className="sr-only" htmlFor="order-sort">
+            Sort
+          </label>
+          <select
+            id="order-sort"
+            value={sort}
+            onChange={(event) => update("sort", event.target.value)}
+            className="h-12 cursor-pointer rounded-full bg-field px-5 font-medium text-ink outline-none"
+          >
+            <option value="">Sort: Most Recent</option>
+            <option value="oldest">Sort: Oldest First</option>
+          </select>
+        </div>
+
+        <div role="tablist" aria-label="Filter orders" className="flex gap-2 overflow-x-auto pb-1">
+          {TABS.map((tab) => (
+            <button
+              key={tab.label}
+              type="button"
+              role="tab"
+              aria-selected={status === tab.value}
+              onClick={() => update("status", tab.value)}
+              className={`shrink-0 rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+                status === tab.value ? "bg-primary text-white" : "border border-line bg-surface text-ink-soft hover:text-primary"
+              }`}
+            >
+              {tab.label} {data && `(${data.counts[tab.count]})`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? (
+        <div role="alert" className="flex items-center justify-between rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          {error}
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : !data ? (
+        <div aria-busy="true" className="h-64 animate-pulse rounded-3xl bg-surface shadow-card" />
+      ) : data.orders.length === 0 ? (
+        <EmptyState
+          icon={MdOutlineReceiptLong}
+          title={data.counts.all === 0 ? "No orders yet" : "No orders match"}
+          text={data.counts.all === 0 ? "When you place an order, it will appear here so you can track it." : "Try another tab or search."}
+          action={
+            data.counts.all === 0 && (
+              <Link to="/shop" className="flex h-11 items-center rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+                Start Shopping
+              </Link>
+            )
+          }
+        />
+      ) : (
+        <ul className={`flex flex-col gap-5 ${loading ? "opacity-60" : ""}`}>
+          {data.orders.map((order) => (
+            <OrderCard key={order._id} order={order} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default OrderHistoryPage;
+```
+
+- **The filters live in the address bar** (`?status=delivered&search=handbook&sort=oldest`), like the Shop page: Back
+  works, and you can share or refresh a filtered list.
+- **The tab numbers come from the server** (`counts`), so they're right whatever you searched.
+- **"In Progress" here means *processing* only** (the server's tab), unlike the Overview's "In progress" (processing +
+  shipped). That's why the tabs say In Progress (1) and Shipped (1).
+
+### 40.4 The Order Details pieces in `src/components/order/`
+
+Replace the 5 placeholders: `ShipmentTracker.tsx`, `PackageContents.tsx`, `DeliveryDestination.tsx`, `PaymentInfo.tsx`,
+`CancelOrderPanel.tsx`.
+
+```tsx
+// ShipmentTracker.tsx client/src/components/order/ShipmentTracker.tsx
+// The top-left box of Order Details: carrier, estimated delivery and waybill, the 4 steps side by side
+// (Placed → Processing → Dispatched → Delivered), and the latest update from the order's history.
+
+// STEP 40 (part 4): The shipment tracker
+
+import { MdCheck, MdOutlineAutorenew, MdOutlineInventory2, MdOutlineLocalShipping, MdOutlineUpdate } from "react-icons/md";
+import type { Order } from "../../types/api";
+import { shortDate, shortDateTime } from "../../utils/dates";
+import OrderTracker from "./OrderTracker";
+
+const ShipmentTracker = ({ order }: { order: Order }) => {
+  const latest = order.statusHistory[order.statusHistory.length - 1];
+  const shippedAt = order.statusHistory.find((update) => update.status === "shipped")?.at;
+  const deliveryWindow =
+    order.estimatedDelivery.from === order.estimatedDelivery.to
+      ? shortDate(order.estimatedDelivery.from)
+      : `${shortDate(order.estimatedDelivery.from)} – ${shortDate(order.estimatedDelivery.to)}`;
+
+  // Done / current / waiting for each of the 4 steps
+  const reached = order.status === "processing" ? 1 : order.status === "shipped" ? 2 : 3;
+  const steps = [
+    { title: "Order Placed", when: shortDateTime(order.createdAt), icon: MdCheck },
+    { title: "Processing & Quality", when: "Fulfilment centre", icon: MdOutlineAutorenew },
+    { title: "Dispatched", when: shippedAt ? shortDateTime(shippedAt) : "Pending handover", icon: MdOutlineLocalShipping },
+    { title: "Delivered", when: order.deliveredAt ? shortDateTime(order.deliveredAt) : `Est. ${deliveryWindow}`, icon: MdOutlineInventory2 },
+  ];
+
+  return (
+    <section aria-label="Shipment tracking" className="rounded-3xl bg-surface p-6 shadow-card">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-panel p-4">
+        <div className="flex items-center gap-3">
+          <span className="flex size-11 items-center justify-center rounded-full bg-primary-light text-primary">
+            <MdOutlineLocalShipping size={22} aria-hidden="true" />
+          </span>
+          <p>
+            <span className="block text-xs font-bold tracking-wider text-ink-soft uppercase">
+              Carrier: {order.courier ?? (order.deliveryMethod === "express" ? "Express same-day dispatch" : "To be assigned")}
+            </span>
+            <span className="text-xl font-semibold text-ink">
+              {order.status === "delivered" ? `Delivered ${order.deliveredAt ? shortDate(order.deliveredAt) : ""}` : `Estimated Delivery: ${deliveryWindow}`}
+            </span>
+          </p>
+        </div>
+        {order.waybill && (
+          <p className="text-right">
+            <span className="block text-xs font-semibold text-ink-soft">Waybill Number</span>
+            <span className="font-mono font-bold text-primary-hover">{order.waybill}</span>
+          </p>
+        )}
+      </div>
+
+      {order.status === "cancelled" ? (
+        <OrderTracker order={order} /> // the red "Order cancelled" box (STEP 38)
+      ) : (
+        <ol className="grid grid-cols-2 gap-y-6 sm:grid-cols-4">
+          {steps.map((step, index) => {
+            const done = index < reached || order.status === "delivered";
+            const current = index === reached && order.status !== "delivered";
+            return (
+              <li key={step.title} aria-current={current ? "step" : undefined} className="relative flex flex-col items-center text-center">
+                {index > 0 && (
+                  <span aria-hidden="true" className={`absolute top-5 right-1/2 hidden h-0.5 w-full sm:block ${done || current ? "bg-success" : "bg-line-soft"}`} />
+                )}
+                <span
+                  className={`relative flex size-10 items-center justify-center rounded-full ${
+                    done ? "bg-forest text-white" : current ? "bg-primary text-white ring-4 ring-primary-light" : "bg-field text-muted"
+                  }`}
+                >
+                  <step.icon size={20} aria-hidden="true" />
+                </span>
+                <span className={`mt-2 font-semibold ${current ? "text-primary" : done ? "text-ink" : "text-muted"}`}>{step.title}</span>
+                <span className="text-xs text-muted">{step.when}</span>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      {latest && order.status !== "cancelled" && (
+        <p className="mt-6 flex gap-3 rounded-2xl bg-info-light/60 p-4 text-sm">
+          <MdOutlineUpdate size={20} aria-hidden="true" className="mt-0.5 shrink-0 text-primary" />
+          <span>
+            <span className="block font-semibold text-ink">Latest Update: {latest.note}</span>
+            <span className="text-ink-soft">{shortDateTime(latest.at)}</span>
+          </span>
+        </p>
+      )}
+    </section>
+  );
+};
+
+export default ShipmentTracker;
+```
+
+```tsx
+// PackageContents.tsx client/src/components/order/PackageContents.tsx
+// "Itemized Package Content": each item with its SKU, colour, quantity, unit price and subtotal, as it was when you
+// ordered it (the order's own copy, server STEP 22). Delivered? Each item gets "Leave a review".
+
+// STEP 40 (part 5): The package contents
+
+import { MdOutlinePolicy, MdOutlineRateReview } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { Order } from "../../types/api";
+import { naira, plural } from "../../utils/format";
+
+const PackageContents = ({ order }: { order: Order }) => {
+  const count = order.items.reduce((sum, item) => sum + item.quantity, 0);
+
+  return (
+    <section aria-labelledby="package-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <h2 id="package-title" className="text-xl font-semibold text-ink">
+        Itemized Package Content
+      </h2>
+      <p className="mb-5 text-sm text-ink-soft">{plural(count, "product")} in one protected parcel</p>
+
+      <ul className="flex flex-col gap-3">
+        {order.items.map((item) => (
+          <li key={`${item.product}-${item.color}`} className="flex flex-wrap items-center gap-4 rounded-2xl bg-panel/70 p-4">
+            <img src={item.image} alt="" className="size-20 shrink-0 rounded-xl bg-field object-cover" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold tracking-wide text-ink-soft">SKU: {item.sku}</p>
+              <Link to={`/product/${item.product}`} className="text-lg font-semibold text-ink hover:text-primary">
+                {item.name}
+              </Link>
+              <p className="text-sm text-ink-soft">
+                {item.color && <>Color: {item.color} · </>}Qty: {item.quantity} · Unit: {naira(item.price)}
+              </p>
+              {order.status === "delivered" && (
+                <Link to={`/product/${item.product}#reviews`} className="mt-1 inline-flex items-center gap-1 text-sm font-semibold text-primary-hover hover:underline">
+                  <MdOutlineRateReview size={16} aria-hidden="true" /> Leave a review
+                </Link>
+              )}
+            </div>
+            <p className="text-right">
+              <span className="block text-sm text-ink-soft">Item Subtotal</span>
+              <span className="text-xl font-bold text-ink">{naira(item.lineTotal)}</span>
+            </p>
+          </li>
+        ))}
+      </ul>
+
+      <p className="mt-4 flex items-center gap-2 rounded-2xl bg-panel px-4 py-3 text-sm text-ink-soft">
+        <MdOutlinePolicy size={18} aria-hidden="true" className="shrink-0 text-success" />
+        All items are covered by the QuickCart 7-Day Free Replacement &amp; Return Policy.
+      </p>
+    </section>
+  );
+};
+
+export default PackageContents;
+```
+
+```tsx
+// DeliveryDestination.tsx client/src/components/order/DeliveryDestination.tsx
+// "Delivery Destination": who receives it, where, how fast, and the rider instructions.
+
+// STEP 40 (part 6): Delivery destination
+
+import { MdOutlineChatBubbleOutline, MdOutlinePlace, MdOutlineVerifiedUser } from "react-icons/md";
+import type { Order } from "../../types/api";
+import { localPhone } from "../../utils/nigeria";
+
+const DeliveryDestination = ({ order }: { order: Order }) => {
+  const address = order.shippingAddress;
+  return (
+    <section aria-labelledby="destination-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <h2 id="destination-title" className="mb-4 flex items-center gap-2 text-xl font-semibold text-ink">
+        <MdOutlinePlace size={22} aria-hidden="true" className="text-primary" /> Delivery Destination
+      </h2>
+      <div className="rounded-2xl bg-panel p-4">
+        <p className="flex items-center justify-between gap-2">
+          <span className="text-lg font-semibold text-ink">{address.fullName}</span>
+          {address.label && <span className="rounded-md bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary">{address.label}</span>}
+        </p>
+        <p className="text-sm text-ink-soft">{localPhone(address.phone)}</p>
+        <p className="mt-2 text-ink">
+          {address.street}, {address.city},
+          <br />
+          {address.state}, {address.country}
+        </p>
+      </div>
+      <p className="mt-4 flex items-start gap-2 text-sm text-ink-soft">
+        <MdOutlineVerifiedUser size={18} aria-hidden="true" className="mt-0.5 shrink-0 text-success" />
+        {order.deliveryMethod === "express" ? "Express Same-Day Dispatch (Lagos)" : "Standard Delivery (2–3 business days, insured)"}
+      </p>
+      {address.instructions && (
+        <p className="mt-3 flex gap-2 rounded-2xl bg-panel p-3 text-sm text-ink-soft">
+          <MdOutlineChatBubbleOutline size={18} aria-hidden="true" className="mt-0.5 shrink-0" />
+          <span>
+            <span className="block text-xs font-bold tracking-wider uppercase">Rider instructions:</span>"{address.instructions}"
+          </span>
+        </p>
+      )}
+    </section>
+  );
+};
+
+export default DeliveryDestination;
+```
+
+```tsx
+// PaymentInfo.tsx client/src/components/order/PaymentInfo.tsx
+// "Payment Record": the card brand and last 4 digits (all the server ever keeps, STEP 22), the reference and when it
+// was paid, or Pay on Delivery, with the payment status.
+
+// STEP 40 (part 7): The payment record
+
+import { MdOutlineCreditCard } from "react-icons/md";
+import type { Order } from "../../types/api";
+import { shortDateTime } from "../../utils/dates";
+
+const STATUS = {
+  paid: { label: "Paid & Confirmed", classes: "bg-mint/40 text-forest" },
+  pending: { label: "Pay on Delivery", classes: "bg-[#fff4e0] text-[#8a5300]" },
+  refunded: { label: "Refunded", classes: "bg-info-light text-primary" },
+};
+
+const PaymentInfo = ({ order }: { order: Order }) => {
+  const { payment } = order;
+  const status = STATUS[payment.status];
+
+  return (
+    <section aria-labelledby="payment-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <h2 id="payment-title" className="flex items-center gap-2 text-xl font-semibold text-ink">
+          <MdOutlineCreditCard size={22} aria-hidden="true" className="text-primary" /> Payment Record
+        </h2>
+        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status.classes}`}>{status.label}</span>
+      </div>
+      <div className="rounded-2xl bg-panel p-4 text-sm">
+        {payment.method === "card" ? (
+          <>
+            <p className="flex items-center gap-3">
+              <span className="rounded-md bg-navy px-2 py-1 text-xs font-bold text-white uppercase">{payment.cardBrand}</span>
+              <span className="text-base font-semibold text-ink">•••• {payment.cardLast4}</span>
+              <span className="ml-auto text-xs text-ink-soft">Simulated card</span>
+            </p>
+            <dl className="mt-3 flex flex-col gap-2">
+              <div className="flex justify-between">
+                <dt className="text-ink-soft">Transaction Reference:</dt>
+                <dd className="font-mono font-semibold text-ink">{payment.reference}</dd>
+              </div>
+              {payment.paidAt && (
+                <div className="flex justify-between">
+                  <dt className="text-ink-soft">Processed On:</dt>
+                  <dd className="text-ink">{shortDateTime(payment.paidAt)}</dd>
+                </div>
+              )}
+            </dl>
+          </>
+        ) : (
+          <p className="text-ink-soft">
+            Pay on Delivery: pay the rider by card or cash when your order arrives.
+            {payment.status === "paid" && payment.paidAt && ` Paid on ${shortDateTime(payment.paidAt)}.`}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+};
+
+export default PaymentInfo;
+```
+
+```tsx
+// CancelOrderPanel.tsx client/src/components/order/CancelOrderPanel.tsx
+// "Cancel Order · Free cancellation available within 1 hour of placement (46 mins remaining)".
+// Shown only while the server says the order can be cancelled (canCancel: still processing, less than 1 hour old).
+// PATCH /api/orders/:orderNumber/cancel (server STEP 22) refunds a card and puts the stock back.
+
+// STEP 40 (part 8): Cancel an order
+
+import { useEffect, useState } from "react";
+import { MdOutlineCancel } from "react-icons/md";
+import { useToast } from "../../context/ToastContext";
+import { api } from "../../utils/api";
+
+type CancelOrderPanelProps = {
+  orderNumber: string;
+  deadline: string; // when free cancellation ends (server STEP 22: placed + 1 hour)
+  onCancelled: () => void;
+};
+
+const minutesLeft = (deadline: string) => Math.max(0, Math.ceil((new Date(deadline).getTime() - Date.now()) / 60_000));
+
+const CancelOrderPanel = ({ orderNumber, deadline, onCancelled }: CancelOrderPanelProps) => {
+  const { showToast } = useToast();
+  const [minutes, setMinutes] = useState(() => minutesLeft(deadline));
+  const [confirming, setConfirming] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Update "46 mins remaining" every 30 seconds
+  useEffect(() => {
+    const timer = setInterval(() => setMinutes(minutesLeft(deadline)), 30_000);
+    return () => clearInterval(timer);
+  }, [deadline]);
+
+  if (minutes <= 0) return null; // the hour is over: the server would refuse anyway
+
+  const cancel = async () => {
+    setBusy(true);
+    try {
+      await api(`/orders/${orderNumber}/cancel`, { method: "PATCH", body: { reason: reason.trim() || undefined } });
+      showToast({ type: "success", title: "Your order has been cancelled.", message: "If you paid by card, the refund is on its way." });
+      onCancelled(); // the page reloads the order: the tracker turns into "Order cancelled"
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't cancel the order", message: (err as Error).message });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="text-center">
+      {confirming ? (
+        <div className="rounded-2xl bg-danger-light p-4 text-left">
+          <p className="font-semibold text-ink">Cancel order #{orderNumber}?</p>
+          <label htmlFor="cancel-reason" className="mt-3 block text-sm text-ink-soft">
+            Why? (optional)
+          </label>
+          <input
+            id="cancel-reason"
+            value={reason}
+            maxLength={200}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="e.g. Ordered the wrong colour"
+            className="mt-1 h-11 w-full rounded-xl bg-surface px-3 text-sm outline-none focus:ring-2 focus:ring-danger/30"
+          />
+          <div className="mt-3 flex gap-2">
+            <button type="button" onClick={cancel} disabled={busy} className="h-10 flex-1 rounded-xl bg-danger font-semibold text-white disabled:opacity-60">
+              {busy ? "Cancelling..." : "Yes, cancel it"}
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} className="h-10 flex-1 rounded-xl bg-surface font-semibold text-ink">
+              Keep my order
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setConfirming(true)} className="inline-flex items-center gap-1.5 font-semibold text-danger hover:underline">
+          <MdOutlineCancel size={18} aria-hidden="true" /> Cancel Order
+        </button>
+      )}
+      <p className="mt-2 text-sm text-ink-soft">
+        Free cancellation available within 1 hour of placement ({minutes} {minutes === 1 ? "min" : "mins"} remaining)
+      </p>
+    </div>
+  );
+};
+
+export default CancelOrderPanel;
+```
+
+- **"Latest Update"** is the last line of the order's `statusHistory`: "Order placed", then "Dispatched with GIG Logistics
+  (waybill GIG-862621)" once the admin ships it (server STEP 26), then "Delivered".
+- **The Cancel button only shows when the server says `canCancel`** (still processing, less than 1 hour old, server
+  STEP 22). The minutes count down every 30 seconds, and the panel disappears when they reach 0.
+- **Cancelling refunds a card payment and puts the stock back** (the server does both). The page just reloads the order,
+  and the tracker becomes the red "Order cancelled" box with your reason.
+- **The Payment Record shows only the brand and the last 4 digits**, which is all the server ever stores.
+
+### 40.5 `src/pages/account/OrderDetailsPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// OrderDetailsPage.tsx client/src/pages/account/OrderDetailsPage.tsx
+// /account/orders/QC-1042 (design: Order Details & Shipment Tracking): everything about one of your orders, the live
+// tracker, and Cancel within the hour. GET /api/orders/:orderNumber (server STEP 22) answers with the order AND
+// canCancel / cancelDeadline. Full width (App.tsx puts it outside the account menu, like the design).
+
+// STEP 40 (part 9): The Order Details page
+
+import { MdArrowBack, MdOutlinePrint, MdOutlineReplay, MdOutlineSupportAgent, MdSchedule, MdSearchOff } from "react-icons/md";
+import { Link, useParams } from "react-router-dom";
+import Breadcrumb from "../../components/common/Breadcrumb";
+import EmptyState from "../../components/common/EmptyState";
+import StatusPill from "../../components/common/StatusPill";
+import CancelOrderPanel from "../../components/order/CancelOrderPanel";
+import DeliveryDestination from "../../components/order/DeliveryDestination";
+import PackageContents from "../../components/order/PackageContents";
+import PaymentInfo from "../../components/order/PaymentInfo";
+import PriceBreakdown from "../../components/order/PriceBreakdown";
+import ShipmentTracker from "../../components/order/ShipmentTracker";
+import { useApi } from "../../hooks/useApi";
+import { useBuyAgain } from "../../hooks/useBuyAgain";
+import type { OrderResponse } from "../../types/api";
+import { longDate, timeOnly } from "../../utils/dates";
+
+const OrderDetailsPage = () => {
+  const { orderId = "" } = useParams();
+  const { data, error, reload } = useApi<OrderResponse>(`/orders/${orderId}`);
+  const buyAgain = useBuyAgain();
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-360 px-4 py-16 md:px-12">
+        <EmptyState
+          icon={MdSearchOff}
+          title="We couldn't find that order"
+          text={error}
+          action={
+            <Link to="/account/orders" className="flex h-11 items-center rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              Back to My Orders
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (!data) {
+    return <div aria-busy="true" className="mx-auto my-10 h-96 max-w-[calc(90rem-6rem)] animate-pulse rounded-3xl bg-surface shadow-card" />;
+  }
+
+  const { order, canCancel, cancelDeadline } = data;
+
+  return (
+    <div className="mx-auto max-w-360 px-4 pt-6 pb-20 md:px-12">
+      <Breadcrumb
+        items={[
+          { label: "Home", to: "/" },
+          { label: "My Account", to: "/account" },
+          { label: "Order History", to: "/account/orders" },
+          { label: `#${order.orderNumber}` },
+        ]}
+      />
+
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4 rounded-3xl bg-surface p-6 shadow-card">
+        <div>
+          <p className="mb-2 flex items-center gap-3 text-sm">
+            <Link to="/account/orders" className="flex items-center gap-1 font-medium text-primary-hover hover:underline print:hidden">
+              <MdArrowBack size={16} aria-hidden="true" /> Back to My Orders
+            </Link>
+            <StatusPill status={order.status} />
+          </p>
+          <h1 className="text-4xl font-bold tracking-tight text-ink">Order #{order.orderNumber}</h1>
+          <p className="mt-1 flex items-center gap-1.5 text-ink-soft">
+            <MdSchedule size={16} aria-hidden="true" /> Placed on {longDate(order.createdAt)} at {timeOnly(order.createdAt)}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3 print:hidden">
+          {/* The browser's own print window, which can also "Save as PDF". The Navbar and Footer hide themselves (print:hidden). */}
+          <button type="button" onClick={() => window.print()} className="flex h-11 items-center gap-2 rounded-xl bg-field px-4 font-semibold text-ink hover:bg-primary-light">
+            <MdOutlinePrint size={18} aria-hidden="true" /> Print Invoice
+          </button>
+          <a
+            href={`mailto:help@quickcart.ng?subject=${encodeURIComponent(`Help with order #${order.orderNumber}`)}`}
+            className="flex h-11 items-center gap-2 rounded-xl bg-primary-light px-4 font-semibold text-ink hover:bg-info-light"
+          >
+            <MdOutlineSupportAgent size={18} aria-hidden="true" /> Need Help?
+          </a>
+        </div>
+      </div>
+
+      <div className="grid items-start gap-6 lg:grid-cols-[1fr_440px]">
+        <div className="flex flex-col gap-6">
+          <ShipmentTracker order={order} />
+          <PackageContents order={order} />
+        </div>
+
+        <div className="flex flex-col gap-6">
+          <DeliveryDestination order={order} />
+          <PaymentInfo order={order} />
+          <PriceBreakdown order={order} />
+
+          <div className="flex flex-col gap-4 print:hidden">
+            {order.status !== "processing" && (
+              <button
+                type="button"
+                onClick={() => buyAgain(order.items)}
+                className="flex h-13 items-center justify-center gap-2 rounded-xl bg-success text-lg font-semibold text-white hover:bg-forest"
+              >
+                <MdOutlineReplay size={20} aria-hidden="true" /> Buy Again
+              </button>
+            )}
+            {canCancel && <CancelOrderPanel orderNumber={order.orderNumber} deadline={cancelDeadline} onCancelled={reload} />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default OrderDetailsPage;
+```
+
+- **Print Invoice** opens the browser's print window (which can also "Save as PDF"). Your Navbar and Footer already have
+  `print:hidden`, and so do the buttons here, so the printout is just the order.
+- **Need Help?** opens an email to the help desk with the order number in the subject (`encodeURIComponent` keeps the `#`
+  safe inside a link).
+
+### 40.6 Open the Reviews tab from "Leave Review": `src/pages/shop/ProductDetailsPage.tsx`
+
+"Leave Review" links to `/product/<id>#reviews`. Make the product page notice the `#reviews`:
+
+1. Import `useLocation`:
+
+   ```tsx
+   import { Link, useLocation, useParams } from "react-router-dom";
+   ```
+
+2. Replace `const [tab, setTab] = useState<TabName>("specs");` with:
+
+   ```tsx
+     // "Leave Review" links (Order History, STEP 40) end with #reviews: open on the Reviews tab
+     const location = useLocation();
+     const firstTab: TabName = location.hash === "#reviews" ? "reviews" : "specs";
+     const [tab, setTab] = useState<TabName>(firstTab);
+   ```
+
+3. In the `if (tabFor !== productId)` block, replace `setTab("specs");` with:
+
+   ```tsx
+       setTab(firstTab);
+   ```
+
+4. Just above `const showReviews = () => {`, add:
+
+   ```tsx
+     // ...and scroll down to it once the product has loaded
+     const loadedId = product?._id;
+     useEffect(() => {
+       if (loadedId && location.hash === "#reviews") {
+         document.getElementById("product-tabs")?.scrollIntoView({ behavior: "smooth" });
+       }
+     }, [loadedId, location.hash]);
+   ```
+
+`location.hash` is the part of the address after `#`. Your STEP 35 review form takes it from there: if the order was
+delivered, the form appears.
+
+### 40.7 Test it
+
+Run `npm run seed` **just before** testing: Ada's newest demo order (QC-1041) is placed about 30 minutes before the seed,
+so it can still be cancelled for a little while.
+
+| Do this                                                    | You should see                                              |
+| ---------------------------------------------------------- | ----------------------------------------------------------- |
+| My Account → Order History                                  | All Orders (5) · In Progress (1) · Shipped (1) · Delivered (3) · Cancelled (0); #QC-1041 first, PROCESSING, "Estimated fulfilment & delivery"; the shipped one with "Assigned Courier: ... (Waybill: ...)"; delivered ones with "Successfully delivered to ..." |
+| **Delivered (3)** tab, then search `handbook`               | 3 orders, then 1 (the one with the Design Systems Handbook); the address shows `?status=delivered&search=handbook` |
+| **Cancelled (0)**                                           | "No orders match"                                          |
+| Sort: **Oldest First**                                      | QC-1041 moves to the bottom                                |
+| **Buy Again** on a delivered order                          | "Added to Cart!"                                           |
+| **Leave Review** on a delivered order                       | the product opens on its **Reviews** tab, with the review form |
+| **View Details** on #QC-1041                                | breadcrumb Home / My Account / Order History / #QC-1041, PROCESSING, the tracker on "Processing & Quality", "Latest Update: Order placed", SKUs, Payment Record "Paid & Confirmed" with VISA •••• and the PSTK reference, **Cancel Order** "(N mins remaining)" |
+| **Cancel Order** → reason → **Yes, cancel it**              | toast; the tracker becomes "Order cancelled · Your payment is being refunded. · Reason: ..."; Payment Record says **Refunded**; Buy Again appears; no more Cancel button |
+| The shipped order's details                                 | "Waybill Number", "Latest Update: Dispatched with ...", no Cancel |
+| **Print Invoice**                                           | the print window shows only the order                      |
+| `/account/orders/QC-9999`                                   | "We couldn't find that order"                              |
+
+Then in Postman (admin), mark one of Ada's orders **delivered** (`PATCH /api/admin/orders/:n/status`): refresh its details,
+and the tracker shows all 4 steps done, with "Leave a review" under each item.
+
+I tested all of this on a copy of your project (with the STEP 39 code from this guide) against a throwaway database:
+**17 checks, all passed**, including a real cancellation, Buy Again and the `#reviews` link. The screenshots match both
+designs. `npm run build` and `npm run lint` pass.
+
+### 40.8 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 40: order history, order details, cancel, buy again"
+git push
+```
+
+
+➡️ **Next: STEP 41 (Admin: the admin login page, the admin layout with its sidebar and top bar, and the Dashboard Overview
+with the sales chart, using your STEP 27 endpoint).** Reply **NEXT** when 40.7 works.
+
+---
+
+## STEP 41: Admin login, layout and Dashboard
+
+> **Before you start:** finish STEP 40. When I checked, `ShipmentTracker`, `PackageContents`, `DeliveryDestination`,
+> `PaymentInfo`, `CancelOrderPanel`, `OrderDetailsPage` and the `#reviews` change in `ProductDetailsPage` (40.6) were still
+> to do, and STEP 40 wasn't committed.
+
+The admin side starts here. Your `App.tsx` already sends every `/admin/...` page through `<ProtectedRoute adminOnly />`
+(STEP 31) and into `AdminLayout`.
+
+- **`/admin/login`**: the staff sign-in page (no shop Navbar or Footer). Only admin accounts get in: a shopper's account
+  is told "This account doesn't have admin access" and logged straight out.
+- **The admin layout**: the menu on the left (design: every admin screen) with **Products (40)** and **Orders (4 New)**
+  badges, the store status, View Store and Log Out; a top bar; on phones the menu slides in from the left.
+- **Dashboard Overview** (design: Admin - Dashboard Overview): **7D / Last 30 days / 90D / Year**, **Export Report**
+  (a CSV file), the 4 cards (Total Sales and Total Orders with "+% vs. previous period", Catalog Products with "6 Low
+  Stock", Total Customers with "+5 new · 2 newsletter"), the **sales chart** with its peak, Avg. Order Value, Refund Rate,
+  **Recent Orders**, **Top-Selling Products** and **Low-Stock Alerts**. All from one request:
+  `GET /api/admin/dashboard?range=30d` (server STEP 27).
+
+| New file                                         | What it is                                                  |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| `types/admin.ts`                                 | the admin API's reply shapes                                 |
+| `components/admin/AdminBrand.tsx`                | "QuickCart / COMMERCE OS / Admin"                            |
+| `components/layout/AdminSidebar.tsx`, `AdminTopbar.tsx`, `layouts/AdminLayout.tsx` | the frame of every admin page |
+| `components/admin/KpiCard.tsx`, `RevenueChart.tsx`, `RecentOrdersTable.tsx`, `TopProducts.tsx`, `LowStockAlerts.tsx` | the dashboard pieces |
+| `pages/admin/AdminDashboardPage.tsx`, `AdminLoginPage.tsx` | the 2 pages                                       |
+
+**Honest bits:** the design's "Store Conversion 3.4%" needs website-visit numbers, which the server doesn't record (server
+STEP 27), so that box shows "Orders in this period" instead. The chart's dashed "Target Baseline" becomes the **period
+average** (a real number). The design's "Lagos Hub · Syncing 99.9% uptime" becomes a "Live Store" note that's actually true.
+
+### 41.1 `src/types/admin.ts`
+
+New file.
+
+```ts
+// admin.ts client/src/types/admin.ts
+// The shapes of the admin API's replies (server STEPs 25–28). Kept apart from types/api.ts so the shop's types stay short.
+
+// STEP 41 (part 1): Admin types
+
+import type { Order, OrderStatus } from "./api";
+
+export type DashboardRange = "7d" | "30d" | "90d" | "year";
+
+// GET /api/admin/dashboard?range=30d   (server: adminDashboardController.ts, STEP 27)
+export type DashboardResponse = {
+  range: DashboardRange;
+  cards: {
+    totalSales: number;
+    salesChange: number | null; // % vs the period before; null = nothing to compare with
+    totalOrders: number;
+    ordersChange: number | null;
+    catalogProducts: number;
+    needsRestock: number;
+    totalCustomers: number;
+    newCustomers: number;
+    subscribers: number;
+  };
+  chart: { date: string; label: string; sales: number; orders: number }[];
+  peak: { date: string; label: string; sales: number; orders: number } | null;
+  avgOrderValue: number;
+  refundRate: number; // 0.8 = 0.8%
+  recentOrders: Pick<Order, "_id" | "orderNumber" | "contact" | "total" | "status" | "payment" | "createdAt">[];
+  totalOrdersAllTime: number;
+  topProducts: { productId: string; name: string; image: string; sku: string; sold: number; revenue: number }[];
+  lowStock: { _id: string; name: string; sku: string; stock: number; lowStockThreshold: number; images: string[] }[];
+};
+
+// The tab numbers of GET /api/admin/orders (STEP 26), used by the sidebar's "12 New"
+export type AdminOrderCounts = Record<"all" | OrderStatus, number>;
+```
+
+### 41.2 The frame: `AdminBrand.tsx`, `AdminSidebar.tsx`, `AdminTopbar.tsx`, `AdminLayout.tsx`
+
+Replace the 4 placeholders (`src/components/admin/AdminBrand.tsx`, `src/components/layout/AdminSidebar.tsx`,
+`src/components/layout/AdminTopbar.tsx`, `src/layouts/AdminLayout.tsx`).
+
+```tsx
+// AdminBrand.tsx client/src/components/admin/AdminBrand.tsx
+// The logo at the top of the admin menu: the bag icon, "QuickCart / COMMERCE OS" and the "Admin" badge.
+
+// STEP 41 (part 2): The admin logo
+
+import { MdOutlineLocalMall } from "react-icons/md";
+import { Link } from "react-router-dom";
+
+const AdminBrand = () => {
+  return (
+    <Link to="/admin" className="flex items-center gap-3" aria-label="QuickCart admin dashboard">
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary-hover text-white">
+        <MdOutlineLocalMall size={24} aria-hidden="true" />
+      </span>
+      <span className="leading-tight">
+        <span className="block text-xl font-bold text-ink">QuickCart</span>
+        <span className="block text-[11px] font-semibold tracking-[0.2em] text-ink-soft uppercase">Commerce OS</span>
+      </span>
+      <span className="ml-auto rounded-full bg-primary-light px-2.5 py-0.5 text-xs font-semibold text-primary">Admin</span>
+    </Link>
+  );
+};
+
+export default AdminBrand;
+```
+
+```tsx
+// AdminSidebar.tsx client/src/components/layout/AdminSidebar.tsx
+// The admin menu (designs: every Admin screen): MAIN MANAGEMENT · Dashboard, Products (40), Orders (4 New),
+// Customers, Categories, Settings, and at the bottom the store status, View Store and Log Out.
+
+// STEP 41 (part 3): The admin menu
+
+import type { IconType } from "react-icons";
+import { MdLogout, MdOutlineCategory, MdOutlineDashboard, MdOutlineInventory2, MdOutlineLocalShipping, MdOutlinePeople, MdOutlineSettings, MdOutlineStorefront } from "react-icons/md";
+import { Link, NavLink, useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useApi } from "../../hooks/useApi";
+import type { AdminOrderCounts } from "../../types/admin";
+import AdminBrand from "../admin/AdminBrand";
+
+type AdminSidebarProps = { onNavigate?: () => void }; // the phone menu closes itself after a click
+
+const AdminSidebar = ({ onNavigate }: AdminSidebarProps) => {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+
+  // The numbers next to Products and Orders: limit=1 asks for the counts without the whole list
+  const products = useApi<{ total: number }>("/admin/products?limit=1");
+  const orders = useApi<{ counts: AdminOrderCounts }>("/admin/orders?limit=1");
+
+  const links: { to: string; label: string; icon: IconType; badge?: string; badgeClass?: string; end?: boolean }[] = [
+    { to: "/admin", label: "Dashboard", icon: MdOutlineDashboard, end: true },
+    { to: "/admin/products", label: "Products", icon: MdOutlineInventory2, badge: products.data ? String(products.data.total) : undefined },
+    {
+      to: "/admin/orders",
+      label: "Orders",
+      icon: MdOutlineLocalShipping,
+      // "New" = waiting to be shipped (processing)
+      badge: orders.data?.counts.processing ? `${orders.data.counts.processing} New` : undefined,
+      badgeClass: "bg-success text-white",
+    },
+    { to: "/admin/customers", label: "Customers", icon: MdOutlinePeople },
+    { to: "/admin/categories", label: "Categories", icon: MdOutlineCategory },
+    { to: "/admin/settings", label: "Settings", icon: MdOutlineSettings },
+  ];
+
+  return (
+    <div className="flex h-full flex-col bg-surface p-5">
+      <AdminBrand />
+
+      <nav aria-label="Admin" className="mt-8 flex-1">
+        <p className="mb-3 px-3 text-xs font-bold tracking-wider text-ink-soft uppercase">Main management</p>
+        <ul className="flex flex-col gap-1">
+          {links.map((link) => (
+            <li key={link.to}>
+              <NavLink
+                to={link.to}
+                end={link.end}
+                onClick={onNavigate}
+                className={({ isActive }) =>
+                  `flex items-center gap-3 rounded-xl px-3 py-2.5 text-[15px] font-medium transition-colors ${
+                    isActive ? "bg-primary-hover text-white" : "text-ink hover:bg-field"
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <link.icon size={20} aria-hidden="true" />
+                    <span className="flex-1">{link.label}</span>
+                    {link.badge && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          isActive ? "bg-white/20 text-white" : (link.badgeClass ?? "bg-field text-ink-soft")
+                        }`}
+                      >
+                        {link.badge}
+                      </span>
+                    )}
+                  </>
+                )}
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="mt-6 border-t border-line pt-5">
+        <p className="rounded-2xl bg-primary-light/50 p-4 text-sm text-ink-soft">
+          <span className="flex items-center gap-2 font-semibold text-ink">
+            <span aria-hidden="true" className="size-2 rounded-full bg-success" /> Live Store
+          </span>
+          Changes you make here show in the shop straight away.
+        </p>
+        <div className="mt-4 flex items-center justify-between px-1 text-sm font-medium">
+          <Link to="/" className="flex items-center gap-1.5 text-ink-soft hover:text-ink">
+            <MdOutlineStorefront size={18} aria-hidden="true" /> View Store
+          </Link>
+          <button
+            type="button"
+            onClick={() => {
+              logout();
+              navigate("/admin/login");
+            }}
+            className="flex items-center gap-1.5 text-ink-soft hover:text-danger"
+          >
+            <MdLogout size={18} aria-hidden="true" /> Log Out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AdminSidebar;
+```
+
+```tsx
+// AdminTopbar.tsx client/src/components/layout/AdminTopbar.tsx
+// The bar across the top of the admin pages: the ☰ button for the phone menu, quick links to the shop, and who's
+// logged in. (The designs show the shop's own Navbar here; a smaller admin bar keeps the admin apart from the store.)
+
+// STEP 41 (part 4): The admin top bar
+
+import { MdMenu, MdOutlineStorefront } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+
+const AdminTopbar = ({ onOpenMenu }: { onOpenMenu: () => void }) => {
+  const { user } = useAuth();
+
+  return (
+    <header className="sticky top-0 z-30 flex h-18 items-center gap-4 border-b border-line bg-surface/90 px-4 backdrop-blur md:px-8 print:hidden">
+      <button type="button" onClick={onOpenMenu} aria-label="Open the admin menu" className="flex size-10 items-center justify-center rounded-xl bg-field text-ink lg:hidden">
+        <MdMenu size={22} />
+      </button>
+
+      <nav aria-label="Store" className="hidden items-center gap-6 text-[15px] font-medium text-ink-soft md:flex">
+        <Link to="/" className="hover:text-primary">
+          Home
+        </Link>
+        <Link to="/shop" className="hover:text-primary">
+          Shop
+        </Link>
+        <Link to="/categories" className="hover:text-primary">
+          Categories
+        </Link>
+      </nav>
+
+      <div className="ml-auto flex items-center gap-3">
+        <Link to="/" className="hidden items-center gap-1.5 rounded-full bg-field px-4 py-2 text-sm font-semibold text-ink hover:bg-primary-light sm:flex">
+          <MdOutlineStorefront size={18} aria-hidden="true" /> View Store
+        </Link>
+        <span className="flex items-center gap-2">
+          <span className="flex size-10 items-center justify-center rounded-full bg-primary text-sm font-bold text-white">
+            {user?.firstName[0]}
+            {user?.lastName[0]}
+          </span>
+          <span className="hidden text-sm leading-tight sm:block">
+            <span className="block font-semibold text-ink">
+              {user?.firstName} {user?.lastName}
+            </span>
+            <span className="text-muted">Administrator</span>
+          </span>
+        </span>
+      </div>
+    </header>
+  );
+};
+
+export default AdminTopbar;
+```
+
+```tsx
+// AdminLayout.tsx client/src/layouts/AdminLayout.tsx
+// The frame of every admin page (App.tsx puts them all inside it, behind ProtectedRoute adminOnly):
+// the menu on the left (a slide-in drawer on phones), the top bar, and the page (<Outlet />). No shop Navbar or Footer.
+
+// STEP 41 (part 5): The admin layout
+
+import { useEffect, useState } from "react";
+import { MdClose } from "react-icons/md";
+import { Outlet, useLocation } from "react-router-dom";
+import AdminSidebar from "../components/layout/AdminSidebar";
+import AdminTopbar from "../components/layout/AdminTopbar";
+
+const AdminLayout = () => {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { pathname } = useLocation();
+
+  // A new admin page starts at the top (the shop has ScrollToTop in MainLayout; the admin has its own layout)
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+
+  return (
+    <div className="min-h-screen bg-page lg:grid lg:grid-cols-[288px_1fr]">
+      {/* Computer: the menu is always there, and stays put while the page scrolls */}
+      <aside className="sticky top-0 hidden h-screen border-r border-line lg:block print:hidden">
+        <AdminSidebar />
+      </aside>
+
+      {/* Phone: the same menu slides in over the page */}
+      {menuOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-label="Admin menu">
+          <button type="button" aria-label="Close the menu" onClick={() => setMenuOpen(false)} className="absolute inset-0 animate-fade-in bg-ink/40" />
+          <div className="absolute inset-y-0 left-0 w-72 animate-slide-in-left shadow-banner">
+            <AdminSidebar onNavigate={() => setMenuOpen(false)} />
+            <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close the menu" className="absolute top-4 -right-12 flex size-10 items-center justify-center rounded-full bg-surface text-ink">
+              <MdClose size={22} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="min-w-0">
+        <AdminTopbar onOpenMenu={() => setMenuOpen(true)} />
+        <main className="px-4 py-8 md:px-8">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default AdminLayout;
+```
+
+- **`?limit=1`** on the badges' requests: the admin products and orders lists (server STEPs 25–26) always send their
+  totals and tab counts. Asking for 1 row gets the numbers without downloading 40 products.
+- **`NavLink` with a function as its child** (`{({ isActive }) => ...}`): the badge can change colour on the active link too.
+- **The phone menu** is the same `AdminSidebar`, inside a `fixed` box that slides in (`animate-slide-in-left` from your
+  `index.css`). `onNavigate` closes it after a link is clicked.
+- **`sticky top-0 h-screen`** on the computer menu: it stays put while the page scrolls.
+
+### 41.3 The dashboard pieces in `src/components/admin/`
+
+Replace the placeholders: `KpiCard.tsx`, `RevenueChart.tsx`, `RecentOrdersTable.tsx`, `TopProducts.tsx`, `LowStockAlerts.tsx`.
+
+```tsx
+// KpiCard.tsx client/src/components/admin/KpiCard.tsx
+// One of the 4 cards at the top of the dashboard: "TOTAL SALES ₦18,450,200 ↗ +14.2% vs. previous period".
+
+// STEP 41 (part 6): A KPI card
+
+import type { ReactNode } from "react";
+import type { IconType } from "react-icons";
+import { MdTrendingDown, MdTrendingUp } from "react-icons/md";
+
+type KpiCardProps = {
+  label: string;
+  value: string;
+  icon: IconType;
+  tile: string; // the icon's colours
+  change?: number | null; // % vs the previous period (null = nothing to compare with)
+  footer?: ReactNode; // anything else at the bottom, e.g. "4 Low Stock · Needs restock"
+};
+
+const KpiCard = ({ label, value, icon: Icon, tile, change, footer }: KpiCardProps) => {
+  return (
+    <div className="flex flex-col rounded-3xl bg-surface p-5 shadow-card">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-semibold tracking-wide text-ink-soft uppercase">{label}</p>
+        <span className={`flex size-11 shrink-0 items-center justify-center rounded-xl ${tile}`}>
+          <Icon size={22} aria-hidden="true" />
+        </span>
+      </div>
+      <p className="mt-1 text-3xl font-bold tracking-tight text-ink">{value}</p>
+      <div className="mt-4 flex items-center gap-2 border-t border-line pt-3 text-sm text-ink-soft">
+        {change !== undefined &&
+          (change === null ? (
+            <span className="rounded-full bg-field px-2 py-0.5 text-xs font-semibold">New</span>
+          ) : (
+            <span className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${change >= 0 ? "bg-mint/40 text-forest" : "bg-danger-light text-danger"}`}>
+              {change >= 0 ? <MdTrendingUp size={14} aria-hidden="true" /> : <MdTrendingDown size={14} aria-hidden="true" />}
+              {change >= 0 ? "+" : ""}
+              {change}%
+            </span>
+          ))}
+        {change !== undefined && <span>vs. previous period</span>}
+        {footer}
+      </div>
+    </div>
+  );
+};
+
+export default KpiCard;
+```
+
+```tsx
+// RevenueChart.tsx client/src/components/admin/RevenueChart.tsx
+// "Revenue & Sales Performance": the sales per day (or per month for Year) as a smooth line with a soft fill, and a
+// dashed line for the period's average. Drawn with Chart.js (already in package.json) through react-chartjs-2.
+
+// STEP 41 (part 7): The sales chart
+
+import { CategoryScale, Chart as ChartJS, Filler, LinearScale, LineElement, PointElement, Tooltip, type ScriptableContext } from "chart.js";
+import { Line } from "react-chartjs-2";
+import type { DashboardResponse } from "../../types/admin";
+import { naira } from "../../utils/format";
+
+// Chart.js only includes the parts you register (it keeps the website smaller)
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip);
+
+// Your colours from index.css (Chart.js draws on a <canvas>, which can't read Tailwind classes)
+const PRIMARY = "#322bd0";
+const MUTED = "#565e74";
+const GRID = "#eaf2ff";
+
+// 1200000 -> "₦1.2M", 900000 -> "₦900K" (short labels for the left axis)
+const shortNaira = (value: number) =>
+  value >= 1_000_000 ? `₦${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M` : value >= 1000 ? `₦${Math.round(value / 1000)}K` : `₦${value}`;
+
+const RevenueChart = ({ chart }: { chart: DashboardResponse["chart"] }) => {
+  const average = chart.length > 0 ? chart.reduce((sum, point) => sum + point.sales, 0) / chart.length : 0;
+
+  const data = {
+    labels: chart.map((point) => point.label),
+    datasets: [
+      {
+        label: "Sales",
+        data: chart.map((point) => point.sales),
+        borderColor: PRIMARY,
+        borderWidth: 3,
+        tension: 0.4, // curves the line
+        cubicInterpolationMode: "monotone" as const, // ...without dipping below ₦0 between days
+        pointRadius: 0,
+        pointHoverRadius: 6,
+        pointHoverBackgroundColor: PRIMARY,
+        fill: true,
+        // A fill that fades from light purple to nothing (a gradient needs the chart's size, so it's a function)
+        backgroundColor: (context: ScriptableContext<"line">) => {
+          const { ctx, chartArea } = context.chart;
+          if (!chartArea) return "rgba(50,43,208,0.12)";
+          const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+          gradient.addColorStop(0, "rgba(50,43,208,0.25)");
+          gradient.addColorStop(1, "rgba(50,43,208,0)");
+          return gradient;
+        },
+      },
+      {
+        label: "Period average",
+        data: chart.map(() => average),
+        borderColor: "#a3a1b8",
+        borderWidth: 2,
+        borderDash: [6, 6],
+        pointRadius: 0,
+        pointHoverRadius: 0,
+        fill: false,
+      },
+    ],
+  };
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false, // fill the box's height (set by the parent div)
+    interaction: { mode: "index" as const, intersect: false }, // hovering anywhere above a day shows that day
+    plugins: {
+      tooltip: {
+        backgroundColor: "#0b1c30",
+        padding: 12,
+        callbacks: { label: (item: { dataset: { label?: string }; parsed: { y: number | null } }) => `${item.dataset.label}: ${naira(item.parsed.y ?? 0)}` },
+      },
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: MUTED, maxTicksLimit: 7, maxRotation: 0 } },
+      y: { beginAtZero: true, grid: { color: GRID }, border: { display: false }, ticks: { color: MUTED, callback: (value: string | number) => shortNaira(Number(value)) } },
+    },
+  };
+
+  return (
+    <div className="h-80" role="img" aria-label={`Sales chart, ${chart.length} points. Period average ${naira(Math.round(average))}.`}>
+      <Line data={data} options={options} />
+    </div>
+  );
+};
+
+export default RevenueChart;
+```
+
+```tsx
+// RecentOrdersTable.tsx client/src/components/admin/RecentOrdersTable.tsx
+// "Recent Orders" on the dashboard: the 5 newest orders from every customer, with "View All Orders (41)".
+
+// STEP 41 (part 8): Recent orders
+
+import { MdArrowForward } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { DashboardResponse } from "../../types/admin";
+import { shortDateTime } from "../../utils/dates";
+import { naira } from "../../utils/format";
+import StatusPill from "../common/StatusPill";
+
+const PAYMENT = {
+  paid: "bg-mint/40 text-forest",
+  pending: "bg-[#fff4e0] text-[#8a5300]",
+  refunded: "bg-info-light text-primary",
+};
+
+const RecentOrdersTable = ({ orders, total }: { orders: DashboardResponse["recentOrders"]; total: number }) => {
+  return (
+    <section aria-labelledby="admin-recent-title" className="overflow-hidden rounded-3xl bg-surface shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 p-6">
+        <div>
+          <h2 id="admin-recent-title" className="text-2xl font-semibold text-ink">
+            Recent Orders
+          </h2>
+          <p className="text-sm text-ink-soft">The newest orders from every customer</p>
+        </div>
+        <Link to="/admin/orders" className="flex items-center gap-1 font-semibold text-primary-hover hover:underline">
+          View All Orders ({total}) <MdArrowForward size={18} aria-hidden="true" />
+        </Link>
+      </div>
+
+      {/* A real table: screen readers can say "row 2, Customer: Ada Obi". overflow-x-auto: it scrolls sideways on phones. */}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-160 text-left text-sm whitespace-nowrap">
+          <thead className="bg-panel text-xs font-bold tracking-wider text-ink-soft uppercase">
+            <tr>
+              <th scope="col" className="px-6 py-3">Order ID</th>
+              <th scope="col" className="px-6 py-3">Customer</th>
+              <th scope="col" className="px-6 py-3">Date &amp; Time</th>
+              <th scope="col" className="px-6 py-3">Total</th>
+              <th scope="col" className="px-6 py-3">Payment</th>
+              <th scope="col" className="px-6 py-3">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {orders.map((order) => (
+              <tr key={order._id} className="hover:bg-panel/50">
+                <td className="px-6 py-4 font-bold text-primary-hover">#{order.orderNumber}</td>
+                <td className="px-6 py-4">
+                  <span className="block font-semibold text-ink">
+                    {order.contact.firstName} {order.contact.lastName}
+                  </span>
+                  <span className="text-muted">{order.contact.email}</span>
+                </td>
+                <td className="px-6 py-4 text-ink-soft">{shortDateTime(order.createdAt)}</td>
+                <td className="px-6 py-4 text-base font-bold text-ink">{naira(order.total)}</td>
+                <td className="px-6 py-4">
+                  <span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${PAYMENT[order.payment.status]}`}>{order.payment.status}</span>
+                </td>
+                <td className="px-6 py-4">
+                  <StatusPill status={order.status} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {orders.length === 0 && <p className="p-6 text-ink-soft">No orders yet.</p>}
+    </section>
+  );
+};
+
+export default RecentOrdersTable;
+```
+
+```tsx
+// TopProducts.tsx client/src/components/admin/TopProducts.tsx
+// "Top-Selling Products: by volume sold": from the orders in the chosen period (server STEP 27), with revenue.
+
+// STEP 41 (part 9): Top products
+
+import { MdOutlineStars } from "react-icons/md";
+import type { DashboardResponse } from "../../types/admin";
+import { naira } from "../../utils/format";
+
+const TopProducts = ({ products }: { products: DashboardResponse["topProducts"] }) => {
+  return (
+    <section aria-labelledby="top-products-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <div className="mb-4 flex items-start justify-between">
+        <div>
+          <h2 id="top-products-title" className="text-xl font-semibold text-ink">
+            Top-Selling Products
+          </h2>
+          <p className="text-sm text-ink-soft">By units sold in this period</p>
+        </div>
+        <MdOutlineStars size={24} aria-hidden="true" className="text-primary" />
+      </div>
+      {products.length === 0 ? (
+        <p className="text-sm text-ink-soft">No sales in this period yet.</p>
+      ) : (
+        <ol className="flex flex-col divide-y divide-line">
+          {products.map((product) => (
+            <li key={product.productId} className="flex items-center gap-3 py-3">
+              <img src={product.image} alt="" className="size-12 shrink-0 rounded-xl bg-field object-cover" />
+              <span className="min-w-0 flex-1 text-sm">
+                <span className="block truncate font-semibold text-ink">{product.name}</span>
+                <span className="text-muted">SKU: {product.sku}</span>
+              </span>
+              <span className="text-right text-sm">
+                <span className="block font-bold text-ink">{naira(product.revenue)}</span>
+                <span className="font-semibold text-success">{product.sold} sold</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+};
+
+export default TopProducts;
+```
+
+```tsx
+// LowStockAlerts.tsx client/src/components/admin/LowStockAlerts.tsx
+// "Low-Stock Alerts · 3 Urgent": products at or below their alert level (server STEP 27), lowest first.
+
+// STEP 41 (part 10): Low-stock alerts
+
+import { MdArrowForward, MdWarningAmber } from "react-icons/md";
+import { Link } from "react-router-dom";
+import type { DashboardResponse } from "../../types/admin";
+
+const LowStockAlerts = ({ items, total }: { items: DashboardResponse["lowStock"]; total: number }) => {
+  return (
+    <section aria-labelledby="low-stock-title" className="rounded-3xl border-l-4 border-danger bg-surface p-6 shadow-card">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <h2 id="low-stock-title" className="flex items-center gap-2 text-xl font-semibold text-ink">
+          <MdWarningAmber size={22} aria-hidden="true" className="text-danger" /> Low-Stock Alerts
+        </h2>
+        {total > 0 && <span className="rounded-full bg-danger-light px-2.5 py-1 text-xs font-bold text-danger">{total} Urgent</span>}
+      </div>
+      {items.length === 0 ? (
+        <p className="text-sm text-ink-soft">Everything is well stocked. 🎉</p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {items.map((item) => (
+            <li key={item._id}>
+              <Link to={`/admin/products/${item._id}/edit`} className="flex items-center justify-between gap-3 rounded-2xl bg-panel p-3 hover:bg-field">
+                <span className="min-w-0 text-sm">
+                  <span className="block truncate font-semibold text-ink">{item.name}</span>
+                  <span className="text-muted">SKU: {item.sku}</span>
+                </span>
+                <span
+                  className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${item.stock <= 2 ? "bg-danger-light text-danger" : "bg-[#fff4e0] text-[#8a5300]"}`}
+                >
+                  {item.stock === 0 ? "Sold out" : `${item.stock} left`}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Link to="/admin/products?tab=low-stock" className="mt-4 flex h-11 items-center justify-center gap-1 rounded-xl bg-primary-light/60 font-semibold text-primary-hover hover:bg-primary-light">
+        View All Low Stock Items <MdArrowForward size={18} aria-hidden="true" />
+      </Link>
+    </section>
+  );
+};
+
+export default LowStockAlerts;
+```
+
+**Things worth understanding:**
+
+- **Chart.js** is already in your `package.json` (with `react-chartjs-2`, its React wrapper). `ChartJS.register(...)` turns
+  on only the parts the line chart needs.
+- **Colours are written as hex** (`#322bd0`) in the chart: Chart.js draws on a `<canvas>`, which can't use Tailwind classes.
+- **The fill is a gradient made by a function**: a gradient needs the chart's real size, which only exists once it's drawn.
+- **`cubicInterpolationMode: "monotone"`** keeps the smooth curve from dipping below ₦0 between two days with sales (I
+  spotted that in the first screenshot).
+- **A real `<table>`** for Recent Orders (`<th scope="col">`), so screen readers can say "Customer: Ada Obi". `whitespace-nowrap`
+  keeps each row on one line, and the table scrolls sideways when the box is narrow, like the design.
+- **`salesChange: null`** (nothing in the period before to compare with) shows "New" instead of a percentage.
+
+### 41.4 The pages: `src/pages/admin/AdminDashboardPage.tsx` and `src/pages/admin/AdminLoginPage.tsx`
+
+Replace both placeholders.
+
+```tsx
+// AdminDashboardPage.tsx client/src/pages/admin/AdminDashboardPage.tsx
+// "Dashboard Overview" (design: Admin - Dashboard Overview): the range buttons, Export Report, the 4 cards, the sales
+// chart with average order value and refund rate, recent orders, top sellers and low-stock alerts.
+// Everything comes from ONE request: GET /api/admin/dashboard?range=30d (server STEP 27).
+
+// STEP 41 (part 11): The admin Dashboard
+
+import { useState } from "react";
+import { MdDownload, MdOutlineInventory2, MdOutlinePayments, MdOutlinePeople, MdOutlineReceiptLong, MdOutlineRemoveShoppingCart, MdOutlineShoppingBag } from "react-icons/md";
+import KpiCard from "../../components/admin/KpiCard";
+import LowStockAlerts from "../../components/admin/LowStockAlerts";
+import RecentOrdersTable from "../../components/admin/RecentOrdersTable";
+import RevenueChart from "../../components/admin/RevenueChart";
+import TopProducts from "../../components/admin/TopProducts";
+import { useApi } from "../../hooks/useApi";
+import type { DashboardRange, DashboardResponse } from "../../types/admin";
+import { naira } from "../../utils/format";
+
+const RANGES: { value: DashboardRange; label: string }[] = [
+  { value: "7d", label: "7D" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "90D" },
+  { value: "year", label: "Year" },
+];
+
+// "Export Report": the chart's numbers as a CSV file Excel can open. Made in the browser, nothing sent anywhere.
+const downloadCsv = (data: DashboardResponse) => {
+  const rows = [["Date", "Sales (NGN)", "Orders"], ...data.chart.map((point) => [point.date, String(point.sales), String(point.orders)])];
+  const csv = rows.map((row) => row.join(",")).join("\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); // a temporary address for the file
+  link.download = `quickcart-sales-${data.range}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href); // free it again
+};
+
+const AdminDashboardPage = () => {
+  const [range, setRange] = useState<DashboardRange>("30d");
+  const { data, error, loading, reload } = useApi<DashboardResponse>(`/admin/dashboard?range=${range}`);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-start justify-between gap-4 rounded-3xl bg-surface p-6 shadow-card">
+        <div>
+          <h1 className="flex flex-wrap items-center gap-3 text-4xl font-bold tracking-tight text-ink">
+            Dashboard Overview
+            <span className="flex items-center gap-1.5 rounded-full bg-mint/40 px-2.5 py-1 text-xs font-semibold text-forest">
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-success" /> Live data
+            </span>
+          </h1>
+          <p className="mt-1 text-ink-soft">Store performance, sales and inventory alerts.</p>
+        </div>
+        <div className="flex flex-col items-end gap-3">
+          <div role="group" aria-label="Time range" className="flex rounded-xl bg-field p-1">
+            {RANGES.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setRange(option.value)}
+                aria-pressed={range === option.value}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${range === option.value ? "bg-surface text-primary shadow-card" : "text-ink-soft hover:text-ink"}`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => data && downloadCsv(data)}
+            disabled={!data}
+            className="flex h-11 items-center gap-2 rounded-xl bg-primary px-5 font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+          >
+            <MdDownload size={18} aria-hidden="true" /> Export Report
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div role="alert" className="flex items-center justify-between rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          {error}
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : !data ? (
+        <div aria-busy="true" className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+          {[1, 2, 3, 4].map((n) => (
+            <div key={n} className="h-40 animate-pulse rounded-3xl bg-surface shadow-card" />
+          ))}
+        </div>
+      ) : (
+        <div className={`flex flex-col gap-6 transition-opacity ${loading ? "opacity-60" : ""}`}>
+          <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+            <KpiCard label="Total Sales" value={naira(data.cards.totalSales)} icon={MdOutlinePayments} tile="bg-primary-light text-primary" change={data.cards.salesChange} />
+            <KpiCard label="Total Orders" value={data.cards.totalOrders.toLocaleString("en-NG")} icon={MdOutlineShoppingBag} tile="bg-mint/40 text-forest" change={data.cards.ordersChange} />
+            <KpiCard
+              label="Catalog Products"
+              value={String(data.cards.catalogProducts)}
+              icon={MdOutlineInventory2}
+              tile="bg-info-light text-primary"
+              footer={
+                <>
+                  <span className="rounded-full bg-[#fff4e0] px-2 py-0.5 text-xs font-semibold text-[#8a5300]">{data.cards.needsRestock} Low Stock</span> Needs restock
+                </>
+              }
+            />
+            <KpiCard
+              label="Total Customers"
+              value={data.cards.totalCustomers.toLocaleString("en-NG")}
+              icon={MdOutlinePeople}
+              tile="bg-primary-light text-primary"
+              footer={
+                <>
+                  <span className="rounded-full bg-primary-light px-2 py-0.5 text-xs font-semibold text-primary">+{data.cards.newCustomers}</span> new · {data.cards.subscribers} newsletter
+                </>
+              }
+            />
+          </div>
+
+          <section aria-labelledby="chart-title" className="grid gap-6 rounded-3xl bg-surface p-6 shadow-card xl:grid-cols-[1fr_260px]">
+            <div className="min-w-0">
+              <h2 id="chart-title" className="text-2xl font-semibold text-ink">
+                Revenue &amp; Sales Performance
+              </h2>
+              <p className="mb-4 text-sm text-ink-soft">
+                {data.range === "year" ? "Monthly" : "Daily"} sales
+                {data.peak && (
+                  <>
+                    {" "}
+                    · Peak: <strong className="text-ink">{data.peak.label}</strong> ({naira(data.peak.sales)})
+                  </>
+                )}
+              </p>
+              <RevenueChart chart={data.chart} />
+            </div>
+            <div className="flex flex-col gap-4">
+              <div className="rounded-2xl bg-panel p-4">
+                <p className="flex items-center justify-between text-xs font-bold tracking-wider text-ink-soft uppercase">
+                  Avg. order value <MdOutlineReceiptLong size={20} aria-hidden="true" className="text-primary" />
+                </p>
+                <p className="mt-1 text-2xl font-bold text-ink">{naira(data.avgOrderValue)}</p>
+              </div>
+              <div className="rounded-2xl bg-panel p-4">
+                <p className="flex items-center justify-between text-xs font-bold tracking-wider text-ink-soft uppercase">
+                  Refund rate <MdOutlineRemoveShoppingCart size={20} aria-hidden="true" className="text-primary" />
+                </p>
+                <p className="mt-1 text-2xl font-bold text-ink">{data.refundRate}%</p>
+              </div>
+              <div className="rounded-2xl bg-panel p-4">
+                <p className="text-xs font-bold tracking-wider text-ink-soft uppercase">Orders in this period</p>
+                <p className="mt-1 text-2xl font-bold text-success">{data.chart.reduce((sum, point) => sum + point.orders, 0)}</p>
+              </div>
+            </div>
+          </section>
+
+          <div className="grid items-start gap-6 xl:grid-cols-[1fr_380px]">
+            <RecentOrdersTable orders={data.recentOrders} total={data.totalOrdersAllTime} />
+            <div className="flex flex-col gap-6">
+              <TopProducts products={data.topProducts} />
+              <LowStockAlerts items={data.lowStock} total={data.cards.needsRestock} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AdminDashboardPage;
+```
+
+```tsx
+// AdminLoginPage.tsx client/src/pages/admin/AdminLoginPage.tsx
+// /admin/login: the staff sign-in, on its own page (no shop Navbar or Footer, App.tsx). It uses the same login as the
+// shop (STEP 31), and only lets ADMIN accounts through. A shopper's account is logged straight out again.
+
+// STEP 41 (part 12): The admin login page
+
+import { useState, type FormEvent } from "react";
+import { MdAdminPanelSettings, MdArrowBack, MdLogin, MdOutlineMail } from "react-icons/md";
+import { Link, Navigate, useLocation, useNavigate, type Location } from "react-router-dom";
+import AdminBrand from "../../components/admin/AdminBrand";
+import PasswordInput from "../../components/form/PasswordInput";
+import TextInput from "../../components/form/TextInput";
+import { useAuth } from "../../context/AuthContext";
+
+const AdminLoginPage = () => {
+  const { user, login, logout } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as { from?: Location } | null)?.from?.pathname ?? "/admin";
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // An admin who's already logged in goes straight to the dashboard
+  if (user?.role === "admin" && !submitting) {
+    return <Navigate to={from} replace />;
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!email.trim() || !password) return setError("Please enter your email and password.");
+
+    setError("");
+    setSubmitting(true);
+    try {
+      const loggedIn = await login(email.trim(), password, false);
+      if (loggedIn.role !== "admin") {
+        // A real customer account, but not staff. (The server would refuse its admin requests with 403 anyway.)
+        logout();
+        setError("This account doesn't have admin access. Use the shop's login instead.");
+        setSubmitting(false);
+        return;
+      }
+      navigate(from, { replace: true });
+    } catch (err) {
+      setError((err as Error).message);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-page px-4 py-12">
+      <div className="w-full max-w-110">
+        <div className="rounded-3xl bg-surface p-8 shadow-lift">
+          <AdminBrand />
+          <div className="my-8 border-t border-line" />
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-ink">
+            <MdAdminPanelSettings size={26} aria-hidden="true" className="text-primary" /> Staff sign in
+          </h1>
+          <p className="mt-1 mb-6 text-ink-soft">Manage products, orders and customers.</p>
+
+          {error && (
+            <p role="alert" className="mb-5 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+              {error}
+            </p>
+          )}
+
+          <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
+            <TextInput label="Admin Email" type="email" autoComplete="username" icon={MdOutlineMail} value={email} onChange={(e) => setEmail(e.target.value)} />
+            <PasswordInput label="Password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex h-12 items-center justify-center gap-2 rounded-xl bg-primary-hover font-semibold text-white hover:bg-primary disabled:opacity-60"
+            >
+              <MdLogin size={20} aria-hidden="true" /> {submitting ? "Signing in..." : "Sign In"}
+            </button>
+          </form>
+        </div>
+        <Link to="/" className="mx-auto mt-6 flex w-fit items-center gap-1.5 text-sm font-medium text-ink-soft hover:text-ink">
+          <MdArrowBack size={16} aria-hidden="true" /> Back to the shop
+        </Link>
+      </div>
+    </div>
+  );
+};
+
+export default AdminLoginPage;
+```
+
+- **Export Report** builds a CSV (comma-separated text Excel opens) of the chart's numbers **in the browser**: a `Blob` is
+  a file made in memory, `URL.createObjectURL` gives it a temporary address, and clicking an `<a download>` saves it.
+- **Changing the range** keeps the old numbers on screen (faded) until the new ones arrive: `useApi` again (STEP 30).
+- **The admin login uses the same `login` as the shop.** The server decides who's an admin (the `role` field); the page only
+  checks the answer. Even if someone forced their way into the admin pages in their browser, every admin request would get
+  403 from the server's `adminOnly` (server STEP 18).
+
+**About the build warning:** `npm run build` now says a chunk is "larger than 500 kB". That's Chart.js. STEP 44 fixes it by
+loading the admin pages only when an admin opens them (`React.lazy`), so shoppers never download the chart code.
+
+### 41.5 Test it
+
+`npm run seed`, both terminals running.
+
+| Do this                                               | You should see                                              |
+| ----------------------------------------------------- | ----------------------------------------------------------- |
+| Logged out, open `/admin`                              | the **Staff sign in** page (no shop header or footer)        |
+| `admin@quickcart.ng` + a wrong password                | "Incorrect email or password."                              |
+| `ada.obi@example.com` / `Password@123`                 | "This account doesn't have admin access..." and nobody is logged in |
+| `admin@quickcart.ng` / `Admin@12345`                   | the **Dashboard Overview**                                   |
+| The cards                                             | Total Sales ₦... with "+...% vs. previous period", Total Orders, Catalog Products **40** with "6 Low Stock", Total Customers **5** |
+| The chart                                             | a purple line over the last 30 days, a dashed average line, "Peak: ..." above it; hover shows each day's sales |
+| Recent Orders / Top-Selling / Low-Stock                | 5 orders and "View All Orders (41)" / 5 products with revenue and units / Ergonomic Mesh Office Chair "2 left" first |
+| The menu                                              | Products **40**, Orders **"N New"**, Dashboard highlighted   |
+| **7D**, then **Year**                                  | "Daily sales" with fewer days / "Monthly sales" (13 months)  |
+| **Export Report**                                     | a file `quickcart-sales-year.csv` downloads; open it in Excel |
+| Phone width → ☰                                       | the menu slides in; tapping Orders opens it and closes the menu |
+| **Log Out**                                           | back to `/admin/login`                                       |
+
+Then place an order as a shopper in another browser (or a private window) and refresh the dashboard: Total Orders, the
+chart's last day, Recent Orders and the Orders "New" badge all go up.
+
+I tested all of this on a copy of your project against a throwaway database: **21 checks, all passed** on the first run.
+The screenshots match the design (after the 2 small fixes described above). `npm run build` and `npm run lint` pass.
+
+### 41.6 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 41: admin login, layout and dashboard"
+git push
+```
+
+(If STEP 40 isn't committed yet, commit it first, with its own message.)
+
+➡️ **Next: STEP 42 (Admin products: the Products Management table with its tabs, search and filters, and the Add / Edit
+Product form with photo uploads to Cloudinary, using your STEP 25 endpoints).** Reply **NEXT** when 41.5 works.
