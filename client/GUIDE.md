@@ -10461,10 +10461,6 @@ with the sales chart, using your STEP 27 endpoint).** Reply **NEXT** when 40.7 w
 
 ## STEP 41: Admin login, layout and Dashboard
 
-> **Before you start:** finish STEP 40. When I checked, `ShipmentTracker`, `PackageContents`, `DeliveryDestination`,
-> `PaymentInfo`, `CancelOrderPanel`, `OrderDetailsPage` and the `#reviews` change in `ProductDetailsPage` (40.6) were still
-> to do, and STEP 40 wasn't committed.
-
 The admin side starts here. Your `App.tsx` already sends every `/admin/...` page through `<ProtectedRoute adminOnly />`
 (STEP 31) and into `AdminLayout`.
 
@@ -11438,8 +11434,6 @@ git add .
 git commit -m "STEP 41: admin login, layout and dashboard"
 git push
 ```
-
-(If STEP 40 isn't committed yet, commit it first, with its own message.)
 
 ➡️ **Next: STEP 42 (Admin products: the Products Management table with its tabs, search and filters, and the Add / Edit
 Product form with photo uploads to Cloudinary, using your STEP 25 endpoints).** Reply **NEXT** when 41.5 works.
