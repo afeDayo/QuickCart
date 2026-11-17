@@ -6,7 +6,8 @@
 // STEP 31 (part 1): The auth context
 
 import { createContext, useContext } from "react";
-import type { User } from "../types/api";
+
+import type { AuthResponse, User } from "../types/api";
 
 // What the register form sends (server: authController.ts -> register)
 export type RegisterData = {
@@ -30,6 +31,7 @@ export type AuthContextValue = {
   register: (data: RegisterData) => Promise<User>;
   logout: () => void;
   setUser: (user: User) => void; // after the profile changes (STEP 39), show the new name everywhere
+  startSession: (auth: AuthResponse) => User; // log in with a token the server just gave (reset password, STEP 37)
 };
 
 // null until AuthProvider gives it a value

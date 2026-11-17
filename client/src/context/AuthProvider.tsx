@@ -76,7 +76,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ user, checking, login, register, logout, setUser }}
+      value={{ user, checking, login, register, logout, setUser, startSession }}
     >
       {children}
     </AuthContext.Provider>

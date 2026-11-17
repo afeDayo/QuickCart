@@ -153,7 +153,7 @@ const RegisterPage = () => {
         confirmPassword: form.confirmPassword,
         agreeToTerms,
       });
-      navigate(from, { replace: true }); // STEP 37 sends new accounts to "Verify your email" instead
+      navigate("/verify-email", { replace: true }); // new accounts verify their email first (STEP 37)
     } catch (error) {
       setServerError((error as Error).message); // e.g. 409 "That email is already in use."
       setSubmitting(false);

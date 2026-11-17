@@ -42,8 +42,8 @@ then the admin.
 | ✅   | 33     | The rest of the Home page sections |
 | ✅   | 34     | Shop page (filters, search, sort, pages) and Categories page |
 | ✅   | 35     | Product Details: gallery, colours, add to cart, save, tabs, reviews, bundle, related |
-| ⬜   | **36** | **Cart page: items, promo code, summary, empty state** ← you are here |
-| ⬜   | 37     | Forgot password, reset password, verify email                                       |
+| ✅   | 36     | Cart page: items, promo code, summary, empty state |
+| ⬜   | **37** | **Forgot password, reset password, verify email** ← you are here |
 | ⬜   | 38     | Checkout and Order Confirmation                                                     |
 | ⬜   | 39     | My Account: layout, overview, settings, addresses, saved items                       |
 | ⬜   | 40     | Order History, Order Details and tracking, cancel, leave a review                    |
@@ -6155,3 +6155,762 @@ git push
 
 ➡️ **Next: STEP 37 (Forgot password, the reset-password link page, and email verification with the 6-digit code,
 using your STEP 19 endpoints and Brevo).** Reply **NEXT** when 36.5 works.
+
+---
+
+## STEP 37: Forgot password, reset password, verify email
+
+The three account-recovery pages, using your STEP 19 endpoints and Brevo (designs: Forgot Password & Confirmation,
+Reset Password & Email Verification):
+
+| Page                       | What happens                                                                  |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| `/forgot-password`         | type your email → `POST /api/auth/forgot-password` → "Check your inbox"        |
+| `/reset-password/<token>`  | the link in that email: checks the link → "Create a new password" → you're logged in |
+| `/verify-email`            | "Send me a code" → type the 6 digits → "Your email is verified". **New accounts land here after registering.** |
+
+**Demo mode** (your `server/.env` has `DEMO_MODE=true`): the server also sends the reset link and the code back in its
+reply, so the pages show them in a dashed "Demo mode" box. You can demo the whole flow without opening an inbox. With a
+Brevo key, the real email is sent too.
+
+The designs' "1. Request Form / 2. Sent Confirmation" toggle buttons are for previewing the design. The real flow moves
+between the screens by itself, so they're left out (you can delete the `StateTabs.tsx` placeholder).
+
+| New / changed file                          | What it is                                                   |
+| ------------------------------------------- | ------------------------------------------------------------ |
+| `context/AuthContext.ts`, `AuthProvider.tsx` | share `startSession` (log in with a token from the server)   |
+| `components/auth/AccountRecoveryLayout.tsx`  | the blue "QuickCart Shield" panel + the white card           |
+| `components/form/CodeInput.tsx`              | the 6 code boxes                                             |
+| `pages/auth/ForgotPasswordPage.tsx`, `ResetPasswordPage.tsx`, `VerifyEmailPage.tsx` | the pages              |
+| `App.tsx`, `pages/auth/RegisterPage.tsx`     | the reset route gets `:token`; registering goes to verify     |
+
+### 37.1 Share `startSession` from the auth context
+
+Resetting the password logs you in: the server sends a new token. `AuthProvider` already has a `startSession` function
+(STEP 31) that saves a token and the user. Make it available to pages:
+
+In `src/context/AuthContext.ts`:
+
+1. Import `AuthResponse` too:
+
+   ```ts
+   import type { AuthResponse, User } from "../types/api";
+   ```
+
+2. Add a line to `AuthContextValue`, under `setUser`:
+
+   ```ts
+     startSession: (auth: AuthResponse) => User; // log in with a token the server just gave (reset password, STEP 37)
+   ```
+
+In `src/context/AuthProvider.tsx`, add `startSession` to the value:
+
+```tsx
+    <AuthContext.Provider value={{ user, checking, login, register, logout, setUser, startSession }}>{children}</AuthContext.Provider>
+```
+
+### 37.2 Two route fixes
+
+In `src/App.tsx`, the email's link is `/reset-password/<token>` (server STEP 19), so the route needs the token:
+
+```tsx
+            <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+```
+
+In `src/pages/auth/RegisterPage.tsx`, new accounts verify their email first. Replace
+`navigate(from, { replace: true }); // STEP 37 sends...` with: line 156
+
+```tsx
+      navigate("/verify-email", { replace: true }); // new accounts verify their email first (STEP 37)
+```
+
+### 37.3 `src/components/auth/AccountRecoveryLayout.tsx`
+
+Replace the placeholder.
+
+```tsx
+// AccountRecoveryLayout.tsx client/src/components/auth/AccountRecoveryLayout.tsx
+// The two-part layout of the forgot / reset / verify pages: the blue "QuickCart Shield" panel on the left, and the
+// white card (children) on the right. (Designs: Forgot Password, Reset Password & Email Verification)
+
+// STEP 37 (part 1): The account recovery layout
+
+import type { ReactNode } from "react";
+import { MdOutlineDevices, MdOutlineEnhancedEncryption, MdOutlineShield, MdOutlineTimer } from "react-icons/md";
+
+// The 3 promises in the panel are TRUE of your server (server STEP 19): links last 15 minutes, only hashes are
+// stored, and changing the password logs out every other device (protect checks passwordChangedAt, STEP 18).
+const promises = [
+  { text: "15-minute validity window", icon: MdOutlineTimer },
+  { text: "Zero credentials stored in plain text", icon: MdOutlineEnhancedEncryption },
+  { text: "Revokes sessions on all other devices", icon: MdOutlineDevices },
+];
+
+type AccountRecoveryLayoutProps = {
+  title: string; // the big words in the blue panel
+  text: string;
+  children: ReactNode;
+};
+
+const AccountRecoveryLayout = ({ title, text, children }: AccountRecoveryLayoutProps) => {
+  return (
+    <div className="mx-auto grid max-w-360 items-start gap-8 px-4 py-12 md:px-12 lg:grid-cols-[0.8fr_1fr]">
+      <aside className="relative overflow-hidden rounded-3xl bg-linear-to-br from-primary-hover to-primary p-8 text-white shadow-banner md:p-10">
+        <div aria-hidden="true" className="absolute -top-20 -right-20 size-72 rounded-full bg-white/10 blur-3xl" />
+        <div className="relative">
+          <div className="mb-10 flex items-center gap-3">
+            <span className="flex size-12 items-center justify-center rounded-xl bg-white/15">
+              <MdOutlineShield size={26} aria-hidden="true" />
+            </span>
+            <p>
+              <span className="block text-xs font-bold tracking-wider text-white/80 uppercase">Security protocol</span>
+              <span className="text-xl font-semibold">QuickCart Shield</span>
+            </p>
+          </div>
+
+          <h2 className="text-4xl leading-12 font-bold tracking-tight">{title}</h2>
+          <p className="mt-4 text-base leading-7 text-white/80">{text}</p>
+
+          <ul className="mt-8 flex flex-col gap-4 rounded-2xl bg-white/10 p-5">
+            {promises.map((promise) => (
+              <li key={promise.text} className="flex items-center gap-3 font-medium">
+                <promise.icon size={22} aria-hidden="true" className="shrink-0 text-mint" /> {promise.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </aside>
+
+      <div className="rounded-3xl bg-surface p-6 shadow-card md:p-10">{children}</div>
+    </div>
+  );
+};
+
+export default AccountRecoveryLayout;
+```
+
+The 3 promises in the blue panel are **true of your server**: links last 15 minutes and work once, only hashes are saved,
+and a new password logs out every other device (`passwordChangedAt`, server STEP 18). Worth saying in the presentation.
+
+### 37.4 `src/components/form/CodeInput.tsx`
+
+New file.
+
+```tsx
+// CodeInput.tsx client/src/components/form/CodeInput.tsx
+// 6 boxes for the email code. Typing a digit jumps to the next box, Backspace goes back, and pasting
+// "048213" fills all 6 at once.
+//   <CodeInput value={code} onChange={setCode} />
+
+// STEP 37 (part 2): The 6-digit code boxes
+
+import { useRef, type ClipboardEvent, type KeyboardEvent } from "react";
+
+const LENGTH = 6;
+
+type CodeInputProps = {
+  value: string; // "0482" while typing, "048213" when complete
+  onChange: (value: string) => void;
+  invalid?: boolean;
+};
+
+const CodeInput = ({ value, onChange, invalid }: CodeInputProps) => {
+  // One ref per box, so we can move the cursor between them
+  const boxes = useRef<(HTMLInputElement | null)[]>([]);
+  const digits = Array.from({ length: LENGTH }, (_, index) => value[index] ?? "");
+
+  const focusBox = (index: number) => boxes.current[Math.max(0, Math.min(LENGTH - 1, index))]?.focus();
+
+  const setDigit = (index: number, digit: string) => {
+    const next = [...digits];
+    next[index] = digit;
+    onChange(next.join("").slice(0, LENGTH));
+  };
+
+  const handleChange = (index: number, typed: string) => {
+    const digit = typed.replace(/\D/g, "").slice(-1); // only numbers; the last one typed
+    if (!digit) return;
+    setDigit(index, digit);
+    focusBox(index + 1);
+  };
+
+  const handleKeyDown = (index: number, event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Backspace") {
+      event.preventDefault();
+      if (digits[index]) setDigit(index, "");
+      else if (index > 0) {
+        setDigit(index - 1, "");
+        focusBox(index - 1);
+      }
+    }
+    if (event.key === "ArrowLeft") focusBox(index - 1);
+    if (event.key === "ArrowRight") focusBox(index + 1);
+  };
+
+  // Pasting "048213" (or "048 213" from the email) fills every box
+  const handlePaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const pasted = event.clipboardData.getData("text").replace(/\D/g, "").slice(0, LENGTH);
+    if (!pasted) return;
+    event.preventDefault();
+    onChange(pasted);
+    focusBox(pasted.length);
+  };
+
+  return (
+    <div role="group" aria-label="6-digit verification code" className="flex justify-between gap-2 sm:gap-3">
+      {digits.map((digit, index) => (
+        <input
+          key={index}
+          ref={(element) => {
+            boxes.current[index] = element;
+          }}
+          value={digit}
+          onChange={(event) => handleChange(index, event.target.value)}
+          onKeyDown={(event) => handleKeyDown(index, event)}
+          onPaste={handlePaste}
+          onFocus={(event) => event.target.select()}
+          inputMode="numeric" // phones show the number keypad
+          autoComplete={index === 0 ? "one-time-code" : "off"} // phones can fill the code from the email/SMS
+          maxLength={2}
+          aria-label={`Digit ${index + 1}`}
+          aria-invalid={invalid ? true : undefined}
+          className="h-14 w-full max-w-14 rounded-xl bg-field text-center text-2xl font-bold text-ink outline-none focus:ring-2 focus:ring-primary/40 aria-invalid:bg-danger-light aria-invalid:ring-2 aria-invalid:ring-danger/40"
+        />
+      ))}
+    </div>
+  );
+};
+
+export default CodeInput;
+```
+
+- **The whole code is one string** (`"048213"`) owned by the page. The boxes just show its 6 characters. That makes
+  "paste all 6" easy: set the string.
+- **`useRef` holding an array** of the 6 inputs, so typing can move the cursor: `boxes.current[index + 1].focus()`.
+- **`inputMode="numeric"`** shows the number pad on phones; **`autoComplete="one-time-code"`** lets iPhones and Android
+  offer the code from the email.
+
+### 37.5 `src/pages/auth/ForgotPasswordPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// ForgotPasswordPage.tsx client/src/pages/auth/ForgotPasswordPage.tsx
+// "Forgot your password?": enter your email, get a reset link by email (POST /api/auth/forgot-password, server
+// STEP 19). Then "Check your inbox". (Design: Forgot Password & Confirmation)
+
+// STEP 37 (part 3): Forgot password
+
+import { useState, type FormEvent } from "react";
+import { MdArrowBack, MdInfoOutline, MdKey, MdMarkEmailRead, MdOutlineMail, MdScience } from "react-icons/md";
+import { Link } from "react-router-dom";
+import AccountRecoveryLayout from "../../components/auth/AccountRecoveryLayout";
+import TextInput from "../../components/form/TextInput";
+import { api } from "../../utils/api";
+
+const EMAIL_RULE = /^\S+@\S+\.\S+$/;
+
+type ForgotReply = { message: string; devResetUrl?: string };
+
+const ForgotPasswordPage = () => {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<ForgotReply | null>(null); // the server's answer = the "sent" screen
+
+  const send = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (!EMAIL_RULE.test(email.trim())) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    setError("");
+    setSending(true);
+    try {
+      setSent(await api<ForgotReply>("/auth/forgot-password", { method: "POST", body: { email: email.trim() } }));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // The link in the email points at the website: http://localhost:5173/reset-password/<token>.
+  // In demo mode the server also sends it back (devResetUrl), so we can open it without an inbox.
+  const demoLink = sent?.devResetUrl ? new URL(sent.devResetUrl).pathname : null;
+
+  return (
+    <AccountRecoveryLayout
+      title="Effortless Account Recovery."
+      text="We value your data integrity. All password recovery links are single-use and expire automatically after fifteen minutes."
+    >
+      {sent ? (
+        <div className="text-center">
+          <span className="mx-auto mb-5 flex size-16 items-center justify-center rounded-2xl bg-mint/40 text-forest">
+            <MdMarkEmailRead size={32} aria-hidden="true" />
+          </span>
+          <h1 className="text-3xl font-bold tracking-tight text-ink">Check your inbox</h1>
+          {/* The server says the same thing whether the account exists or not, so strangers can't find out */}
+          <p className="mx-auto mt-3 max-w-110 text-base leading-7 text-ink-soft">
+            {sent.message} The link works once, for 15 minutes. Check your spam folder if it's not there in a minute.
+          </p>
+
+          {demoLink && (
+            <div className="mt-6 rounded-2xl border border-dashed border-primary/40 bg-primary-light/40 p-4 text-left text-sm">
+              <p className="flex items-center gap-2 font-semibold text-ink">
+                <MdScience size={18} aria-hidden="true" className="text-primary" /> Demo mode
+              </p>
+              <p className="mt-1 text-ink-soft">No inbox needed: this is the link that was emailed.</p>
+              <Link to={demoLink} className="mt-2 inline-block font-semibold text-primary-hover hover:underline">
+                Open the reset link →
+              </Link>
+            </div>
+          )}
+
+          <div className="mt-8 flex flex-col items-center gap-3">
+            <button type="button" onClick={() => send()} disabled={sending} className="font-semibold text-primary-hover hover:underline disabled:opacity-60">
+              {sending ? "Sending..." : "Didn't get it? Send again"}
+            </button>
+            <button type="button" onClick={() => setSent(null)} className="text-sm text-muted hover:text-ink">
+              Use a different email
+            </button>
+            <Link to="/login" className="mt-2 flex items-center gap-1.5 font-medium text-ink hover:text-primary">
+              <MdArrowBack size={18} aria-hidden="true" /> Back to Login
+            </Link>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="mb-5 flex w-fit items-center gap-2 rounded-full bg-primary-light px-3 py-1 text-sm font-semibold text-ink">
+            <MdKey size={16} aria-hidden="true" className="text-primary" /> Credential Assistance
+          </p>
+          <h1 className="text-4xl font-bold tracking-tight text-ink">Forgot your password?</h1>
+          <p className="mt-3 text-base leading-7 text-ink-soft">
+            No worries! Enter your registered email address and we'll send you a secure link to reset your password.
+          </p>
+
+          <form onSubmit={send} noValidate className="mt-8 flex flex-col gap-6">
+            <TextInput
+              label="Registered Email Address"
+              type="email"
+              autoComplete="email"
+              icon={MdOutlineMail}
+              placeholder="ada.obi@example.com"
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setError("");
+              }}
+              error={error}
+            />
+            <button
+              type="submit"
+              disabled={sending}
+              className="h-13 rounded-xl bg-primary-hover text-lg font-semibold text-white transition-colors hover:bg-primary disabled:opacity-60"
+            >
+              {sending ? "Sending..." : "Send Reset Link"}
+            </button>
+          </form>
+
+          <Link to="/login" className="mx-auto mt-6 flex w-fit items-center gap-1.5 font-medium text-ink hover:text-primary">
+            <MdArrowBack size={18} aria-hidden="true" /> Back to Login
+          </Link>
+
+          <p className="mt-8 flex gap-3 rounded-2xl bg-panel p-4 text-sm leading-6 text-ink-soft">
+            <MdInfoOutline size={20} aria-hidden="true" className="mt-0.5 shrink-0" />
+            Quick tip: remembered it? Just go back and log in. Your cart is saved on this device either way.
+          </p>
+        </>
+      )}
+    </AccountRecoveryLayout>
+  );
+};
+
+export default ForgotPasswordPage;
+```
+
+- **The server's reply is the "sent" screen** (`sent` state). No reply yet = the form.
+- **Same message for every email**: "If an account exists for that email..." comes from the server, so nobody can use
+  this page to find out who has an account (server STEP 19).
+- **`new URL(devResetUrl).pathname`** turns `http://localhost:5173/reset-password/1ba4...` into `/reset-password/1ba4...`,
+  so the demo link opens inside the app.
+
+### 37.6 `src/pages/auth/ResetPasswordPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// ResetPasswordPage.tsx client/src/pages/auth/ResetPasswordPage.tsx
+// /reset-password/<token>: the link from the email. It first asks the server if the link is still good
+// (GET /api/auth/reset-password/:token), then lets you choose a new password (POST, server STEP 19).
+// 3 states: the form, "Link Expired or Invalid", and success. (Design: Reset Password & Email Verification)
+
+// STEP 37 (part 4): Reset password
+
+import { useState, type FormEvent } from "react";
+import { MdArrowBack, MdArrowForward, MdCheckCircle, MdDoneAll, MdKey, MdLockReset, MdOutlineMail, MdWarningAmber } from "react-icons/md";
+import { Link, useParams } from "react-router-dom";
+import AccountRecoveryLayout from "../../components/auth/AccountRecoveryLayout";
+import PasswordInput from "../../components/form/PasswordInput";
+import PasswordStrength from "../../components/form/PasswordStrength";
+import { useAuth } from "../../context/AuthContext";
+import { useApi } from "../../hooks/useApi";
+import type { AuthResponse } from "../../types/api";
+import { api } from "../../utils/api";
+import { isPasswordValid } from "../../utils/password";
+
+const ResetPasswordPage = () => {
+  const { token = "" } = useParams();
+  const { startSession } = useAuth();
+
+  // Is the link still good? (Expired, already used, or made up -> 400 with the server's message)
+  const check = useApi<{ valid: boolean }>(`/auth/reset-password/${token}`);
+
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isPasswordValid(password)) return setError("Your password needs at least 8 characters, an uppercase letter and a number.");
+    if (password !== confirm) return setError("Passwords do not match.");
+
+    setError("");
+    setSaving(true);
+    try {
+      // The server sends a fresh login token back: you're logged in straight away (and every OTHER device is logged out)
+      const reply = await api<AuthResponse>(`/auth/reset-password/${token}`, { method: "POST", body: { password, confirmPassword: confirm } });
+      startSession(reply);
+      setDone(true);
+    } catch (err) {
+      setError((err as Error).message); // e.g. "Your new password must be different from your old password."
+      setSaving(false);
+    }
+  };
+
+  const layoutProps = {
+    title: "Account Recovery & Access.",
+    text: "Choose a strong new password. Changing it immediately logs you out of every other device.",
+  };
+
+  if (check.loading) {
+    return (
+      <AccountRecoveryLayout {...layoutProps}>
+        <div role="status" className="flex min-h-80 items-center justify-center">
+          <span className="size-8 animate-spin rounded-full border-3 border-primary-light border-t-primary" />
+          <span className="sr-only">Checking your link...</span>
+        </div>
+      </AccountRecoveryLayout>
+    );
+  }
+
+  // Bad link: the "Link Expired or Invalid" box from the design
+  if (check.error && !done) {
+    return (
+      <AccountRecoveryLayout {...layoutProps}>
+        <div className="rounded-2xl bg-danger-light p-6">
+          <div className="flex gap-4">
+            <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-danger text-white">
+              <MdWarningAmber size={24} aria-hidden="true" />
+            </span>
+            <div>
+              <h1 className="text-2xl font-bold text-ink">Link Expired or Invalid</h1>
+              <p className="mt-2 text-ink-soft">{check.error}</p>
+              <Link to="/forgot-password" className="mt-5 inline-flex h-11 items-center gap-2 rounded-xl bg-navy px-5 font-semibold text-white hover:bg-footer">
+                <MdOutlineMail size={18} aria-hidden="true" /> Request New Link
+              </Link>
+            </div>
+          </div>
+        </div>
+      </AccountRecoveryLayout>
+    );
+  }
+
+  if (done) {
+    return (
+      <AccountRecoveryLayout {...layoutProps}>
+        <div className="text-center">
+          <span className="mx-auto mb-5 flex size-16 items-center justify-center rounded-full bg-mint/40 text-forest">
+            <MdCheckCircle size={36} aria-hidden="true" />
+          </span>
+          <h1 className="text-3xl font-bold tracking-tight text-ink">Password reset!</h1>
+          <p className="mx-auto mt-3 max-w-100 text-ink-soft">You're logged in with your new password. Any other device was logged out.</p>
+          <div className="mt-8 flex flex-wrap justify-center gap-3">
+            <Link to="/" className="flex h-12 items-center gap-2 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+              Continue Shopping <MdArrowForward size={18} aria-hidden="true" />
+            </Link>
+            <Link to="/account" className="flex h-12 items-center rounded-xl bg-primary-light px-6 font-semibold text-ink hover:bg-info-light">
+              My Account
+            </Link>
+          </div>
+        </div>
+      </AccountRecoveryLayout>
+    );
+  }
+
+  return (
+    <AccountRecoveryLayout {...layoutProps}>
+      <div className="mb-6 flex items-center justify-between">
+        <span className="flex size-12 items-center justify-center rounded-xl bg-primary-light text-primary">
+          <MdKey size={24} aria-hidden="true" />
+        </span>
+        <span className="rounded-full bg-field px-3 py-1 text-xs font-bold tracking-wide text-ink-soft">STEP 2 OF 2</span>
+      </div>
+      <h1 className="text-3xl font-bold tracking-tight text-ink">Create a new password</h1>
+      <p className="mt-2 text-ink-soft">Your new password must be different from your previous password.</p>
+
+      {error && (
+        <p role="alert" className="mt-5 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      <form onSubmit={handleSubmit} noValidate className="mt-6 flex flex-col gap-5">
+        <div className="flex flex-col gap-3">
+          <PasswordInput label="New Password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          <PasswordStrength password={password} />
+        </div>
+        <PasswordInput
+          label="Confirm New Password"
+          autoComplete="new-password"
+          icon={MdLockReset}
+          value={confirm}
+          onChange={(event) => setConfirm(event.target.value)}
+          labelAction={
+            confirm &&
+            confirm === password && (
+              <span className="flex items-center gap-1 rounded-full bg-mint/40 px-2 py-0.5 text-xs font-semibold text-forest">
+                <MdDoneAll size={14} aria-hidden="true" /> Passwords match
+              </span>
+            )
+          }
+        />
+        <button
+          type="submit"
+          disabled={saving}
+          className="flex h-13 items-center justify-center gap-2 rounded-xl bg-primary text-lg font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-60"
+        >
+          {saving ? "Saving..." : "Reset Password"} <MdArrowForward size={20} aria-hidden="true" />
+        </button>
+      </form>
+
+      <Link to="/login" className="mx-auto mt-6 flex w-fit items-center gap-1.5 font-medium text-ink hover:text-primary">
+        <MdArrowBack size={18} aria-hidden="true" /> Back to Login
+      </Link>
+    </AccountRecoveryLayout>
+  );
+};
+
+export default ResetPasswordPage;
+```
+
+- **The link is checked when the page opens** (`GET /api/auth/reset-password/:token`), *before* you type anything. An
+  old or used link shows "Link Expired or Invalid" with **Request New Link**, like the design.
+- **The server's rule "different from your old password"** shows in the red box. Your server checks it with bcrypt
+  (server STEP 19); the website can't know your old password.
+- **`startSession(reply)`**: the server answered with a new token, so you're logged in. Every other device's old token
+  stops working (STEP 18's `passwordChangedAt` check).
+
+### 37.7 `src/pages/auth/VerifyEmailPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// VerifyEmailPage.tsx client/src/pages/auth/VerifyEmailPage.tsx
+// "Verify your email": send a 6-digit code by email (POST /api/auth/send-verification), then type it
+// (POST /api/auth/verify-email, server STEP 19). New accounts land here after registering.
+// It's inside ProtectedRoute (App.tsx), so only logged-in users get here.
+
+// STEP 37 (part 5): Verify email
+
+import { useEffect, useState, type FormEvent } from "react";
+import { MdArrowForward, MdMarkEmailUnread, MdScience, MdVerified } from "react-icons/md";
+import { Link } from "react-router-dom";
+import AccountRecoveryLayout from "../../components/auth/AccountRecoveryLayout";
+import CodeInput from "../../components/form/CodeInput";
+import { useAuth } from "../../context/AuthContext";
+import type { User } from "../../types/api";
+import { api } from "../../utils/api";
+
+const RESEND_SECONDS = 60; // wait a minute before "Send again", so nobody floods the inbox
+
+const VerifyEmailPage = () => {
+  const { user, setUser } = useAuth();
+  const [sentTo, setSentTo] = useState(""); // the message after sending: "We've sent a 6-digit code to ..."
+  const [devCode, setDevCode] = useState(""); // demo mode only: the code, so a demo needs no inbox
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [wait, setWait] = useState(0); // seconds before you can send again
+
+  // Count the resend timer down, one second at a time
+  useEffect(() => {
+    if (wait <= 0) return;
+    const timer = setTimeout(() => setWait((seconds) => seconds - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [wait]);
+
+  const sendCode = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      const reply = await api<{ message: string; devCode?: string }>("/auth/send-verification", { method: "POST" });
+      setSentTo(reply.message);
+      setDevCode(reply.devCode ?? "");
+      setCode("");
+      setWait(RESEND_SECONDS);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verify = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (code.length !== 6) return setError("Please type all 6 digits.");
+    setError("");
+    setBusy(true);
+    try {
+      const reply = await api<{ message: string; user: User }>("/auth/verify-email", { method: "POST", body: { code } });
+      setUser(reply.user); // isEmailVerified is now true everywhere (the Account page shows "Verified", STEP 39)
+    } catch (err) {
+      setError((err as Error).message); // "That code is wrong or has expired. Please request a new one."
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const layoutProps = {
+    title: "Confirm it's really you.",
+    text: "A verified email lets us send your order updates and keeps your account recoverable if you forget your password.",
+  };
+
+  // Verified (just now, or already): the success screen
+  if (user?.isEmailVerified) {
+    return (
+      <AccountRecoveryLayout {...layoutProps}>
+        <div className="text-center">
+          <span className="mx-auto mb-5 flex size-16 items-center justify-center rounded-full bg-mint/40 text-forest">
+            <MdVerified size={36} aria-hidden="true" />
+          </span>
+          <h1 className="text-3xl font-bold tracking-tight text-ink">Your email is verified</h1>
+          <p className="mx-auto mt-3 max-w-100 text-ink-soft">
+            Order updates for <strong className="text-ink">{user.email}</strong> will arrive in that inbox.
+          </p>
+          <Link to="/" className="mt-8 inline-flex h-12 items-center gap-2 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover">
+            Start Shopping <MdArrowForward size={18} aria-hidden="true" />
+          </Link>
+        </div>
+      </AccountRecoveryLayout>
+    );
+  }
+
+  return (
+    <AccountRecoveryLayout {...layoutProps}>
+      <span className="mb-5 flex size-14 items-center justify-center rounded-2xl bg-primary-light text-primary">
+        <MdMarkEmailUnread size={28} aria-hidden="true" />
+      </span>
+      <h1 className="text-3xl font-bold tracking-tight text-ink">Verify your email</h1>
+      <p className="mt-2 text-ink-soft">
+        {sentTo || (
+          <>
+            We'll send a 6-digit code to <strong className="text-ink">{user?.email}</strong>. It works for 15 minutes.
+          </>
+        )}
+      </p>
+
+      {error && (
+        <p role="alert" className="mt-5 rounded-xl bg-danger-light px-4 py-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+
+      {!sentTo ? (
+        <button
+          type="button"
+          onClick={sendCode}
+          disabled={busy}
+          className="mt-8 h-13 w-full rounded-xl bg-primary text-lg font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+        >
+          {busy ? "Sending..." : "Send me a code"}
+        </button>
+      ) : (
+        <form onSubmit={verify} noValidate className="mt-8 flex flex-col gap-6">
+          <CodeInput value={code} onChange={(value) => { setCode(value); setError(""); }} invalid={Boolean(error)} />
+
+          {devCode && (
+            <p className="flex items-center gap-2 rounded-xl border border-dashed border-primary/40 bg-primary-light/40 px-4 py-3 text-sm text-ink-soft">
+              <MdScience size={18} aria-hidden="true" className="shrink-0 text-primary" />
+              Demo mode: the emailed code is <strong className="font-mono text-ink">{devCode}</strong>
+            </p>
+          )}
+
+          <button type="submit" disabled={busy} className="h-13 rounded-xl bg-primary text-lg font-semibold text-white hover:bg-primary-hover disabled:opacity-60">
+            {busy ? "Checking..." : "Verify Email"}
+          </button>
+          <button type="button" onClick={sendCode} disabled={busy || wait > 0} className="text-sm font-semibold text-primary-hover hover:underline disabled:text-muted disabled:no-underline">
+            {wait > 0 ? `Send a new code in ${wait}s` : "Send a new code"}
+          </button>
+        </form>
+      )}
+
+      <Link to="/" className="mx-auto mt-6 block w-fit text-sm text-muted hover:text-ink">
+        Skip for now
+      </Link>
+    </AccountRecoveryLayout>
+  );
+};
+
+export default VerifyEmailPage;
+```
+
+- **"Send me a code" is a button, not automatic.** Sending automatically when the page opens would send two codes in
+  development (React's StrictMode runs effects twice, STEP 30), and only the second one works.
+- **The resend timer** counts down from 60: one `setTimeout` per second, started again whenever `wait` changes.
+- **`setUser(reply.user)`**: the server answers with the user, now `isEmailVerified: true`, and the page switches to
+  "Your email is verified" by itself (the same check shows it if you come back later).
+
+### 37.8 Test it
+
+`npm run seed`, both terminals running, and `DEMO_MODE=true` in `server/.env`.
+
+| Do this                                                       | You should see                                            |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| Login page → **Forgot password?**                              | "Forgot your password?" with the blue QuickCart Shield panel |
+| Type `nope` → Send Reset Link                                  | "Please enter a valid email address."                     |
+| `ada.obi@example.com` → Send Reset Link                        | "Check your inbox", and a dashed **Demo mode** box (with Brevo, the email arrives too) |
+| **Open the reset link**                                        | "Create a new password", STEP 2 OF 2, the strength meter  |
+| Different confirm password                                     | "Passwords do not match."; matching ones show ✓ Passwords match |
+| `Password@123` (her current one) twice                         | "Your new password must be different from your old password." |
+| A new strong password twice                                    | "Password reset!", and the Navbar shows **AO** (logged in) |
+| Open the same reset link again                                 | **Link Expired or Invalid** + Request New Link             |
+| `/reset-password/abc`                                          | Link Expired or Invalid                                    |
+| Log out, log in with the **new** password                      | works                                                      |
+| `/verify-email` logged out                                     | the login page                                             |
+| Register a new account                                         | you land on **Verify your email**                         |
+| **Send me a code**                                             | "We've sent a 6-digit code to ...", the 6 boxes, the demo code, "Send a new code in 60s" counting down |
+| Type a wrong code → Verify                                     | "That code is wrong or has expired. Please request a new one." |
+| Type (or paste) the right code → Verify                        | **Your email is verified**                                |
+
+In Atlas, the user now has `isEmailVerified: true`. (After testing, run `npm run seed` again: Ada's password is back to
+`Password@123`.)
+
+I tested all of this on a copy of your project against a throwaway database: **23 checks, all passed** on the first
+run, including pasting a code, typing it box by box, and logging in with the new password. `npm run build` and
+`npm run lint` pass.
+
+### 37.9 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 37: forgot password, reset password, verify email"
+git push
+```
+
+➡️ **Next: STEP 38 (Checkout: contact details, a saved or new delivery address, Standard or Express delivery, card or
+Pay on Delivery (Lagos only), placing the order with your STEP 22 endpoint, and the Order Confirmation page).** Reply
+**NEXT** when 37.8 works.
