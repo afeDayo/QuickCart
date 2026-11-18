@@ -22,7 +22,7 @@ const footerColums: {
     links: [
       { label: "Track Your Order", to: "/account/orders" },
       { label: "Shipping & Delivery", to: "/help/shipping" },
-      { label: "Easy 7-Day Returns", to: "/help/returns" },
+      { label: "Cancellations & Returns", to: "/help/returns" },
       { label: "FAQs & Help Desk", to: "/help/faqs" },
       { label: "Buyer Protection Policy", to: "/help/buyer-protection" },
     ],

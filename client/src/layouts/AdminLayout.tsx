@@ -4,7 +4,7 @@
 
 // STEP 41 (part 5): The admin layout
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { MdClose } from "react-icons/md";
 import { Outlet, useLocation } from "react-router-dom";
 import AdminSidebar from "../components/layout/AdminSidebar";
@@ -56,7 +56,17 @@ const AdminLayout = () => {
       <div className="min-w-0">
         <AdminTopbar onOpenMenu={() => setMenuOpen(true)} />
         <main className="px-4 py-8 md:px-8">
-          <Outlet />
+          {/* The admin pages are lazy (App.tsx): while a page's code downloads, show a grey placeholder */}
+          <Suspense
+            fallback={
+              <div
+                aria-busy="true"
+                className="h-96 animate-pulse rounded-3xl bg-surface shadow-card"
+              />
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

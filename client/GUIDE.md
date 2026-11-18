@@ -49,11 +49,9 @@ then the admin.
 | ✅   | 40     | Order History, Order Details and tracking, cancel, leave a review |
 | ✅   | 41     | Admin: login, layout, dashboard with the sales chart                                 |
 | ✅   | 42     | Admin: products table, add / edit product, photo upload                              |
-| ⬜   | 43     | Admin: orders, order panel (ship / deliver / cancel), dispatch manifest              |
-| ⬜   | **44** | **Admin: customers and categories** ← you are here                                   |
-| ⬜   | 45     | Admin settings (profile, password) and the demo panel                                |
-| ⬜   | 46     | Help pages, 404, final polish (loading, empty and error states, phones)              |
-| ⬜   | 47     | Build and put it online (server on Render, client on Vercel)                         |
+| ✅   | 43     | Admin: orders, order panel (ship / deliver / cancel), dispatch manifest              |
+| ⬜   | 44     | Admin: customers and categories                                                      |
+| ⬜   | **45** | **Settings, demo panel, help pages, 404, clean-up, and online: Render + Vercel** ← you are here (the last step) |
 
 ## How to run both halves
 
@@ -14744,3 +14742,1010 @@ git push
 
 ➡️ **Next: STEP 45 (Admin Settings: your admin profile and password, and the demo panel to reset the demo data and move
 orders along).** Reply **NEXT** when 44.4 works.
+
+---
+
+## STEP 45 (the last step): Settings, demo panel, help pages, 404, clean-up, and putting QuickCart online
+
+This is the final step. Part A finishes the website, part B tests it the way the internet will run it, and part C puts it
+online for free: the **server on Render** and the **client on Vercel**.
+
+> **Before you start: finish STEP 44 and fix one line from STEP 43.** When I checked:
+>
+> - **STEP 43 is committed and matches**, except one line. In `ProductForm.tsx`'s `handleDelete`,
+>   `announceCountsChanged();` is still inside the `catch`, so it only runs when the delete **fails**. Move it into the
+>   `try`, on the line after `showToast({ type: "success", title: message });`.
+> - `OrderHistoryPage.tsx` still ends with `};;`. Delete the extra `;`.
+> - **STEP 44** has its types typed. `CustomerPanel`, `AdminCustomersPage`, `CategoryForm` and `AdminCategoriesPage` are
+>   still to do.
+
+| Part | What                                                                 |
+| ---- | -------------------------------------------------------------------- |
+| A    | 45.1–45.8: demo panel, Settings, 404, help pages, lazy admin pages, deleting the unused placeholders, 2 small server changes |
+| B    | 45.9–45.10: build and run it like production on your computer, then push to GitHub |
+| C    | 45.11–45.15: MongoDB Atlas access, Render (server), Vercel (client), connecting them, the final online check |
+
+## Part A: finish the website
+
+### 45.1 `src/components/demo/DemoPanel.tsx`
+
+Replace the placeholder. It uses your server STEP 28 demo endpoints.
+
+```tsx
+// DemoPanel.tsx client/src/components/demo/DemoPanel.tsx
+// The demo tools on the admin Settings page, for presenting the project:
+//   "Move orders along": every processing order -> shipped, every shipped order -> delivered (no emails)
+//   "Reset demo data":   everything back to the seed (like npm run seed), then log in again
+// POST /api/admin/demo/advance-orders and /api/admin/demo/reset (server STEP 28).
+// They only exist while the server's demo mode is on (on with npm run dev; OFF online, see STEP 45).
+
+// STEP 45 (part 1): The demo panel
+
+import { useState } from "react";
+import { MdFastForward, MdRestartAlt, MdScience } from "react-icons/md";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/ToastContext";
+import { announceCountsChanged } from "../../utils/adminEvents";
+import { api, ApiError } from "../../utils/api";
+
+const DemoPanel = () => {
+  const { logout } = useAuth();
+  const { showToast } = useToast();
+  const navigate = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [confirmText, setConfirmText] = useState(""); // the admin types RESET to unlock the button
+  const [off, setOff] = useState(false); // the server answered 404: demo mode is off there
+
+  // 404 = the routes don't exist because demo mode is off (server/src/routes/adminRoutes.ts)
+  const handleError = (err: unknown, title: string) => {
+    if (err instanceof ApiError && err.status === 404) {
+      setOff(true);
+    } else {
+      showToast({ type: "error", title, message: (err as Error).message });
+    }
+  };
+
+  const advance = async () => {
+    setBusy(true);
+    try {
+      const { message } = await api<{ message: string }>("/admin/demo/advance-orders", { method: "POST" });
+      showToast({ type: "success", title: message });
+      announceCountsChanged(); // the menu's "4 New"
+    } catch (err) {
+      handleError(err, "Couldn't move the orders");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = async () => {
+    setBusy(true);
+    try {
+      const { message } = await api<{ message: string }>("/admin/demo/reset", { method: "POST", body: { confirm: "RESET" } });
+      // Every account was made again with a new id, so this login no longer works: log out and sign in again
+      logout();
+      showToast({ type: "success", title: message });
+      navigate("/admin/login");
+    } catch (err) {
+      handleError(err, "Couldn't reset the demo data");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-labelledby="demo-title" className="rounded-3xl bg-surface p-6 shadow-card">
+      <h2 id="demo-title" className="flex items-center gap-2 text-xl font-semibold text-ink">
+        <MdScience size={22} aria-hidden="true" className="text-primary" /> Demo tools
+      </h2>
+
+      {off ? (
+        <p role="status" className="mt-3 rounded-2xl bg-panel p-4 text-sm text-ink-soft">
+          The demo tools are turned off on this server. That's on purpose for the online shop: demo mode also shows password
+          reset links on screen, which anyone could use. Run the server with <code>npm run dev</code> on your computer to use them.
+        </p>
+      ) : (
+        <div className="mt-4 flex flex-col gap-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-110 text-sm text-ink-soft">
+              <strong className="font-semibold text-ink">Move orders along:</strong> every Processing order becomes Shipped
+              and every Shipped order becomes Delivered, so the trackers move during a presentation. No emails are sent.
+            </p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={advance}
+              className="flex h-11 items-center gap-2 rounded-xl bg-primary-hover px-4 font-semibold text-white hover:bg-primary disabled:opacity-60"
+            >
+              <MdFastForward size={20} aria-hidden="true" /> Move orders along
+            </button>
+          </div>
+
+          <div className="rounded-2xl bg-danger-light p-4">
+            <p className="text-sm text-danger">
+              <strong className="font-semibold">Reset demo data:</strong> deletes every change (products, orders, accounts,
+              reviews, uploaded photos) and puts the demo data back, like <code>npm run seed</code>. Newsletter subscribers are
+              kept. You'll need to log in again.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <label htmlFor="reset-confirm" className="sr-only">
+                Type RESET to confirm
+              </label>
+              <input
+                id="reset-confirm"
+                value={confirmText}
+                onChange={(event) => setConfirmText(event.target.value)}
+                placeholder="Type RESET"
+                className="h-11 w-36 rounded-xl bg-surface px-3 outline-none focus:ring-2 focus:ring-danger/30"
+              />
+              <button
+                type="button"
+                disabled={busy || confirmText !== "RESET"}
+                onClick={reset}
+                className="flex h-11 items-center gap-2 rounded-xl bg-danger px-4 font-semibold text-white disabled:opacity-50"
+              >
+                <MdRestartAlt size={20} aria-hidden="true" /> Reset demo data
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+};
+
+export default DemoPanel;
+```
+
+**Why the demo tools are off online.** Demo mode (server STEP 28) does 2 things: it turns on these buttons, AND it puts
+the password-reset link and the email code straight into the server's reply (so a demo needs no inbox). Online, that
+second part would let **anyone reset anyone's password**, including the admin's, by typing their email on Forgot
+Password. So online you leave `DEMO_MODE` unset (it's off by default for the built server), and the panel explains
+that the tools are off. On your computer (`npm run dev`) they work.
+
+### 45.2 `src/pages/admin/AdminSettingsPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// AdminSettingsPage.tsx client/src/pages/admin/AdminSettingsPage.tsx
+// Admin → Settings: your admin profile and password (the same forms as the shopper's Account Settings, STEP 39,
+// because an admin is a user too), the shop's rules, and the demo tools.
+
+// STEP 45 (part 2): The admin Settings page
+
+import ChangePasswordForm from "../../components/account/ChangePasswordForm";
+import EditProfileForm from "../../components/account/EditProfileForm";
+import DemoPanel from "../../components/demo/DemoPanel";
+
+// The rules the server uses (server/src/utils/orderRules.ts and data/promoCodes.ts). Shown here so the admin knows
+// them; changing them means changing the server code, which is honest about what this project can do.
+const RULES = [
+  { label: "Standard delivery", value: "Free · 2–3 business days" },
+  { label: "Express delivery", value: "₦2,500 · same day · Lagos only" },
+  { label: "Pay on delivery", value: "Lagos only" },
+  { label: "Cancelling", value: "Free, within 1 hour, while still processing" },
+  { label: "Promo codes", value: "QUICK25 (₦2,000 off ₦25,000+) · QUICK10 (10% off ₦10,000+, up to ₦5,000)" },
+];
+
+const AdminSettingsPage = () => {
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl">Settings</h1>
+        <p className="mt-2 max-w-130 text-ink-soft">Your admin account, the shop's rules, and the demo tools.</p>
+      </div>
+
+      <div className="rounded-3xl bg-surface p-2 shadow-card">
+        <EditProfileForm />
+      </div>
+
+      <div className="grid items-start gap-6 xl:grid-cols-[1fr_420px]">
+        <ChangePasswordForm />
+
+        <section aria-labelledby="rules-title" className="rounded-3xl bg-surface p-6 shadow-card">
+          <h2 id="rules-title" className="text-xl font-semibold text-ink">
+            Shop rules
+          </h2>
+          <dl className="mt-4 flex flex-col divide-y divide-line text-sm">
+            {RULES.map((rule) => (
+              <div key={rule.label} className="flex flex-col gap-0.5 py-2.5 first:pt-0 last:pb-0">
+                <dt className="font-semibold text-ink">{rule.label}</dt>
+                <dd className="text-ink-soft">{rule.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-4 text-xs text-muted">Set in the server code (utils/orderRules.ts, data/promoCodes.ts).</p>
+        </section>
+      </div>
+
+      <DemoPanel />
+    </div>
+  );
+};
+
+export default AdminSettingsPage;
+```
+
+- **The profile and password forms are your STEP 39 ones**: an admin is a user too, and those forms already talk to
+  `/api/account`. Changing the password here also logs out the admin's other devices.
+- **Shop rules** are shown, not edited: they live in the server code, and the page says so instead of pretending there's
+  a settings database.
+
+### 45.3 `src/pages/NotFoundPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// NotFoundPage.tsx client/src/pages/NotFoundPage.tsx
+// "Page not found": any address that matches no route (App.tsx's path="*"). It shows inside the shop layout, or
+// inside the admin layout for /admin/... addresses, with the right links for each.
+
+// STEP 45 (part 3): The 404 page
+
+import { MdArrowBack, MdSearchOff } from "react-icons/md";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+
+const NotFoundPage = () => {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const inAdmin = pathname.startsWith("/admin");
+
+  return (
+    <section className={`mx-auto flex max-w-lg flex-col items-center px-4 text-center ${inAdmin ? "py-12" : "py-20"}`}>
+      <span className="flex size-20 items-center justify-center rounded-full bg-primary-light text-primary">
+        <MdSearchOff size={40} aria-hidden="true" />
+      </span>
+      <p className="mt-6 text-sm font-bold tracking-wider text-primary uppercase">Error 404</p>
+      <h1 className="mt-2 text-4xl font-bold tracking-tight text-ink">Page not found</h1>
+      <p className="mt-3 text-ink-soft">
+        We couldn't find <code className="rounded bg-field px-1.5 py-0.5 text-sm break-all">{pathname}</code>. The link may be
+        old, or the address may have a typo.
+      </p>
+      <div className="mt-8 flex flex-wrap justify-center gap-3">
+        <button type="button" onClick={() => navigate(-1)} className="flex h-12 items-center gap-2 rounded-xl px-5 font-semibold text-ink hover:bg-field">
+          <MdArrowBack size={20} aria-hidden="true" /> Go back
+        </button>
+        {inAdmin ? (
+          <Link to="/admin" className="flex h-12 items-center rounded-xl bg-primary-hover px-6 font-semibold text-white hover:bg-primary">
+            Back to the dashboard
+          </Link>
+        ) : (
+          <>
+            <Link to="/shop" className="flex h-12 items-center rounded-xl bg-primary-hover px-6 font-semibold text-white hover:bg-primary">
+              Browse the shop
+            </Link>
+            <Link to="/" className="flex h-12 items-center rounded-xl px-5 font-semibold text-primary hover:bg-primary-light">
+              Home
+            </Link>
+          </>
+        )}
+      </div>
+    </section>
+  );
+};
+
+export default NotFoundPage;
+```
+
+App.tsx already uses it twice: inside the shop layout (`/no-such-page`) and inside the admin layout
+(`/admin/no-such-page`). `useLocation` tells it which, so the buttons fit.
+
+### 45.4 The help pages: `src/utils/infoPages.ts` (new) and `src/pages/InfoPages.tsx`
+
+Your Footer links to 9 pages that don't exist yet (Shipping, Returns, FAQs, Buyer Protection, About, Careers, Merchants,
+Terms, Privacy). One list of texts, one page component.
+
+```ts
+// infoPages.ts client/src/utils/infoPages.ts
+// The text of the help and company pages the Footer links to (Shipping, Returns, FAQs, About, Terms, Privacy...).
+// One list, one page component (pages/InfoPages.tsx), one route each (App.tsx). Every fact here matches what the
+// shop really does (server/src/utils/orderRules.ts, data/promoCodes.ts): no made-up promises.
+
+// STEP 45 (part 4): The help pages' text
+
+export type InfoSection = { heading: string; paragraphs?: string[]; list?: string[] };
+
+export type InfoPageData = {
+  path: string; // the address, e.g. "/help/shipping"
+  group: "Help" | "Company"; // the small label above the title
+  title: string;
+  intro: string;
+  sections: InfoSection[];
+};
+
+export const infoPages: InfoPageData[] = [
+  {
+    path: "/help/shipping",
+    group: "Help",
+    title: "Shipping & Delivery",
+    intro: "How and when your order reaches you.",
+    sections: [
+      {
+        heading: "Delivery options",
+        list: [
+          "Standard Delivery: free, everywhere in Nigeria, in 2–3 business days (Saturdays and Sundays don't count).",
+          "Express Same-Day Dispatch: ₦2,500, Lagos addresses only. Your order leaves our warehouse the same day.",
+        ],
+      },
+      {
+        heading: "Tracking your order",
+        paragraphs: [
+          "Every order has a tracker under My Account → Orders. When your order leaves the warehouse we email you the courier's name and the waybill number.",
+          "Our courier partners are QuickCart Express, GIG Logistics and DHL Express.",
+        ],
+      },
+      {
+        heading: "Pay on delivery",
+        paragraphs: ["Available for Lagos addresses. You pay the rider when the order arrives."],
+      },
+    ],
+  },
+  {
+    path: "/help/returns",
+    group: "Help",
+    title: "Cancellations & Returns",
+    intro: "Changed your mind? Here's what you can do.",
+    sections: [
+      {
+        heading: "Cancel within 1 hour",
+        paragraphs: [
+          "You can cancel an order yourself, free of charge, within 1 hour of placing it, as long as it hasn't been shipped yet. Open the order under My Account → Orders and click Cancel Order.",
+          "If you paid by card, the payment is marked as refunded. If you chose pay on delivery, you're not charged.",
+        ],
+      },
+      {
+        heading: "After the first hour",
+        paragraphs: [
+          "Email help@quickcart.ng with your order number. Our team can still cancel an order that hasn't been delivered.",
+          "QuickCart is a student capstone project, so there's no returns pick-up service for delivered orders.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/help/faqs",
+    group: "Help",
+    title: "FAQs & Help Desk",
+    intro: "Quick answers to the questions shoppers ask most.",
+    sections: [
+      {
+        heading: "Do I need an account to shop?",
+        paragraphs: ["You can browse and fill your cart without one. You need an account to check out, so we can show you your orders."],
+      },
+      {
+        heading: "How do promo codes work?",
+        paragraphs: [
+          "Type the code in your cart. QUICK25 takes ₦2,000 off orders of ₦25,000 or more. QUICK10 takes 10% off orders of ₦10,000 or more (up to ₦5,000).",
+        ],
+      },
+      {
+        heading: "Is my card really charged?",
+        paragraphs: ["No. QuickCart is a demo shop: card payments are simulated and no money moves. We only keep the card type and its last 4 digits."],
+      },
+      {
+        heading: "Who can review a product?",
+        paragraphs: ["Shoppers who bought it and received it (a delivered order), so every review comes from a real purchase."],
+      },
+      {
+        heading: "I forgot my password",
+        paragraphs: ["Click Forgot password on the login page. We'll email you a link that works once, for 15 minutes."],
+      },
+      {
+        heading: "Still stuck?",
+        paragraphs: ["Email help@quickcart.ng."],
+      },
+    ],
+  },
+  {
+    path: "/help/buyer-protection",
+    group: "Help",
+    title: "Buyer Protection",
+    intro: "What we do to keep your shopping safe.",
+    sections: [
+      {
+        heading: "Your account",
+        list: [
+          "Passwords are stored scrambled (hashed), never as plain text. Not even our team can read them.",
+          "Changing your password logs out every other device.",
+          "Password reset links work once and expire after 15 minutes.",
+        ],
+      },
+      {
+        heading: "Your orders",
+        list: [
+          "Prices are always checked by our server at checkout, so the price you see is the price you pay.",
+          "Free cancellation within 1 hour of ordering, while the order is still being packed.",
+          "Reviews come only from shoppers who received the product.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/about",
+    group: "Company",
+    title: "About QuickCart",
+    intro: "A fast, friendly online shop for Nigeria, built as a full-stack capstone project.",
+    sections: [
+      {
+        heading: "What QuickCart is",
+        paragraphs: [
+          "QuickCart sells electronics, fashion, home goods, beauty products and more, with prices in naira, delivery across Nigeria, and same-day dispatch in Lagos.",
+          "It was designed and built from scratch: a React website and a Node.js + Express API with a MongoDB database, product photos on Cloudinary and emails through Brevo.",
+        ],
+      },
+      {
+        heading: "A demo shop",
+        paragraphs: ["The products, orders and customers you see are demo data, and card payments are simulated. Feel free to try everything."],
+      },
+    ],
+  },
+  {
+    path: "/careers",
+    group: "Company",
+    title: "Careers",
+    intro: "QuickCart is a student project, so we're not hiring.",
+    sections: [{ heading: "Want to talk?", paragraphs: ["If you'd like to know more about how QuickCart was built, email help@quickcart.ng."] }],
+  },
+  {
+    path: "/merchants",
+    group: "Company",
+    title: "Merchant Partners",
+    intro: "Every product in QuickCart is managed by our own team.",
+    sections: [
+      {
+        heading: "Selling on QuickCart",
+        paragraphs: ["QuickCart doesn't take outside sellers yet. Our admins add the products, set the prices and ship the orders from the admin dashboard."],
+      },
+    ],
+  },
+  {
+    path: "/terms",
+    group: "Company",
+    title: "Terms of Service",
+    intro: "The simple rules for using QuickCart.",
+    sections: [
+      {
+        heading: "Using the shop",
+        list: [
+          "QuickCart is a demonstration shop built for a capstone project. Orders are not real purchases and nothing is actually shipped.",
+          "Keep your password to yourself. You're responsible for what's done with your account.",
+          "Don't try to break, overload or misuse the site.",
+          "Reviews must be honest and about the product. We may remove reviews that aren't.",
+        ],
+      },
+    ],
+  },
+  {
+    path: "/privacy",
+    group: "Company",
+    title: "Privacy Policy",
+    intro: "What we keep about you, and why.",
+    sections: [
+      {
+        heading: "What we store",
+        list: [
+          "Your name, email and phone number, so you can log in and we can contact you about your orders.",
+          "Your saved addresses and your orders, so we can deliver them and show your order history.",
+          "For card payments, only the card type and its last 4 digits.",
+          "Your newsletter subscription, if you subscribe. Every newsletter email has an unsubscribe link.",
+        ],
+      },
+      {
+        heading: "In your browser",
+        paragraphs: [
+          "Your login, your cart, and the products you viewed recently are kept in your own browser (local storage), not on our server.",
+        ],
+      },
+      {
+        heading: "Services we use",
+        paragraphs: ["MongoDB Atlas stores the data, Cloudinary stores the product photos and Brevo sends our emails. We never sell your data."],
+      },
+    ],
+  },
+];
+```
+
+Replace the `InfoPages.tsx` placeholder:
+
+```tsx
+// InfoPages.tsx client/src/pages/InfoPages.tsx
+// One page component for all the help and company pages (the text is in utils/infoPages.ts).
+// App.tsx makes one route per page: <Route path={page.path} element={<InfoPage page={page} />} />
+
+// STEP 45 (part 5): The help pages
+
+import { MdMailOutline } from "react-icons/md";
+import { Link } from "react-router-dom";
+import Breadcrumb from "../components/common/Breadcrumb";
+import { infoPages, type InfoPageData } from "../utils/infoPages";
+
+const InfoPage = ({ page }: { page: InfoPageData }) => {
+  const others = infoPages.filter((item) => item.group === page.group && item.path !== page.path);
+
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-10 md:px-8">
+      <Breadcrumb items={[{ label: "Home", to: "/" }, { label: page.title }]} />
+
+      <div className="mt-6 grid items-start gap-8 lg:grid-cols-[1fr_280px]">
+        <article className="rounded-3xl bg-surface p-6 shadow-card md:p-10">
+          <p className="text-sm font-bold tracking-wider text-primary uppercase">{page.group}</p>
+          <h1 className="mt-1 text-4xl font-bold tracking-tight text-ink">{page.title}</h1>
+          <p className="mt-3 text-lg text-ink-soft">{page.intro}</p>
+
+          {page.sections.map((section) => (
+            <section key={section.heading} className="mt-8">
+              <h2 className="text-xl font-semibold text-ink">{section.heading}</h2>
+              {section.paragraphs?.map((text) => (
+                <p key={text} className="mt-2 leading-7 text-ink-soft">
+                  {text}
+                </p>
+              ))}
+              {section.list && (
+                <ul className="mt-2 flex list-disc flex-col gap-1.5 pl-5 leading-7 text-ink-soft marker:text-primary">
+                  {section.list.map((text) => (
+                    <li key={text}>{text}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ))}
+        </article>
+
+        <aside className="flex flex-col gap-4">
+          <nav aria-label={`More ${page.group.toLowerCase()} pages`} className="rounded-3xl bg-surface p-5 shadow-card">
+            <h2 className="mb-3 text-xs font-bold tracking-wider text-ink-soft uppercase">More {page.group.toLowerCase()}</h2>
+            <ul className="flex flex-col gap-1">
+              {others.map((item) => (
+                <li key={item.path}>
+                  <Link to={item.path} className="block rounded-lg px-3 py-2 font-medium text-ink hover:bg-field hover:text-primary">
+                    {item.title}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <a href="mailto:help@quickcart.ng" className="flex items-center gap-3 rounded-3xl bg-primary-light p-5 font-semibold text-primary-hover hover:underline">
+            <MdMailOutline size={22} aria-hidden="true" /> help@quickcart.ng
+          </a>
+        </aside>
+      </div>
+    </div>
+  );
+};
+
+export default InfoPage;
+```
+
+**And one Footer label.** In `src/components/layout/Footer.tsx`, change "Easy 7-Day Returns": QuickCart has no returns
+service, so that promise isn't true. Replace
+
+```tsx
+{ label: "Easy 7-Day Returns", to: "/help/returns" },
+```
+
+with
+
+```tsx
+{ label: "Cancellations & Returns", to: "/help/returns" },
+```
+
+- **Every sentence matches what the shop really does**: the delivery prices and the 1-hour cancel window come from
+  `server/src/utils/orderRules.ts`, the codes from `data/promoCodes.ts`. "Passwords are hashed" (bcrypt), "changing
+  your password logs out other devices" (`passwordChangedAt`), "prices are checked by the server": I checked each one
+  in your server code. Honest pages are better for your presentation
+  than made-up promises.
+- **The data is in `utils/`, not in the component file**: a component file should export only components, so Vite's fast
+  refresh keeps working (the same rule you followed for the contexts).
+
+### 45.5 `src/App.tsx` and `src/layouts/AdminLayout.tsx`
+
+Replace the whole of **`src/App.tsx`** with this. It's your file with 2 changes: the help pages' routes, and the admin
+pages loaded with `lazy` (the commented-out `InfoPages` lines and the 2 comments at the bottom are gone).
+
+```tsx
+// App.tsx client/src/App.tsx
+// Every page of the website and its address. The shop pages share MainLayout (Navbar + Footer), the account pages
+// AccountLayout, the admin pages AdminLayout.
+
+// STEP 45 (part 6): The help pages get their routes, and the admin pages load only when an admin opens them
+
+import { lazy } from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import HomePage from "./pages/home/HomePage";
+import ShopPage from "./pages/shop/ShopPage";
+import CategoriesPage from "./pages/shop/CategoriesPage";
+import ProductDetailsPage from "./pages/shop/ProductDetailsPage";
+import CartPage from "./pages/cart/CartPage";
+import LoginPage from "./pages/auth/LoginPage";
+import RegisterPage from "./pages/auth/RegisterPage";
+import ForgotPasswordPage from "./pages/auth/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/auth/ResetPasswordPage";
+import VerifyEmailPage from "./pages/auth/VerifyEmailPage";
+import CheckoutPage from "./pages/cart/CheckoutPage";
+import OrderConfirmationPage from "./pages/cart/OrderConfirmationPage";
+import OrderHistoryPage from "./pages/account/OrderHistoryPage";
+import AddressesPage from "./pages/account/AddressesPage";
+import SavedItemsPage from "./pages/account/SavedItemsPage";
+import AccountSettingsPage from "./pages/account/AccountSettingsPage";
+import OrderDetailsPage from "./pages/account/OrderDetailsPage";
+import InfoPage from "./pages/InfoPages";
+import AdminLoginPage from "./pages/admin/AdminLoginPage";
+import MainLayout from "./layouts/MainLayout";
+import AccountLayout from "./layouts/AccountLayout";
+import AdminLayout from "./layouts/AdminLayout";
+import AccountOverviewPage from "./pages/account/AccountOverviewPage";
+import NotFoundPage from "./pages/NotFoundPage";
+import ProtectedRoute from "./components/auth/ProtectedRoute";
+import { infoPages } from "./utils/infoPages";
+
+// The admin pages are "lazy": their code (and Chart.js, the biggest library) is downloaded only when an admin opens
+// one, so shoppers get a smaller, faster website. AdminLayout shows a placeholder while a page downloads (<Suspense>).
+const AdminDashboardPage = lazy(() => import("./pages/admin/AdminDashboardPage"));
+const AdminProductsPage = lazy(() => import("./pages/admin/AdminProductsPage"));
+const AdminProductsFormPage = lazy(() => import("./pages/admin/AdminProductsFormPage"));
+const AdminOrdersPage = lazy(() => import("./pages/admin/AdminOrdersPage"));
+const AdminCustomersPage = lazy(() => import("./pages/admin/AdminCustomersPage"));
+const AdminCategoriesPage = lazy(() => import("./pages/admin/AdminCategoriesPage"));
+const AdminSettingsPage = lazy(() => import("./pages/admin/AdminSettingsPage"));
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* Everyone can access these pages */}
+        <Route element={<MainLayout />}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/shop" element={<ShopPage />} />
+          <Route path="/categories" element={<CategoriesPage />} />
+          <Route path="/product/:productId" element={<ProductDetailsPage />} />
+          <Route path="/cart" element={<CartPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+
+          {/* Pages that need a login: shoppers who are not logged in are sent to /login first */}
+          <Route element={<ProtectedRoute />}>
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/checkout" element={<CheckoutPage />} />
+            <Route path="/order-confirmation/:orderId" element={<OrderConfirmationPage />} />
+
+            {/* Account pages: account menu on the left */}
+            <Route path="/account" element={<AccountLayout />}>
+              <Route index element={<AccountOverviewPage />} />
+              <Route path="orders" element={<OrderHistoryPage />} />
+              <Route path="addresses" element={<AddressesPage />} />
+              <Route path="saved" element={<SavedItemsPage />} />
+              <Route path="settings" element={<AccountSettingsPage />} />
+            </Route>
+
+            {/* Order details is full width in the design, so it has no account menu */}
+            <Route path="/account/orders/:orderId" element={<OrderDetailsPage />} />
+          </Route>
+
+          {/* Shipping, returns, FAQs, About, Terms, Privacy... (one route each, all using InfoPage) */}
+          {infoPages.map((page) => (
+            <Route key={page.path} path={page.path} element={<InfoPage page={page} />} />
+          ))}
+
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+
+        {/* Admin login: no layout */}
+        <Route path="/admin/login" element={<AdminLoginPage />} />
+
+        {/* Admin pages: admin menu + top bar, no store header or footer. Only admins get in. */}
+        <Route element={<ProtectedRoute adminOnly />}>
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<AdminDashboardPage />} />
+            <Route path="products" element={<AdminProductsPage />} />
+            <Route path="products/new" element={<AdminProductsFormPage />} />
+            <Route path="products/:productId/edit" element={<AdminProductsFormPage />} />
+            <Route path="orders" element={<AdminOrdersPage />} />
+            <Route path="customers" element={<AdminCustomersPage />} />
+            <Route path="categories" element={<AdminCategoriesPage />} />
+            <Route path="settings" element={<AdminSettingsPage />} />
+
+            {/* Any other admin address shows the 404 page inside the admin layout */}
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+In **`src/layouts/AdminLayout.tsx`**:
+
+1. Change the first import to `import { Suspense, useEffect, useState } from "react";`
+2. Replace
+
+```tsx
+        <main className="px-4 py-8 md:px-8">
+          <Outlet />
+        </main>
+```
+
+with
+
+```tsx
+        <main className="px-4 py-8 md:px-8">
+          {/* The admin pages are lazy (App.tsx): while a page's code downloads, show a grey placeholder */}
+          <Suspense fallback={<div aria-busy="true" className="h-96 animate-pulse rounded-3xl bg-surface shadow-card" />}>
+            <Outlet />
+          </Suspense>
+        </main>
+```
+
+- **`lazy(() => import("..."))`** makes Vite put each admin page in its own file, downloaded the first time an admin
+  opens it. **`<Suspense>`** shows the fallback while it downloads. The menu and top bar stay on screen, because the
+  `Suspense` is inside the layout, around `<Outlet />` only.
+- **This fixes the STEP 41 build warning.** Before: one 650 kB+ file for everyone. Now the shop's main file is about
+  440 kB, and Chart.js (175 kB) only downloads with the admin dashboard. Shoppers never download it.
+
+### 45.6 Delete the placeholders nothing uses
+
+These files were made at the start as placeholders. The real work ended up elsewhere (e.g. `CartSummary` instead of
+`OrderPriceSummary`, `ProductCard` instead of the 7 card variants), and nothing imports them. Run this from the `client`
+folder:
+
+```bash
+cd ~/Desktop/QuickCarrt/client/src
+git rm components/admin/DescriptionEditor.tsx components/auth/SocialSignIn.tsx components/auth/StateTabs.tsx \
+  components/common/ArrowLink.tsx components/common/FormattedText.tsx components/common/LoadingCards.tsx \
+  components/layout/BackToTop.tsx components/order/DeliveryInfo.tsx components/order/OrderInvoice.tsx \
+  components/order/OrderItemList.tsx components/order/OrderPriceSummary.tsx components/product/BestSellerCard.tsx \
+  components/product/CategoryFilter.tsx components/product/CustomersAlsoViewed.tsx components/product/DealCard.tsx \
+  components/product/NewArrivalCard.tsx components/product/RecommendedCard.tsx components/product/RelatedProductCard.tsx \
+  components/product/ShopProductCard.tsx components/product/VipDropsBanner.tsx components/product/WhiteReview.tsx
+```
+
+(`git rm` deletes the files and tells git in one go. I checked: none of them is imported anywhere.)
+
+### 45.7 `client/vercel.json` (new, in the `client` folder next to `package.json`)
+
+```json
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
+```
+
+Vercel serves files. When someone opens `https://your-site.vercel.app/shop` directly (or refreshes it), there's no file
+called `shop`, so Vercel would answer 404. This rule says "for any address, send `index.html`", and React Router then
+shows the right page. (On your computer, Vite does this for you, which is why you never saw the problem.)
+
+### 45.8 Two small server changes
+
+1. **`server/src/app.ts`**: under const app = express()
+
+```ts
+// Online hosts (Render, Railway...) put a "proxy" in front of the app that handles https. Trusting it makes
+// req.protocol say "https" instead of "http", so links the server builds (the newsletter's unsubscribe link)
+// are correct. (STEP 29)
+app.set("trust proxy", 1);
+```
+
+Render puts a "proxy" in front of your server that handles https. Without this line, Express thinks every request came
+over plain http, and the newsletter's unsubscribe link would start with `http://` (server STEP 29 explains it).
+
+2. **`server/package.json`**: add an `engines` entry (after `"scripts": { ... },`) so Render uses a modern Node.js:
+
+```json
+  "engines": {
+    "node": ">=20"
+  },
+```
+
+## Part B: test it like production, then push
+
+### 45.9 Run the built versions on your computer
+
+Online, nothing runs `npm run dev`. Render runs the compiled server and Vercel serves the built client. Try exactly that
+first, so any problem shows up on your computer and not in front of your examiners.
+
+Terminal 1 (server):
+
+```bash
+cd ~/Desktop/QuickCarrt/server
+npm run seed
+npm run build      # TypeScript -> plain JavaScript in server/dist
+npm start          # node dist/server.js: demo mode is OFF, like online
+```
+
+Terminal 2 (client):
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+npm run build      # must finish with no errors and no "larger than 500 kB" warning
+npm run preview    # serves the built site at http://localhost:4173
+```
+
+For this test, start terminal 1 with this instead of plain `npm start`:
+
+```bash
+DEMO_MODE=false CLIENT_URL=http://localhost:4173 npm start
+```
+
+- **`DEMO_MODE=false`**: your `server/.env` has **`DEMO_MODE=true`**, which turns demo mode on even in the built
+  server. (My production test caught it: the Forgot Password reply contained the reset link.) A value typed before the
+  command wins over `.env`, so this run behaves like Render will.
+- **`CLIENT_URL=http://localhost:4173`**: the preview runs on port 4173, and your `.env` says 5173, so CORS would block
+  the requests (see the troubleshooting table in 45.15).
+
+| Do this on http://localhost:4173                           | You should see                                          |
+| ---------------------------------------------------------- | ------------------------------------------------------- |
+| Footer → **FAQs & Help Desk**, then the other 8 links       | each help page, with "More help" / "More company" links on the side |
+| Refresh on `/help/shipping`                                 | the page again (not a blank page)                       |
+| `/no-such-page`                                             | "Page not found" with the shop header and footer; **Browse the shop** works |
+| Shop, product page, cart, QUICK25, checkout, My Orders      | everything from STEPs 33–40 works as before             |
+| Admin login → Dashboard                                     | a grey box for a moment the first time, then the dashboard with the chart |
+| **Settings**                                                | your profile, Change Password, Shop rules, and Demo tools |
+| **Move orders along**                                       | "The demo tools are turned off on this server..." (demo mode is off in the built server) |
+| `/admin/no-such-page`                                       | "Page not found" inside the admin layout, **Back to the dashboard** |
+| Ctrl+C terminal 1, then `npm run dev` there, Settings → **Move orders along** | "4 order(s) shipped and 3 order(s) delivered." and the menu's "New" badge disappears |
+| Type RESET → **Reset demo data**                            | "The demo data has been reset. Please log in again." and the admin login page |
+
+I tested all of this on a copy of your project (your STEP 43 commit + STEP 44 + this step): **25 checks** in dev mode
+and the production run below, all passing.
+
+<!--PROD_RESULTS-->Then I ran the tests of STEPs 33–44 again against the built versions (compiled server + built client); the results are
+below.
+
+### 45.10 Commit and push
+
+```bash
+cd ~/Desktop/QuickCarrt
+git status            # make sure NO .env file is listed
+git add .
+git commit -m "STEP 45: settings, demo panel, help pages, 404, lazy admin pages, deploy config"
+git push
+```
+
+`.env` is in your `.gitignore` (both folders), so `git add .` leaves it out. Check `git status` anyway: your database
+password, JWT secret and Brevo and Cloudinary keys are in it, and GitHub is public.
+
+## Part C: put it online (free)
+
+You'll create 2 free accounts (Render and Vercel), both by signing in with GitHub. You shouldn't pay anything on the free plans. Do the steps in this order: the client needs the server's address, and then the server needs the client's.
+
+### 45.11 MongoDB Atlas: let Render connect
+
+Render's free servers don't have a fixed IP address, so Atlas must accept connections from anywhere (your database
+password still protects it).
+
+1. https://cloud.mongodb.com → your project → **Network Access** (left menu, under Security).
+2. **Add IP Address** → **Allow Access from Anywhere** (it fills in `0.0.0.0/0`) → **Confirm**.
+
+Your data is already there (`npm run seed`), and the online shop uses the same database as your computer.
+
+### 45.12 Render: the server
+
+1. https://render.com → **Get Started** → **GitHub**, and let Render see your **QuickCart** repository.
+2. **New +** → **Web Service** → pick **afeDayo/QuickCart** → **Connect**.
+3. Fill in:
+
+| Setting          | Value                                       |
+| ---------------- | ------------------------------------------- |
+| Name             | `quickcart-api` (part of the address; any free name) |
+| Region           | Frankfurt (EU Central), the closest to Nigeria |
+| Branch           | `main`                                      |
+| Root Directory   | `server`                                    |
+| Runtime          | Node                                        |
+| Build Command    | `npm install --include=dev && npm run build` |
+| Start Command    | `npm start`                                 |
+| Instance Type    | **Free**                                    |
+
+`--include=dev` makes sure TypeScript (a "devDependency") is installed, because `npm run build` needs it.
+
+4. **Environment Variables** → **Add from .env**, or add them one by one, copying the values from your `server/.env`:
+
+| Key                 | Value                                                     |
+| ------------------- | --------------------------------------------------------- |
+| `MONGO_URI`         | the same as in your `.env`                                |
+| `JWT_SECRET`        | a **new** long random secret (below), not the one from your computer |
+| `CLIENT_URL`        | `https://example.com` for now (you'll change it in 45.14) |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | from your `.env` |
+| `BREVO_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `BREVO_LIST_ID` | from your `.env` (the ones you have) |
+
+Make the new secret on your computer and paste the result:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+
+**Don't add** `PORT` (Render chooses it, and your `env.ts` reads it) or `NODE_ENV`.
+
+> ⚠️ **Never add `DEMO_MODE` on Render.** Your `.env` has `DEMO_MODE=true`. If you use **Add from .env**, delete the
+> `DEMO_MODE` row before saving. With it on, anyone could reset any password, including the admin's (45.1).
+
+5. **Advanced** → **Health Check Path**: `/api/health`.
+6. **Deploy Web Service.** The log shows `npm install`, `tsc`, then `npm start`. After 3–5 minutes, "Your service is
+   live". Your address is at the top, like `https://quickcart-api.onrender.com`.
+7. Open `https://quickcart-api.onrender.com/api/health` (with your address). You should see
+   `{"status":"ok","message":"QuickCart API is running"}`. Then try `.../api/products?limit=1`: you should get a product.
+   That proves the server reaches your database.
+
+### 45.13 Vercel: the client
+
+1. https://vercel.com → **Sign Up** → **Hobby** (free) → **Continue with GitHub**.
+2. **Add New...** → **Project** → **Import** next to **QuickCart**.
+3. Fill in:
+
+| Setting              | Value                                                  |
+| -------------------- | ------------------------------------------------------ |
+| Project Name         | `quickcart` (your address becomes `quickcart-....vercel.app`) |
+| Framework Preset     | **Vite** (found by itself)                             |
+| Root Directory       | **Edit** → `client`                                    |
+| Build Command        | `npm run build` (the default)                          |
+| Output Directory     | `dist` (the default)                                   |
+
+4. **Environment Variables**: Key `VITE_API_URL`, Value your Render address **plus `/api`**, e.g.
+   `https://quickcart-api.onrender.com/api` (no `/` at the end).
+5. **Deploy.** After 1–2 minutes you get your website's address, e.g. `https://quickcart-afedayo.vercel.app`. Copy it
+   exactly as shown in the project's **Domains**.
+
+`VITE_...` values are written into the built website **when it's built**. If you change `VITE_API_URL` later, press
+**Redeploy** (Deployments → ⋯ → Redeploy) or the old value stays.
+
+### 45.14 Connect them: tell the server the website's address
+
+1. Render → your service → **Environment** → `CLIENT_URL` → **Edit** → your Vercel address, exactly, with no `/` at the
+   end (e.g. `https://quickcart-afedayo.vercel.app`) → **Save Changes**. Render restarts the server (about a minute).
+2. Why it matters: the server only accepts requests from that address (CORS, server STEP 3), and every email link
+   (reset password, order tracking) is built from it.
+
+### 45.15 The final online check
+
+Open your Vercel address.
+
+| Do this                                                    | You should see                                           |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| The Home page                                              | products and photos load (the **first** visit after a quiet spell can take up to a minute, see below) |
+| Shop, a product, add to cart, QUICK25, checkout with card `4242 4242 4242 4242`, any future expiry, any 3-digit CVV | the order confirmation; the order in My Orders |
+| Register with **your own** email                           | the verify-email page; the 6-digit code arrives in your inbox (Brevo) |
+| Forgot Password with your email                            | the reset email arrives; its link opens **your Vercel site**, not localhost |
+| Refresh on `/shop`, `/account/orders`, `/help/faqs`         | the same page (thanks to `vercel.json`)                 |
+| `/admin` → `admin@quickcart.ng` / `Admin@12345`            | the dashboard; Products, Orders (ship one: the customer gets an email), Customers, Categories |
+| Add a product with a photo                                 | the photo uploads to Cloudinary and shows in the shop   |
+| Settings → Demo tools                                      | "turned off on this server" (correct, see 45.1)          |
+| On your phone                                              | the same site works; the menus slide in                  |
+
+**Change the admin password** online (Settings → Change Password) if you'll share the link: `Admin@12345` is written in
+this guide. (A demo reset would put it back, but demo mode is off online, so your new password stays.)
+
+**Things to know about the free plans:**
+
+- **Render's free server sleeps** after 15 minutes without visits. The next visit wakes it up, and that first request
+  takes about 30–60 seconds (the website shows its loading boxes, then the data). **Before a presentation, open
+  `https://your-api.onrender.com/api/health` a minute early** to wake it up.
+- Render gives 750 free hours a month: enough for one server running all month.
+- **Every `git push` to `main` redeploys both** automatically. Render takes a few minutes, Vercel about one.
+
+**If something doesn't work:**
+
+| You see                                                    | Cause and fix                                            |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| "Can't reach QuickCart right now" on every page            | The server is asleep (wait a minute and refresh), or `VITE_API_URL` is wrong: it must be the Render address + `/api`. Fix it in Vercel, then **Redeploy** |
+| The browser console says "blocked by CORS policy"          | `CLIENT_URL` on Render isn't exactly your Vercel address (https, no `/` at the end) |
+| Render's log: "Could not connect to MongoDB"               | Atlas Network Access doesn't have `0.0.0.0/0` (45.11), or `MONGO_URI` was pasted with a space or quotes |
+| Render's build fails at `tsc: not found`                   | The build command must be `npm install --include=dev && npm run build` |
+| 404 when refreshing a page on Vercel                       | `client/vercel.json` is missing or not pushed (45.7)     |
+| Photo upload says "Photo uploads are not set up"           | The 3 `CLOUDINARY_...` variables are missing on Render   |
+| No emails arrive                                           | `BREVO_API_KEY` / `EMAIL_FROM` missing on Render; check Render's **Logs** for "Email sent with Brevo" or the Brevo error |
+
+### 🎉 Done
+
+The progress table at the top now shows every step ✅ once you've done this one. You built a full-stack shop: a
+TypeScript + Express + MongoDB API with authentication, orders, reviews, uploads and emails, and a React website with
+a shop, cart, checkout, accounts and a full admin dashboard, online for anyone to use.
+
+Put both addresses in your repository's README and in your presentation:
+
+- Website: `https://your-site.vercel.app`
+- API: `https://your-api.onrender.com/api/health`
+
+Good luck with your capstone!
