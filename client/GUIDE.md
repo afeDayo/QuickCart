@@ -47,8 +47,8 @@ then the admin.
 | ✅   | 38     | Checkout and Order Confirmation |
 | ✅   | 39     | My Account: layout, overview, settings, addresses, saved items |
 | ✅   | 40     | Order History, Order Details and tracking, cancel, leave a review |
-| ⬜   | **41** | **Admin: login, layout, dashboard with the sales chart** ← you are here |
-| ⬜   | 42     | Admin: products table, add / edit product, photo upload                              |
+| ✅   | 41     | Admin: login, layout, dashboard with the sales chart                                 |
+| ⬜   | **42** | **Admin: products table, add / edit product, photo upload** ← you are here           |
 | ⬜   | 43     | Admin: orders, customers, categories, settings                                       |
 | ⬜   | 44     | Demo panel, help pages, 404, final polish (loading, empty and error states, phones)  |
 | ⬜   | 45     | Build and put it online (server on Render, client on Vercel)                         |
@@ -11437,3 +11437,1638 @@ git push
 
 ➡️ **Next: STEP 42 (Admin products: the Products Management table with its tabs, search and filters, and the Add / Edit
 Product form with photo uploads to Cloudinary, using your STEP 25 endpoints).** Reply **NEXT** when 41.5 works.
+
+---
+
+## STEP 42: Admin products: the Products table and the Add / Edit Product form
+
+Two admin screens, using your server STEP 25 endpoints:
+
+- **Products** (design: QuickCart Admin - Products Management): **Add Product**, the 4 cards (Total Items, Healthy
+  Stock, Low / Critical with "Action Needed", Out of Stock), the tabs **All / In Stock / Low Stock / Out of Stock /
+  Drafts** with their counts, search by name or SKU, category, price and sort, 8 rows a page with photos, the coloured
+  stock bars, Edit and Delete. The dashboard's "Low-Stock Alerts" link (`?tab=low-stock`) opens the right tab.
+- **Add / Edit Product** (design: Edit Product): Basic Information (title, description, category, SKU with
+  **Regenerate**, brand), Pricing & Inventory (regular / sale / cost price with the live **"25% OFF"** and **"Margin"**
+  pills, the Track Stock switch, stock and alert level), **photo uploads to Cloudinary** (up to 5, the first is the
+  cover), Publishing Status (Published / Draft / Scheduled with a date), tags, badge, tagline, and the dark
+  **"Unsaved Modifications Detected · Discard · Save & Publish"** bar.
+
+| File                                              | What it is                                              |
+| ------------------------------------------------- | ------------------------------------------------------- |
+| `pages/shop/ShopPage.tsx`, `pages/account/OrderHistoryPage.tsx` | a small fix to `update` (42.1)             |
+| `types/admin.ts`                                  | + the product and category shapes                       |
+| `components/admin/AdminStatCard.tsx`, `ProductsTable.tsx`, `pages/admin/AdminProductsPage.tsx` | the Products page |
+| `components/form/SelectInput.tsx`, `TextArea.tsx` | a dropdown and a text box that match your `TextInput`    |
+| `components/admin/TagInput.tsx`, `ImageUploader.tsx`, `UnsavedChangesBar.tsx` | the form's pieces           |
+| `components/admin/ProductForm.tsx`, `pages/admin/AdminProductsFormPage.tsx` | the form and its page          |
+
+All of them replace placeholders you already have.
+
+**Honest bits:** the design has things the server doesn't do, so they're left out rather than faked: **Import / Export
+CSV**, the row checkboxes (bulk actions), "Max: 150" on the stock bars (there's no maximum stock), "2 Variants",
+"Catalog Synchronized... Lagos Central Hub", **Regional Visibility** (Lagos / Abuja / Port Harcourt stock), the
+"Toggle Validation Demo" button and the Markdown toolbar (the shop shows the description as plain text). Specs, colours,
+highlights and bundles stay as the seed made them: the form doesn't touch them (a `PATCH` only changes the fields it
+sends). STEP 44 deletes the placeholder `DescriptionEditor.tsx`, which isn't needed.
+
+### 42.1 A fix first: `update` in `ShopPage.tsx` and `OrderHistoryPage.tsx`
+
+My STEP 34 comment was wrong, and testing this step showed it. It says `setParams((current) => ...)` gets the address
+"as it is RIGHT NOW". It doesn't: React Router hands that function the params **of the render the code came from**. The
+search box's timer runs code from 0.4 seconds ago, so it gets the old address and puts it back. Try it on the Shop page
+now: type "lamp" and pick a sort within half a second. When the timer fires, your sort disappears.
+
+The fix: start from the real address bar, `window.location.search`, which is always up to date.
+
+In **`src/pages/shop/ShopPage.tsx`**, replace the comment lines and the `update` function:
+
+```tsx
+  // setParams((current) => ...) gets the address as it is RIGHT NOW, so a late update (the search timer below)
+  // never undoes a filter clicked in the meantime.
+  const update = (changes: Record<string, string>) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      for (const [key, value] of Object.entries(changes)) {
+        if (value && !(key === "sort" && value === "featured"))
+          next.set(key, value);
+        else next.delete(key); // empty, or the default: keep the address short
+      }
+      if (!("page" in changes)) next.delete("page");
+      return next;
+    });
+  };
+```
+
+with:
+
+```tsx
+  // Start from the address bar as it is right now (window.location.search), so a late update (the search timer
+  // below) never undoes a filter clicked in the meantime.
+  const update = (changes: Record<string, string>) => {
+    const next = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value && !(key === "sort" && value === "featured")) next.set(key, value);
+      else next.delete(key); // empty, or the default: keep the address short
+    }
+    if (!("page" in changes)) next.delete("page");
+    setParams(next);
+  };
+```
+
+In **`src/pages/account/OrderHistoryPage.tsx`**, replace:
+
+```tsx
+  const update = (key: string, value: string) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value) next.set(key, value);
+      else next.delete(key);
+      return next;
+    });
+  };
+```
+
+with:
+
+```tsx
+  // From the address bar as it is right now, so the search timer never undoes a tab clicked meanwhile (STEP 42.1)
+  const update = (key: string, value: string) => {
+    const next = new URLSearchParams(window.location.search);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next);
+  };
+```
+
+`setParams(next)` with a plain value (not a function) is fine here: `next` was built from the newest address.
+
+### 42.2 `src/types/admin.ts`
+
+Add this at the bottom:
+
+```ts
+// STEP 42: Admin products and categories (server: adminProductController.ts, adminCategoryController.ts, STEP 25)
+
+export type ProductStatus = "published" | "draft" | "scheduled";
+
+// One row of GET /api/admin/products (the server's TABLE_FIELDS)
+export type AdminProductRow = {
+  _id: string;
+  name: string;
+  slug: string;
+  sku: string;
+  brand: string;
+  category: { _id: string; name: string; slug: string } | null;
+  price: number;
+  oldPrice?: number;
+  costPrice?: number;
+  images: string[];
+  trackStock: boolean;
+  stock: number;
+  lowStockThreshold: number;
+  status: ProductStatus;
+  publishAt?: string;
+  badge?: string;
+  updatedAt: string;
+};
+
+export type AdminProductTab = "all" | "in-stock" | "low-stock" | "out-of-stock" | "drafts";
+
+export type AdminProductsResponse = {
+  products: AdminProductRow[];
+  total: number;
+  page: number;
+  pages: number;
+  counts: Record<AdminProductTab, number>;
+};
+
+// GET /api/admin/products/:id -> the whole product, for the edit form (category is just its id here)
+export type AdminProductDetail = Omit<AdminProductRow, "category"> & {
+  category: string;
+  description: string;
+  tagline?: string;
+  features: string[];
+  tags: string[];
+};
+
+// GET /api/admin/categories -> every category, counting drafts too
+export type AdminCategory = { _id: string; name: string; slug: string; icon: string; productCount: number };
+```
+
+- **`AdminProductRow`** is a table row: only the columns the server sends (its `TABLE_FIELDS`), with the category filled
+  in (`populate`).
+- **`AdminProductDetail`** is the whole product for the edit form. `Omit<AdminProductRow, "category">` takes a row's
+  fields without `category`, because here the category is just its id (the dropdown's value).
+
+### 42.3 The Products page: `AdminStatCard.tsx`, `ProductsTable.tsx`, `AdminProductsPage.tsx`
+
+```tsx
+// AdminStatCard.tsx client/src/components/admin/AdminStatCard.tsx
+// A small number card at the top of the admin lists: "TOTAL ITEMS 40", "LOW / CRITICAL 6 Action Needed"...
+// Used on Products (STEP 42) and Orders (STEP 43).
+
+// STEP 42 (part 1): A stat card
+
+import type { ReactNode } from "react";
+import type { IconType } from "react-icons";
+
+type AdminStatCardProps = {
+  label: string;
+  value: number | string;
+  icon: IconType;
+  note?: ReactNode; // the small text or pill next to the number
+  danger?: boolean; // the red style for "needs attention"
+};
+
+const AdminStatCard = ({ label, value, icon: Icon, note, danger }: AdminStatCardProps) => {
+  return (
+    <div className={`overflow-hidden rounded-3xl bg-surface p-5 shadow-card ${danger ? "ring-1 ring-danger/20" : ""}`}>
+      <div className="flex items-start justify-between">
+        <p className={`text-sm font-semibold tracking-wide uppercase ${danger ? "text-danger" : "text-ink-soft"}`}>{label}</p>
+        <Icon size={22} aria-hidden="true" className={danger ? "text-danger" : "text-ink-soft"} />
+      </div>
+      <p className="mt-2 flex flex-wrap items-baseline gap-2">
+        <span className={`text-4xl font-bold ${danger ? "text-danger" : "text-ink"}`}>{value}</span>
+        {note && <span className="text-sm font-medium text-ink-soft">{note}</span>}
+      </p>
+    </div>
+  );
+};
+
+export default AdminStatCard;
+```
+
+```tsx
+// ProductsTable.tsx client/src/components/admin/ProductsTable.tsx
+// The products table (design: Admin - Products Management): product (photo, name, SKU and a note), category, price,
+// stock with a coloured bar, and the Edit / Delete actions.
+
+// STEP 42 (part 2): The products table
+
+import { useState } from "react";
+import { MdDeleteOutline, MdEdit, MdOutlineImageNotSupported } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useToast } from "../../context/ToastContext";
+import type { AdminProductRow } from "../../types/admin";
+import { api } from "../../utils/api";
+import { shortDate } from "../../utils/dates";
+import { naira } from "../../utils/format";
+
+// The small note under the SKU, depending on the product
+const noteFor = (product: AdminProductRow) => {
+  if (product.status === "draft") return { text: "Unpublished draft", classes: "text-muted" };
+  if (product.status === "scheduled") return { text: `Goes live ${product.publishAt ? shortDate(product.publishAt) : "soon"}`, classes: "text-primary" };
+  if (product.trackStock && product.stock === 0) return { text: "Sold out", classes: "text-danger" };
+  if (product.badge) return { text: product.badge, classes: "text-success" };
+  return { text: product.brand, classes: "text-ink-soft" };
+};
+
+// The stock column: "124 in stock" with a green bar, "3 left in stock" in red, "Not tracked"...
+const StockCell = ({ product }: { product: AdminProductRow }) => {
+  if (!product.trackStock) {
+    return <span className="text-sm text-muted">Not tracked (made to order)</span>;
+  }
+  const low = product.stock <= product.lowStockThreshold;
+  // A full bar = 5 times the alert level (an arbitrary "well stocked" mark, just for the picture)
+  const width = Math.min(100, Math.round((product.stock / Math.max(1, product.lowStockThreshold * 5)) * 100));
+  return (
+    <div className="w-44">
+      <p className="mb-1.5 flex justify-between text-xs font-semibold">
+        <span className={product.stock === 0 ? "text-danger" : low ? "text-danger" : "text-success"}>
+          {product.stock === 0 ? "0 units" : low ? `${product.stock} left in stock` : `${product.stock} in stock`}
+        </span>
+        {low && <span className="text-ink-soft">Reorder @ {product.lowStockThreshold}</span>}
+      </p>
+      <span aria-hidden="true" className="block h-1.5 overflow-hidden rounded-full bg-line-soft">
+        <span className={`block h-full rounded-full ${low ? "bg-danger" : "bg-success"}`} style={{ width: `${Math.max(width, product.stock > 0 ? 4 : 0)}%` }} />
+      </span>
+    </div>
+  );
+};
+
+type ProductsTableProps = { products: AdminProductRow[]; onDeleted: () => void };
+
+const ProductsTable = ({ products, onDeleted }: ProductsTableProps) => {
+  const { showToast } = useToast();
+  const [confirmId, setConfirmId] = useState<string | null>(null); // the row asking "Delete?"
+
+  const remove = async (product: AdminProductRow) => {
+    try {
+      const { message } = await api<{ message: string }>(`/admin/products/${product._id}`, { method: "DELETE" });
+      showToast({ type: "success", title: message }); // "'Demo Speaker' has been deleted."
+      setConfirmId(null);
+      onDeleted();
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't delete the product", message: (err as Error).message });
+    }
+  };
+
+  return (
+    // overflow-x-auto: the table scrolls sideways on phones. relative: the sr-only "Actions" text is position: absolute,
+    // and without a positioned box around it, it escapes the scroll box and makes the whole page wider on phones.
+    <div className="relative overflow-x-auto">
+      <table className="w-full min-w-200 text-left text-sm">
+        <thead className="bg-panel text-xs font-bold tracking-wider text-ink-soft uppercase">
+          <tr>
+            <th scope="col" className="px-6 py-3">Product</th>
+            <th scope="col" className="px-4 py-3">Category</th>
+            <th scope="col" className="px-4 py-3">Price</th>
+            <th scope="col" className="px-4 py-3">Stock quantity</th>
+            <th scope="col" className="px-6 py-3 text-right">
+              <span className="sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {products.map((product) => {
+            const note = noteFor(product);
+            return (
+              <tr key={product._id} className="hover:bg-panel/50">
+                <td className="px-6 py-4">
+                  <div className="flex items-center gap-4">
+                    {product.images[0] ? (
+                      <img src={product.images[0]} alt="" className="size-14 shrink-0 rounded-xl bg-field object-cover" />
+                    ) : (
+                      <span className="flex size-14 shrink-0 items-center justify-center rounded-xl bg-field text-muted">
+                        <MdOutlineImageNotSupported size={22} aria-hidden="true" />
+                      </span>
+                    )}
+                    <div className="min-w-0">
+                      <Link to={`/admin/products/${product._id}/edit`} className="block text-base font-semibold text-ink hover:text-primary">
+                        {product.name}
+                      </Link>
+                      <p className="text-xs font-semibold tracking-wide text-ink-soft">
+                        SKU: {product.sku} <span className={`ml-1 font-medium ${note.classes}`}>· {note.text}</span>
+                      </p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-4 py-4">
+                  <span className="rounded-full bg-field px-3 py-1 text-xs font-semibold whitespace-nowrap text-ink">{product.category?.name ?? "—"}</span>
+                </td>
+                <td className="px-4 py-4 whitespace-nowrap">
+                  <span className="block text-base font-bold text-ink">{naira(product.price)}</span>
+                  {product.oldPrice && product.oldPrice > product.price && <del className="text-xs text-muted">{naira(product.oldPrice)}</del>}
+                </td>
+                <td className="px-4 py-4">
+                  <StockCell product={product} />
+                </td>
+                <td className="px-6 py-4 text-right whitespace-nowrap">
+                  {confirmId === product._id ? (
+                    <span className="flex items-center justify-end gap-2 text-sm">
+                      Delete?
+                      <button type="button" onClick={() => remove(product)} className="font-semibold text-danger hover:underline">
+                        Yes
+                      </button>
+                      <button type="button" onClick={() => setConfirmId(null)} className="font-semibold text-ink-soft hover:underline">
+                        No
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="flex justify-end gap-1">
+                      <Link to={`/admin/products/${product._id}/edit`} aria-label={`Edit ${product.name}`} className="flex size-9 items-center justify-center rounded-lg text-ink-soft hover:bg-field hover:text-primary">
+                        <MdEdit size={18} />
+                      </Link>
+                      <button type="button" onClick={() => setConfirmId(product._id)} aria-label={`Delete ${product.name}`} className="flex size-9 items-center justify-center rounded-lg text-ink-soft hover:bg-danger-light hover:text-danger">
+                        <MdDeleteOutline size={18} />
+                      </button>
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+export default ProductsTable;
+```
+
+```tsx
+// AdminProductsPage.tsx client/src/pages/admin/AdminProductsPage.tsx
+// "Products" (design: Admin - Products Management): Add Product, the 4 stock cards, the tabs (All / In Stock /
+// Low Stock / Out of Stock / Drafts), search by name or SKU, category, price and sort, 8 per page.
+// GET /api/admin/products (server STEP 25). The filters live in the address bar, like the Shop page.
+
+// STEP 42 (part 3): The admin Products page
+
+import { useEffect, useRef, useState } from "react";
+import { MdAddCircleOutline, MdCheckCircleOutline, MdOutlineInventory2, MdRemoveShoppingCart, MdSearch, MdSearchOff, MdWarningAmber } from "react-icons/md";
+import { Link, useSearchParams } from "react-router-dom";
+import AdminStatCard from "../../components/admin/AdminStatCard";
+import ProductsTable from "../../components/admin/ProductsTable";
+import EmptyState from "../../components/common/EmptyState";
+import Pagination from "../../components/common/Pagination";
+import { useApi } from "../../hooks/useApi";
+import type { AdminCategory, AdminProductsResponse, AdminProductTab } from "../../types/admin";
+
+const PER_PAGE = 8; // "Rows per page: 8"
+
+const TABS: { value: AdminProductTab; label: string }[] = [
+  { value: "all", label: "All Products" },
+  { value: "in-stock", label: "In Stock" },
+  { value: "low-stock", label: "Low Stock" },
+  { value: "out-of-stock", label: "Out of Stock" },
+  { value: "drafts", label: "Drafts" },
+];
+
+// "All Prices" dropdown -> minPrice / maxPrice
+const PRICES: Record<string, { label: string; min?: number; max?: number }> = {
+  "": { label: "All Prices" },
+  under10: { label: "Under ₦10,000", max: 9999 },
+  "10to50": { label: "₦10,000 – ₦50,000", min: 10000, max: 50000 },
+  over50: { label: "Over ₦50,000", min: 50001 },
+};
+
+const selectClasses = "h-12 cursor-pointer rounded-xl bg-field px-4 font-medium text-ink outline-none focus:ring-2 focus:ring-primary/30";
+
+const AdminProductsPage = () => {
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get("tab") as AdminProductTab) || "all";
+  const search = params.get("search") ?? "";
+  const category = params.get("category") ?? "";
+  const price = params.get("price") ?? "";
+  const sort = params.get("sort") ?? "";
+  const page = Math.max(1, Number(params.get("page")) || 1);
+
+  // Change some filters (any change except the page goes back to page 1).
+  // Start from the address bar as it is right now (window.location.search), so the search box's late timer never
+  // undoes a dropdown picked in the meantime. (See 42.1: setParams((current) => ...) can't promise that.)
+  const update = (changes: Record<string, string>) => {
+    const next = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value && !(key === "tab" && value === "all")) next.set(key, value);
+      else next.delete(key);
+    }
+    if (!("page" in changes)) next.delete("page");
+    setParams(next);
+  };
+
+  const [searchText, setSearchText] = useState(search);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleSearch = (value: string) => {
+    setSearchText(value);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => update({ search: value.trim() }), 400);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const query = new URLSearchParams({ limit: String(PER_PAGE), page: String(page) });
+  if (tab !== "all") query.set("tab", tab);
+  if (search) query.set("search", search);
+  if (category) query.set("category", category);
+  if (sort) query.set("sort", sort);
+  const range = PRICES[price] ?? PRICES[""];
+  if (range.min !== undefined) query.set("minPrice", String(range.min));
+  if (range.max !== undefined) query.set("maxPrice", String(range.max));
+
+  const { data, error, loading, reload } = useApi<AdminProductsResponse>(`/admin/products?${query}`);
+  const { data: categoryData } = useApi<{ categories: AdminCategory[] }>("/admin/categories");
+  const counts = data?.counts;
+
+  const first = data ? (data.page - 1) * PER_PAGE + 1 : 0;
+  const last = data ? Math.min(data.page * PER_PAGE, data.total) : 0;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="text-sm font-bold tracking-wider text-primary uppercase">Store catalog</p>
+          <h1 className="text-5xl font-bold tracking-tight text-ink">Products</h1>
+          <p className="mt-2 max-w-110 text-ink-soft">Manage your store catalogue, stock levels and pricing.</p>
+        </div>
+        <Link to="/admin/products/new" className="flex h-12 items-center gap-2 rounded-xl bg-primary-hover px-6 text-lg font-semibold text-white hover:bg-primary">
+          <MdAddCircleOutline size={22} aria-hidden="true" /> Add Product
+        </Link>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <AdminStatCard label="Total items" value={counts?.all ?? "–"} icon={MdOutlineInventory2} note={counts ? `${counts.drafts} drafts` : undefined} />
+        <AdminStatCard
+          label="Healthy stock"
+          value={counts?.["in-stock"] ?? "–"}
+          icon={MdCheckCircleOutline}
+          note={counts && counts.all > 0 ? `${((counts["in-stock"] / counts.all) * 100).toFixed(1)}%` : undefined}
+        />
+        <AdminStatCard
+          label="Low / Critical"
+          value={counts?.["low-stock"] ?? "–"}
+          icon={MdWarningAmber}
+          danger
+          note={counts && counts["low-stock"] > 0 && <span className="rounded-full bg-danger-light px-2 py-0.5 text-xs font-semibold text-danger">Action Needed</span>}
+        />
+        <AdminStatCard label="Out of stock" value={counts?.["out-of-stock"] ?? "–"} icon={MdRemoveShoppingCart} />
+      </div>
+
+      <div className="flex flex-col gap-4 rounded-3xl bg-surface p-5 shadow-card">
+        <div role="tablist" aria-label="Filter products" className="flex gap-2 overflow-x-auto pb-1">
+          {TABS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              role="tab"
+              aria-selected={tab === item.value}
+              onClick={() => update({ tab: item.value })}
+              className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 font-medium transition-colors ${
+                tab === item.value ? "bg-primary-hover text-white" : "bg-field text-ink hover:bg-primary-light"
+              }`}
+            >
+              {item.label}
+              {counts && (
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                    tab === item.value ? "bg-white/20" : item.value === "low-stock" && counts["low-stock"] > 0 ? "bg-danger-light text-danger" : "bg-surface"
+                  }`}
+                >
+                  {counts[item.value]}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+          <div className="relative">
+            <label htmlFor="admin-product-search" className="sr-only">
+              Search products
+            </label>
+            <MdSearch size={20} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted" />
+            <input
+              id="admin-product-search"
+              type="search"
+              value={searchText}
+              onChange={(event) => handleSearch(event.target.value)}
+              placeholder="Search products by name or SKU..."
+              className="h-12 w-full rounded-xl bg-field pr-4 pl-11 outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+          <select aria-label="Category" value={category} onChange={(event) => update({ category: event.target.value })} className={selectClasses}>
+            <option value="">All Categories</option>
+            {categoryData?.categories.map((item) => (
+              <option key={item._id} value={item.slug}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Price" value={price} onChange={(event) => update({ price: event.target.value })} className={selectClasses}>
+            {Object.entries(PRICES).map(([value, option]) => (
+              <option key={value} value={value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <select aria-label="Sort" value={sort} onChange={(event) => update({ sort: event.target.value })} className={selectClasses}>
+            <option value="">Last Updated</option>
+            <option value="name">Name (A–Z)</option>
+            <option value="price-asc">Price: Low to High</option>
+            <option value="price-desc">Price: High to Low</option>
+            <option value="stock-asc">Stock: Lowest first</option>
+          </select>
+        </div>
+      </div>
+
+      {error ? (
+        <div role="alert" className="flex items-center justify-between rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          {error}
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : !data ? (
+        <div aria-busy="true" className="h-96 animate-pulse rounded-3xl bg-surface shadow-card" />
+      ) : data.products.length === 0 ? (
+        <EmptyState icon={MdSearchOff} title="No products found" text="Try another tab, category or search." />
+      ) : (
+        <section aria-label="Products" className={`overflow-hidden rounded-3xl bg-surface shadow-card ${loading ? "opacity-60" : ""}`}>
+          <ProductsTable products={data.products} onDeleted={reload} />
+          <div className="flex flex-col items-center justify-between gap-4 border-t border-line px-6 py-4 sm:flex-row">
+            <p className="text-sm text-ink-soft">
+              Showing {first}–{last} of {data.total} products
+            </p>
+            <Pagination page={data.page} pages={data.pages} onChange={(next) => update({ page: String(next) })} />
+          </div>
+        </section>
+      )}
+    </div>
+  );
+};
+
+export default AdminProductsPage;
+```
+
+**Things worth understanding:**
+
+- **The filters live in the address bar**, like the Shop page (STEP 34): `/admin/products?tab=low-stock&sort=price-asc`.
+  Refresh, Back and the dashboard's link all work, and `update` uses the 42.1 fix from the start.
+- **The tab counts come with every list request** (`counts`, server STEP 25), so they stay right after a search or a delete.
+- **The stock bar is a picture, not a measurement.** There's no "maximum stock", so a full bar means 5 times the alert
+  level. Red once the stock is at or under the product's own alert level, the same rule as the server's Low Stock tab.
+- **`relative` on the table's scroll box:** the hidden "Actions" header text (`sr-only`) is `position: absolute`.
+  Without a positioned box around it, it escaped the scroll box and made the whole page 800px wide on phones. My phone
+  test caught that.
+- **`MdRemoveShoppingCart` for Out of Stock:** my first choice, `MdDoNotDisturbAlt`, has a giant invisible shape inside
+  it (a leftover in the icon file) that also stretched the page on phones. `overflow-hidden` on the card stops any icon
+  doing that.
+
+### 42.4 `src/components/form/SelectInput.tsx` and `src/components/form/TextArea.tsx`
+
+These were placeholders since STEP 30. They work like your `TextInput` (label, red error, `useId`), so every admin form
+looks the same.
+
+```tsx
+// SelectInput.tsx client/src/components/form/SelectInput.tsx
+// A labelled dropdown that looks like TextInput: "Primary Category [Electronics ⌄]". Used by the admin forms.
+//   <SelectInput label="Primary Category" value={...} onChange={...}><option ...>...</option></SelectInput>
+
+// STEP 42 (part 4): A dropdown and a text area that match TextInput
+
+import { useId, type ReactNode, type SelectHTMLAttributes } from "react";
+import { MdExpandMore } from "react-icons/md";
+
+type SelectInputProps = SelectHTMLAttributes<HTMLSelectElement> & {
+  label: string;
+  error?: string;
+  labelAction?: ReactNode;
+};
+
+const SelectInput = ({ label, error, labelAction, className = "", children, ...selectProps }: SelectInputProps) => {
+  const id = useId();
+  const errorId = `${id}-error`;
+
+  return (
+    <div className={className}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <label htmlFor={id} className="text-sm leading-5 font-medium text-ink">
+          {label}
+        </label>
+        {labelAction}
+      </div>
+
+      <div className="relative">
+        {/* appearance-none hides the browser's own arrow, so ours is the same in every browser */}
+        <select
+          id={id}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
+          className="h-12 w-full cursor-pointer appearance-none rounded-xl bg-field pr-11 pl-4 text-[15px] text-ink outline-none focus:ring-2 focus:ring-primary/30 aria-invalid:bg-danger-light aria-invalid:ring-2 aria-invalid:ring-danger/40"
+          {...selectProps}
+        >
+          {children}
+        </select>
+        <MdExpandMore size={22} aria-hidden="true" className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-ink-soft" />
+      </div>
+
+      {error && (
+        <p id={errorId} className="mt-1.5 text-[13px] leading-4.5 text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+};
+
+export default SelectInput;
+```
+
+```tsx
+// TextArea.tsx client/src/components/form/TextArea.tsx
+// A labelled multi-line box that looks like TextInput, with an optional "120 / 2000" counter.
+
+// STEP 42 (part 4): A dropdown and a text area that match TextInput
+
+import { useId, type ReactNode, type TextareaHTMLAttributes } from "react";
+
+type TextAreaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  label: string;
+  error?: string;
+  labelAction?: ReactNode;
+  hint?: ReactNode; // small grey text under the box
+};
+
+const TextArea = ({ label, error, labelAction, hint, className = "", ...textareaProps }: TextAreaProps) => {
+  const id = useId();
+  const errorId = `${id}-error`;
+  const length = String(textareaProps.value ?? "").length;
+
+  return (
+    <div className={className}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <label htmlFor={id} className="text-sm leading-5 font-medium text-ink">
+          {label}
+        </label>
+        {labelAction}
+      </div>
+
+      <textarea
+        id={id}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : undefined}
+        className="block min-h-32 w-full resize-y rounded-xl bg-field px-4 py-3 text-[15px] leading-6 text-ink outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/30 aria-invalid:bg-danger-light aria-invalid:ring-2 aria-invalid:ring-danger/40"
+        {...textareaProps}
+      />
+
+      {(hint || textareaProps.maxLength) && (
+        <p className="mt-1.5 flex justify-between gap-4 text-[13px] text-muted">
+          <span>{hint}</span>
+          {textareaProps.maxLength && (
+            <span className="whitespace-nowrap">
+              {length} / {textareaProps.maxLength}
+            </span>
+          )}
+        </p>
+      )}
+
+      {error && (
+        <p id={errorId} className="mt-1.5 text-[13px] leading-4.5 text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+};
+
+export default TextArea;
+```
+
+- **`appearance-none`** hides the browser's own dropdown arrow (it looks different in every browser); ours is an icon on top.
+- **`maxLength`** on the text area does 2 jobs: the browser stops typing at 2000, and the counter shows "44 / 2000".
+
+### 42.5 The form's pieces: `TagInput.tsx`, `ImageUploader.tsx`, `UnsavedChangesBar.tsx`
+
+```tsx
+// TagInput.tsx client/src/components/admin/TagInput.tsx
+// "Taxonomy & Tags" (design: Edit Product): the tags as chips with an ×, and a box to type a new one + Enter.
+// Tags matter: the Home page finds products by tag (e.g. "flash-deal", "todays-deal", STEP 33).
+
+// STEP 42 (part 5): The tag input
+
+import { useState, type KeyboardEvent } from "react";
+import { MdAdd, MdClose } from "react-icons/md";
+
+// The same tidy-up the server does (server STEP 25), so the chip shows what will be saved: "Flash Deal" -> "flash-deal"
+const toTag = (text: string) =>
+  text
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+type TagInputProps = { tags: string[]; onChange: (tags: string[]) => void };
+
+const TagInput = ({ tags, onChange }: TagInputProps) => {
+  const [text, setText] = useState("");
+
+  const add = () => {
+    const tag = toTag(text);
+    if (tag && !tags.includes(tag)) onChange([...tags, tag]);
+    setText("");
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault(); // Enter would submit the whole form; "," would be typed
+      add();
+    } else if (event.key === "Backspace" && text === "" && tags.length > 0) {
+      onChange(tags.slice(0, -1)); // Backspace in an empty box removes the last chip
+    }
+  };
+
+  return (
+    <div>
+      {tags.length > 0 ? (
+        <ul aria-label="Tags" className="mb-4 flex flex-wrap gap-2">
+          {tags.map((tag) => (
+            <li key={tag} className="flex items-center gap-1 rounded-full bg-primary-light py-1 pr-1.5 pl-3 text-sm font-semibold text-primary-hover">
+              {tag}
+              <button
+                type="button"
+                onClick={() => onChange(tags.filter((item) => item !== tag))}
+                aria-label={`Remove tag ${tag}`}
+                className="flex size-5 items-center justify-center rounded-full hover:bg-primary/15"
+              >
+                <MdClose size={14} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mb-4 text-sm text-muted">No tags yet.</p>
+      )}
+
+      <div className="flex gap-2">
+        <label htmlFor="tag-input" className="sr-only">
+          New tag
+        </label>
+        <input
+          id="tag-input"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Type tag and press enter..."
+          className="h-11 min-w-0 flex-1 rounded-xl bg-field px-4 text-sm outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/30"
+        />
+        <button type="button" onClick={add} aria-label="Add tag" className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-line text-ink hover:bg-field">
+          <MdAdd size={20} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default TagInput;
+```
+
+```tsx
+// ImageUploader.tsx client/src/components/admin/ImageUploader.tsx
+// "Product Gallery Assets" (design: Edit Product): up to 5 photos, the first is the MAIN HERO COVER (the photo
+// shoppers see on cards), "Add Image" uploads to Cloudinary through POST /api/admin/uploads (server STEP 25).
+
+// STEP 42 (part 6): Photo uploads
+
+import { useRef, useState, type ChangeEvent } from "react";
+import { MdAddPhotoAlternate, MdDeleteOutline, MdOutlineVerified, MdStar } from "react-icons/md";
+import { api } from "../../utils/api";
+
+const MAX_PHOTOS = 5; // the server's limits (server/src/middleware/upload.ts)
+const MAX_MB = 5;
+const TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif"];
+
+type ImageUploaderProps = {
+  images: string[];
+  onChange: (images: string[]) => void; // after a remove or "make cover"
+  onUploaded: (urls: string[]) => void; // new photos to add at the end
+};
+
+const ImageUploader = ({ images, onChange, onUploaded }: ImageUploaderProps) => {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(0); // how many photos are on their way
+  const [error, setError] = useState("");
+  const free = MAX_PHOTOS - images.length - uploading;
+
+  const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(event.target.files ?? []);
+    event.target.value = ""; // so picking the same file again still fires onChange
+
+    // Check in the browser first: no point sending a 20 MB file just to hear "too big"
+    const files = picked.slice(0, free);
+    const bad = files.find((file) => !TYPES.includes(file.type) || file.size > MAX_MB * 1024 * 1024);
+    if (bad) {
+      setError(`"${bad.name}" must be a JPG, PNG, WebP or AVIF photo of ${MAX_MB} MB or less.`);
+      return;
+    }
+    if (files.length === 0) return;
+    setError(picked.length > files.length ? `Only ${MAX_PHOTOS} photos are allowed, so ${picked.length - files.length} were left out.` : "");
+
+    // A file can't go in JSON: FormData sends it as multipart/form-data, the way a plain HTML form would.
+    const form = new FormData();
+    files.forEach((file) => form.append("photos", file)); // "photos": the field name multer reads
+
+    setUploading(files.length);
+    try {
+      const { urls } = await api<{ urls: string[] }>("/admin/uploads", { method: "POST", body: form });
+      onUploaded(urls);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUploading(0);
+    }
+  };
+
+  const remove = (url: string) => onChange(images.filter((image) => image !== url));
+  const makeCover = (url: string) => onChange([url, ...images.filter((image) => image !== url)]);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="flex items-start gap-3 rounded-2xl bg-panel p-4 text-sm text-ink-soft">
+        <MdOutlineVerified size={20} aria-hidden="true" className="mt-0.5 shrink-0 text-primary" />
+        Recommended: square photos (1200×1200px) in PNG or WebP on a plain background. Maximum {MAX_MB} MB each. The first
+        photo is the cover shoppers see on every product card.
+      </p>
+
+      <ul aria-label="Product photos" className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        {images.map((url, index) => (
+          <li key={url} className={`group relative overflow-hidden rounded-2xl bg-field ${index === 0 ? "col-span-2 row-span-2 p-3 ring-1 ring-line" : ""}`}>
+            <img src={url} alt={index === 0 ? "Cover photo" : `Photo ${index + 1}`} className="aspect-square w-full rounded-xl object-cover" />
+            {index === 0 && (
+              <span className="absolute top-5 left-5 rounded-full bg-primary-hover px-3 py-1 text-xs font-bold tracking-wide text-white uppercase">
+                Main hero cover
+              </span>
+            )}
+            {/* The buttons: always shown on phones; on hover or keyboard focus on computers */}
+            <span className="absolute right-2 bottom-2 flex gap-1.5 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
+              {index > 0 && (
+                <button
+                  type="button"
+                  onClick={() => makeCover(url)}
+                  aria-label={`Make photo ${index + 1} the cover`}
+                  className="flex size-9 items-center justify-center rounded-lg bg-surface text-ink shadow-card hover:text-primary"
+                >
+                  <MdStar size={18} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => remove(url)}
+                aria-label={`Remove ${index === 0 ? "cover photo" : `photo ${index + 1}`}`}
+                className="flex size-9 items-center justify-center rounded-lg bg-surface text-ink shadow-card hover:text-danger"
+              >
+                <MdDeleteOutline size={18} />
+              </button>
+            </span>
+          </li>
+        ))}
+
+        {Array.from({ length: uploading }, (_, index) => (
+          <li key={`uploading-${index}`} className="flex aspect-square animate-pulse items-center justify-center rounded-2xl bg-field text-sm text-muted">
+            Uploading...
+          </li>
+        ))}
+
+        {free > 0 && (
+          <li>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              className="flex aspect-square w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-primary/25 bg-panel font-semibold text-ink hover:border-primary/60"
+            >
+              <MdAddPhotoAlternate size={26} aria-hidden="true" className="text-primary" />
+              Add Image
+              <span className="text-xs font-medium text-ink-soft">Max {MAX_MB}MB</span>
+            </button>
+          </li>
+        )}
+      </ul>
+
+      {/* The real file picker is hidden; the "Add Image" button clicks it */}
+      <input ref={inputRef} type="file" accept={TYPES.join(",")} multiple onChange={handleFiles} className="hidden" />
+
+      {error && (
+        <p role="alert" className="text-sm text-danger">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+};
+
+export default ImageUploader;
+```
+
+```tsx
+// UnsavedChangesBar.tsx client/src/components/admin/UnsavedChangesBar.tsx
+// The dark bar stuck to the bottom of the product form (design: Edit Product):
+// "● Unsaved Modifications Detected .......... Discard  [Save & Publish Product]"
+
+// STEP 42 (part 7): The save bar
+
+import { MdSave } from "react-icons/md";
+
+type UnsavedChangesBarProps = {
+  dirty: boolean; // anything changed since the form opened?
+  saving: boolean;
+  saveLabel: string; // "Save & Publish Product", "Save Draft", "Schedule Product"
+  note: string; // the small second line
+  error?: string; // the server's answer when saving fails, e.g. "Please choose a category."
+  onDiscard: () => void;
+};
+
+const UnsavedChangesBar = ({ dirty, saving, saveLabel, note, error, onDiscard }: UnsavedChangesBarProps) => {
+  return (
+    // sticky bottom-4: it rides along the bottom of the screen while you scroll the form
+    <div className="sticky bottom-4 z-10 rounded-2xl bg-navy px-5 py-4 text-white shadow-lg">
+      {error && (
+        <p role="alert" className="mb-3 rounded-xl bg-danger px-4 py-2 text-sm font-medium">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <span aria-hidden="true" className={`size-2.5 shrink-0 rounded-full ${dirty ? "bg-mint" : "bg-white/40"}`} />
+          <div>
+            <p className="font-semibold">{dirty ? "Unsaved Modifications Detected" : "No changes yet"}</p>
+            <p className="hidden text-sm text-white/70 sm:block">{note}</p>
+          </div>
+        </div>
+        <div className="ml-auto flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onDiscard}
+            disabled={!dirty || saving}
+            className="h-11 rounded-xl px-4 font-semibold hover:bg-white/10 disabled:opacity-40"
+          >
+            Discard
+          </button>
+          {/* type="submit": this button submits the <form> it's inside */}
+          <button
+            type="submit"
+            disabled={saving}
+            className="flex h-11 items-center gap-2 rounded-xl bg-primary px-5 font-semibold whitespace-nowrap hover:bg-primary-hover disabled:opacity-60"
+          >
+            <MdSave size={20} aria-hidden="true" />
+            {saving ? "Saving..." : saveLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default UnsavedChangesBar;
+```
+
+**How a photo upload works** (the part most people find new):
+
+1. **Add Image** clicks a hidden `<input type="file">` (a file picker can't be styled, so it's hidden and a nice button
+   clicks it).
+2. The browser checks the type and size first, so a 20 MB file is refused at once instead of after a long upload.
+3. A file can't go inside JSON, so it goes in a **`FormData`**, the same `multipart/form-data` format a plain HTML form
+   uses. Your `api()` already knows not to add `Content-Type: application/json` for it (STEP 30).
+4. The server (multer, then Cloudinary, server STEP 25) answers `{ urls: [...] }`. The form keeps those addresses and
+   saves them with the product.
+
+- **The first photo is the cover**: it's `images[0]`, the photo on every product card. ★ moves a photo to the front.
+- **A removed photo is deleted from Cloudinary only when you save** (server STEP 25 compares the photos before and
+  after). Until then Discard can still bring it back.
+- **The ★ and 🗑 buttons show on hover** on computers, and always on phones (there's no hover on a touch screen).
+  `group-focus-within` also shows them when you Tab to them with the keyboard.
+
+### 42.6 The form: `src/components/admin/ProductForm.tsx` and `src/pages/admin/AdminProductsFormPage.tsx`
+
+`ProductForm.tsx` is an empty file in your project; fill it.
+
+```tsx
+// ProductForm.tsx client/src/components/admin/ProductForm.tsx
+// The Add / Edit Product form (design: Edit Product): Basic Information, Pricing & Inventory, Product Gallery,
+// Publishing Status, Taxonomy & Tags, and the dark save bar. Saves with POST /api/admin/products (new) or
+// PATCH /api/admin/products/:id (edit), server STEP 25.
+// AdminProductsFormPage loads the product first and gives it here, so the form starts with the right values.
+
+// STEP 42 (part 8): The product form
+
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import type { IconType } from "react-icons";
+import { MdArrowBack, MdDeleteOutline, MdInfoOutline, MdOutlineInventory2, MdOutlinePayments, MdOutlinePhotoLibrary, MdOutlineSell, MdRemoveRedEye } from "react-icons/md";
+import { Link, useNavigate } from "react-router-dom";
+import { useToast } from "../../context/ToastContext";
+import type { AdminCategory, AdminProductDetail, ProductStatus } from "../../types/admin";
+import { api } from "../../utils/api";
+import RadioCard from "../form/RadioCard";
+import SelectInput from "../form/SelectInput";
+import TextArea from "../form/TextArea";
+import TextInput from "../form/TextInput";
+import ImageUploader from "./ImageUploader";
+import TagInput from "./TagInput";
+import UnsavedChangesBar from "./UnsavedChangesBar";
+
+// What the form boxes hold. Numbers are kept as text while typing ("" = empty box), and turned into numbers on save.
+type FormValues = {
+  name: string;
+  description: string;
+  category: string; // the category's _id
+  sku: string;
+  brand: string;
+  regularPrice: string;
+  salePrice: string;
+  costPrice: string;
+  trackStock: boolean;
+  stock: string;
+  lowStockThreshold: string;
+  images: string[];
+  status: ProductStatus;
+  publishAt: string; // "2026-12-01T09:00", the format <input type="datetime-local"> uses
+  tags: string[];
+  badge: string;
+  tagline: string;
+};
+
+type Errors = Partial<Record<keyof FormValues, string>>;
+
+// An ISO date ("2026-12-01T08:00:00.000Z") -> local time for the datetime-local box ("2026-12-01T09:00" in Lagos)
+const toLocalInput = (iso?: string) => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+};
+
+// The product from the server -> the form's values. On sale, "Regular Price" is oldPrice and "Sale Price" is price.
+const toValues = (product?: AdminProductDetail): FormValues => {
+  const onSale = product?.oldPrice != null && product.oldPrice > product.price;
+  return {
+    name: product?.name ?? "",
+    description: product?.description ?? "",
+    category: product?.category ?? "",
+    sku: product?.sku ?? "",
+    brand: product?.brand ?? "",
+    regularPrice: product ? String(onSale ? product.oldPrice : product.price) : "",
+    salePrice: product && onSale ? String(product.price) : "",
+    costPrice: product?.costPrice != null ? String(product.costPrice) : "",
+    trackStock: product?.trackStock ?? true,
+    stock: product ? String(product.stock) : "0",
+    lowStockThreshold: product ? String(product.lowStockThreshold) : "10",
+    images: product?.images ?? [],
+    status: product?.status ?? "published",
+    publishAt: toLocalInput(product?.publishAt),
+    tags: product?.tags ?? [],
+    badge: product?.badge ?? "",
+    tagline: product?.tagline ?? "",
+  };
+};
+
+const toNumber = (text: string) => (text.trim() === "" ? null : Number(text));
+
+// The checks the browser can do. The server checks again (and has the final word).
+const validate = (values: FormValues): Errors => {
+  const errors: Errors = {};
+  const regular = toNumber(values.regularPrice);
+  const sale = toNumber(values.salePrice);
+  const cost = toNumber(values.costPrice);
+  const stock = toNumber(values.stock);
+  const threshold = toNumber(values.lowStockThreshold);
+
+  if (!values.name.trim()) errors.name = "Please enter the product title.";
+  if (!values.category) errors.category = "Please choose a category.";
+  if (regular === null || !(regular > 0)) errors.regularPrice = "Enter a price above ₦0.";
+  if (sale !== null && !(sale > 0)) errors.salePrice = "Enter a price above ₦0, or leave it empty.";
+  else if (sale !== null && regular !== null && sale >= regular) errors.salePrice = "The sale price must be lower than the regular price.";
+  if (cost !== null && !(cost >= 0)) errors.costPrice = "Enter ₦0 or more, or leave it empty.";
+  if (values.trackStock) {
+    if (stock === null || !Number.isInteger(stock) || stock < 0) errors.stock = "Enter a whole number, 0 or more.";
+    if (threshold === null || !Number.isInteger(threshold) || threshold < 0) errors.lowStockThreshold = "Enter a whole number, 0 or more.";
+  }
+  if (values.status === "scheduled" && !values.publishAt) errors.publishAt = "Pick the date and time it goes live.";
+  // A live product without a photo would show an empty card in the shop. A draft can wait for its photos.
+  if (values.status !== "draft" && values.images.length === 0) errors.images = "Add at least 1 photo, or save it as a draft.";
+  return errors;
+};
+
+// One white box of the form, with its title row
+const FormCard = ({ icon: Icon, title, right, children }: { icon: IconType; title: string; right?: ReactNode; children: ReactNode }) => (
+  <section className="rounded-3xl bg-surface p-6 shadow-card">
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+      <h2 className="flex items-center gap-3 text-xl font-semibold text-ink">
+        <span className="flex size-9 items-center justify-center rounded-lg bg-primary-light text-primary">
+          <Icon size={20} aria-hidden="true" />
+        </span>
+        {title}
+      </h2>
+      {right}
+    </div>
+    {children}
+  </section>
+);
+
+const Pill = ({ children, classes }: { children: ReactNode; classes: string }) => (
+  <span className={`rounded-full px-2 py-0.5 text-xs font-bold whitespace-nowrap ${classes}`}>{children}</span>
+);
+
+const STATUS_PILL: Record<ProductStatus, { label: string; classes: string }> = {
+  published: { label: "Live", classes: "bg-mint text-forest" },
+  draft: { label: "Draft", classes: "bg-field text-ink-soft" },
+  scheduled: { label: "Scheduled", classes: "bg-primary-light text-primary-hover" },
+};
+
+const SAVE_LABEL: Record<ProductStatus, string> = {
+  published: "Save & Publish Product",
+  draft: "Save Draft",
+  scheduled: "Schedule Product",
+};
+
+const BADGES = ["SALE", "TOP SELLER", "NEW", "FEATURED"]; // the badges the shop's product cards show
+
+type ProductFormProps = { product?: AdminProductDetail; categories: AdminCategory[] };
+
+const ProductForm = ({ product, categories }: ProductFormProps) => {
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+  const [initial] = useState(() => toValues(product)); // the values it opened with (Discard goes back to these)
+  const [values, setValues] = useState(initial);
+  const [errors, setErrors] = useState<Errors>({});
+  const [serverError, setServerError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const dirty = JSON.stringify(values) !== JSON.stringify(initial);
+
+  // Change one field (and clear its red message, and the message in the save bar, which is now out of date)
+  const set = <K extends keyof FormValues>(key: K, value: FormValues[K]) => {
+    setValues((current) => ({ ...current, [key]: value }));
+    setErrors((current) => ({ ...current, [key]: undefined }));
+    setServerError("");
+  };
+
+  // Closing the tab or refreshing with unsaved changes: the browser asks "Leave site?"
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  const regular = toNumber(values.regularPrice);
+  const sale = toNumber(values.salePrice);
+  const cost = toNumber(values.costPrice);
+  const sellingPrice = sale ?? regular; // what the customer pays
+  const percentOff = regular && sale && sale < regular ? Math.round(((regular - sale) / regular) * 100) : null;
+  const margin = sellingPrice && cost !== null && sellingPrice > 0 ? ((sellingPrice - cost) / sellingPrice) * 100 : null;
+
+  const regenerateSku = async () => {
+    try {
+      const query = values.category ? `?category=${values.category}` : "";
+      const { sku } = await api<{ sku: string }>(`/admin/products/new-sku${query}`);
+      set("sku", sku);
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't make a new SKU", message: (err as Error).message });
+    }
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    const found = validate(values);
+    setErrors(found);
+    setServerError("");
+    if (Object.keys(found).length > 0) {
+      setServerError("Please fix the fields marked in red.");
+      return;
+    }
+
+    // Only the fields this form edits. Specs, colours, highlights and bundles stay as they are (PATCH changes only what's sent).
+    const body = {
+      name: values.name.trim(),
+      description: values.description.trim(),
+      tagline: values.tagline.trim(),
+      category: values.category,
+      sku: values.sku.trim() || undefined, // empty on a new product = the server makes one (undefined isn't sent)
+      brand: values.brand.trim(),
+      price: sellingPrice,
+      oldPrice: sale !== null ? regular : null, // null removes an old sale price
+      costPrice: cost,
+      trackStock: values.trackStock,
+      stock: Number(values.stock) || 0,
+      lowStockThreshold: Number(values.lowStockThreshold) || 0,
+      images: values.images,
+      status: values.status,
+      publishAt: values.status === "scheduled" ? new Date(values.publishAt).toISOString() : null,
+      tags: values.tags,
+      badge: values.badge || null,
+    };
+
+    setSaving(true);
+    try {
+      const { message } = product
+        ? await api<{ message: string }>(`/admin/products/${product._id}`, { method: "PATCH", body })
+        : await api<{ message: string }>("/admin/products", { method: "POST", body });
+      showToast({ type: "success", title: product ? "Product updated successfully" : "Product created", message });
+      navigate("/admin/products");
+    } catch (err) {
+      setServerError((err as Error).message); // e.g. "That sku is already in use."
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!product) return;
+    try {
+      const { message } = await api<{ message: string }>(`/admin/products/${product._id}`, { method: "DELETE" });
+      showToast({ type: "success", title: message });
+      navigate("/admin/products");
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't delete the product", message: (err as Error).message });
+    }
+  };
+
+  const pill = product ? STATUS_PILL[product.status] : null;
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <Link to="/admin/products" className="mb-2 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline">
+            <MdArrowBack size={16} aria-hidden="true" /> All products
+          </Link>
+          <h1 className="flex flex-wrap items-center gap-3 text-4xl font-bold tracking-tight text-ink sm:text-5xl">
+            {product ? "Edit Product" : "Add Product"}
+            {pill && <Pill classes={`text-sm uppercase ${pill.classes}`}>● {pill.label}</Pill>}
+          </h1>
+        </div>
+        {product && (
+          <div className="flex flex-wrap items-center gap-3">
+            {product.status === "published" && (
+              // target="_blank": opens the shop page in a new tab, so the form stays open
+              <a
+                href={`/product/${product.slug}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-11 items-center gap-2 rounded-xl bg-surface px-4 font-semibold text-ink shadow-card hover:text-primary"
+              >
+                <MdRemoveRedEye size={20} aria-hidden="true" /> Preview Store Page
+              </a>
+            )}
+            {confirmDelete ? (
+              <span className="flex h-11 items-center gap-3 rounded-xl bg-danger-light px-4 text-sm text-danger">
+                Delete for good?
+                <button type="button" onClick={handleDelete} className="font-bold hover:underline">
+                  Yes, delete
+                </button>
+                <button type="button" onClick={() => setConfirmDelete(false)} className="font-semibold text-ink-soft hover:underline">
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                className="flex h-11 items-center gap-2 rounded-xl px-4 font-semibold text-danger hover:bg-danger-light"
+              >
+                <MdDeleteOutline size={20} aria-hidden="true" /> Delete
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+        {/* Left column */}
+        <div className="flex flex-col gap-6">
+          <FormCard icon={MdInfoOutline} title="Basic Information" right={<span className="text-xs font-bold tracking-wider text-ink-soft uppercase">Core attributes</span>}>
+            <div className="flex flex-col gap-5">
+              <TextInput label="Product Title" value={values.name} onChange={(event) => set("name", event.target.value)} error={errors.name} placeholder="e.g. Wireless Noise-Cancelling Headphones" />
+              <TextArea
+                label="Description & Details"
+                value={values.description}
+                onChange={(event) => set("description", event.target.value)}
+                rows={5}
+                maxLength={2000}
+                hint="Plain text. Shown under the price on the product page."
+              />
+              <div className="grid gap-5 md:grid-cols-3">
+                <SelectInput label="Primary Category" value={values.category} onChange={(event) => set("category", event.target.value)} error={errors.category}>
+                  <option value="">Choose a category</option>
+                  {categories.map((category) => (
+                    <option key={category._id} value={category._id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </SelectInput>
+                <TextInput
+                  label="SKU Identifier"
+                  value={values.sku}
+                  onChange={(event) => set("sku", event.target.value.toUpperCase())}
+                  placeholder={product ? "" : "Made for you on save"}
+                  labelAction={
+                    <button type="button" onClick={regenerateSku} className="text-xs font-bold text-primary hover:underline">
+                      Regenerate
+                    </button>
+                  }
+                />
+                <TextInput label="Brand / Vendor" value={values.brand} onChange={(event) => set("brand", event.target.value)} />
+              </div>
+            </div>
+          </FormCard>
+
+          <FormCard icon={MdOutlinePayments} title="Pricing & Inventory">
+            <div className="flex flex-col gap-6">
+              <div className="grid gap-5 md:grid-cols-3">
+                <TextInput
+                  label="Regular Price (₦)"
+                  type="number"
+                  min={0}
+                  inputMode="decimal"
+                  value={values.regularPrice}
+                  onChange={(event) => set("regularPrice", event.target.value)}
+                  error={errors.regularPrice}
+                />
+                <TextInput
+                  label="Sale Price (₦)"
+                  type="number"
+                  min={0}
+                  inputMode="decimal"
+                  value={values.salePrice}
+                  onChange={(event) => set("salePrice", event.target.value)}
+                  error={errors.salePrice}
+                  placeholder="Not on sale"
+                  labelAction={percentOff !== null && <Pill classes="bg-danger-light text-danger">{percentOff}% OFF</Pill>}
+                />
+                <TextInput
+                  label="Cost Per Unit (₦)"
+                  type="number"
+                  min={0}
+                  inputMode="decimal"
+                  value={values.costPrice}
+                  onChange={(event) => set("costPrice", event.target.value)}
+                  error={errors.costPrice}
+                  placeholder="Optional"
+                  labelAction={
+                    margin !== null && (
+                      <Pill classes={margin >= 0 ? "bg-mint text-forest" : "bg-danger-light text-danger"}>{margin.toFixed(1)}% Margin</Pill>
+                    )
+                  }
+                />
+              </div>
+
+              {/* The toggle: a button with role="switch", so screen readers say "Track stock, switch, on" */}
+              <div className="flex items-center justify-between gap-4 rounded-2xl bg-panel p-4">
+                <div className="flex items-start gap-3">
+                  <MdOutlineInventory2 size={24} aria-hidden="true" className="mt-0.5 shrink-0 text-primary" />
+                  <div>
+                    <p id="track-stock-label" className="font-semibold text-ink">
+                      Track Stock Quantities
+                    </p>
+                    <p className="text-sm text-ink-soft">Stop sales when 0 units are left, and warn you when it runs low.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={values.trackStock}
+                  aria-labelledby="track-stock-label"
+                  onClick={() => set("trackStock", !values.trackStock)}
+                  className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${values.trackStock ? "bg-primary" : "bg-line"}`}
+                >
+                  <span className={`absolute top-1 left-1 size-5 rounded-full bg-white shadow transition-transform ${values.trackStock ? "translate-x-5" : ""}`} />
+                </button>
+              </div>
+
+              {values.trackStock ? (
+                <div className="grid gap-5 md:grid-cols-2">
+                  <TextInput
+                    label="Available Stock Units"
+                    type="number"
+                    min={0}
+                    step={1}
+                    inputMode="numeric"
+                    value={values.stock}
+                    onChange={(event) => set("stock", event.target.value)}
+                    error={errors.stock}
+                  />
+                  <TextInput
+                    label="Low-Stock Alert Threshold"
+                    type="number"
+                    min={0}
+                    step={1}
+                    inputMode="numeric"
+                    value={values.lowStockThreshold}
+                    onChange={(event) => set("lowStockThreshold", event.target.value)}
+                    error={errors.lowStockThreshold}
+                  />
+                </div>
+              ) : (
+                <p className="text-sm text-ink-soft">Not tracked: the shop always shows it as in stock (e.g. made to order).</p>
+              )}
+            </div>
+          </FormCard>
+
+          <FormCard
+            icon={MdOutlinePhotoLibrary}
+            title="Product Gallery Assets"
+            right={<Pill classes="bg-field text-ink-soft">{values.images.length} / 5 Slots Active</Pill>}
+          >
+            <ImageUploader
+              images={values.images}
+              onChange={(images) => set("images", images)}
+              // functional update: the upload takes a while, and "values" may have changed meanwhile
+              onUploaded={(urls) => {
+                setValues((current) => ({ ...current, images: [...current.images, ...urls].slice(0, 5) }));
+                setErrors((current) => ({ ...current, images: undefined }));
+              }}
+            />
+            {errors.images && <p className="mt-3 text-sm text-danger">{errors.images}</p>}
+          </FormCard>
+        </div>
+
+        {/* Right column */}
+        <div className="flex flex-col gap-6">
+          <section className="rounded-3xl bg-surface p-6 shadow-card">
+            <h2 className="mb-5 text-xl font-semibold text-ink">Publishing Status</h2>
+            <div className="flex flex-col gap-3">
+              <RadioCard
+                name="status"
+                value="published"
+                checked={values.status === "published"}
+                onChange={() => set("status", "published")}
+                title="Published"
+                badge={<Pill classes="bg-forest text-white">Active</Pill>}
+                description="Visible in the shop"
+              />
+              <RadioCard
+                name="status"
+                value="draft"
+                checked={values.status === "draft"}
+                onChange={() => set("status", "draft")}
+                title="Draft"
+                badge={<Pill classes="bg-field text-ink-soft">Hidden</Pill>}
+                description="Only admins can see it"
+              />
+              <RadioCard
+                name="status"
+                value="scheduled"
+                checked={values.status === "scheduled"}
+                onChange={() => set("status", "scheduled")}
+                title="Scheduled"
+                description="Goes live on a date and time you pick"
+              >
+                <TextInput
+                  label="Goes live on"
+                  type="datetime-local"
+                  value={values.publishAt}
+                  onChange={(event) => set("publishAt", event.target.value)}
+                  error={errors.publishAt}
+                />
+              </RadioCard>
+            </div>
+          </section>
+
+          <section className="rounded-3xl bg-surface p-6 shadow-card">
+            <h2 className="mb-1 flex items-center gap-2 text-xl font-semibold text-ink">
+              <MdOutlineSell size={20} aria-hidden="true" className="text-primary" /> Taxonomy & Tags
+            </h2>
+            <p className="mb-5 text-sm text-ink-soft">
+              Search keywords. <strong className="font-semibold">flash-deal</strong> and <strong className="font-semibold">todays-deal</strong> put it in those
+              rows on the Home page.
+            </p>
+            <TagInput tags={values.tags} onChange={(tags) => set("tags", tags)} />
+            <div className="mt-6 flex flex-col gap-5">
+              <SelectInput label="Card Badge" value={values.badge} onChange={(event) => set("badge", event.target.value)}>
+                <option value="">No badge</option>
+                {BADGES.map((badge) => (
+                  <option key={badge} value={badge}>
+                    {badge}
+                  </option>
+                ))}
+              </SelectInput>
+              <TextInput label="Tagline" value={values.tagline} onChange={(event) => set("tagline", event.target.value)} placeholder="e.g. 40-hour battery, studio sound" />
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <UnsavedChangesBar
+        dirty={dirty}
+        saving={saving}
+        saveLabel={SAVE_LABEL[values.status]}
+        note={product ? `Editing SKU ${product.sku}` : "New product"}
+        error={serverError}
+        onDiscard={() => {
+          setValues(initial);
+          setErrors({});
+          setServerError("");
+        }}
+      />
+    </form>
+  );
+};
+
+export default ProductForm;
+```
+
+```tsx
+// AdminProductsFormPage.tsx client/src/pages/admin/AdminProductsFormPage.tsx
+// /admin/products/new (Add Product) and /admin/products/:productId/edit (Edit Product).
+// Loads what the form needs (the categories, and the product when editing), then shows ProductForm.
+
+// STEP 42 (part 9): The Add / Edit Product page
+
+import { Link, useParams } from "react-router-dom";
+import ProductForm from "../../components/admin/ProductForm";
+import { useApi } from "../../hooks/useApi";
+import type { AdminCategory, AdminProductDetail } from "../../types/admin";
+
+const AdminProductsFormPage = () => {
+  const { productId } = useParams(); // undefined on /admin/products/new
+
+  const { data: productData, error: productError } = useApi<{ product: AdminProductDetail }>(productId ? `/admin/products/${productId}` : null);
+  const { data: categoryData, error: categoryError } = useApi<{ categories: AdminCategory[] }>("/admin/categories");
+
+  const error = productError ?? categoryError;
+  if (error) {
+    return (
+      <div role="alert" className="flex flex-col items-start gap-3 rounded-3xl bg-surface p-8 shadow-card">
+        <h1 className="text-2xl font-bold text-ink">{productError === "Product not found" ? "That product doesn't exist" : "Couldn't open the form"}</h1>
+        <p className="text-ink-soft">{error}</p>
+        <Link to="/admin/products" className="font-semibold text-primary hover:underline">
+          Back to products
+        </Link>
+      </div>
+    );
+  }
+
+  // Still loading: the form must start with the real values, so it waits.
+  // (useApi keeps the previous answer while loading, so also check it's THIS product.)
+  if (!categoryData || (productId && productData?.product._id !== productId)) {
+    return <div aria-busy="true" className="h-150 animate-pulse rounded-3xl bg-surface shadow-card" />;
+  }
+
+  // key: going from one product's form to another (or to "new") starts a fresh form, not the old values
+  return <ProductForm key={productId ?? "new"} product={productData?.product} categories={categoryData.categories} />;
+};
+
+export default AdminProductsFormPage;
+```
+
+**Things worth understanding:**
+
+- **The page loads, the form edits.** The page waits for the product and the categories, then shows
+  `<ProductForm key={productId} product={...} />`. The form fills its boxes once, in `useState(() => toValues(product))`,
+  so no effect is needed to copy server data into state.
+- **Regular and Sale Price vs. the database:** the server stores `price` (what the customer pays) and `oldPrice` (the
+  crossed-out one). With a sale price: `price = sale`, `oldPrice = regular`. Without one: `price = regular`,
+  `oldPrice: null`. `null` tells the server to remove the old sale price; leaving it out would keep it.
+- **Margin** is worked out on the **selling** price: ₦33,750 sale, ₦28,000 cost = 17.0%. (The design's 37.8% used the
+  regular price, which isn't what you earn while it's on sale.)
+- **"Unsaved Modifications Detected"** compares the values now with the values it opened with
+  (`JSON.stringify(values) !== JSON.stringify(initial)`). **Discard** puts the opening values back.
+- **`beforeunload`**: closing or refreshing the tab with unsaved changes makes the browser ask "Leave site?". (Clicking a
+  link inside the app doesn't. React Router's `useBlocker` would need the newer "data router" setup, which this app doesn't use.)
+- **Two layers of checks:** the form's `validate` catches the obvious things at once (title, category, prices, at least
+  1 photo before publishing). The server checks again and has the final word. Its messages, like "That sku is already
+  in use.", show in red in the save bar.
+- **Numbers are kept as text while typing** (`"45000"`), so an empty box can really be empty instead of jumping to 0.
+  They become numbers in `handleSubmit`.
+- **`<button role="switch" aria-checked>`** is the Track Stock toggle: a screen reader says "Track Stock Quantities,
+  switch, on".
+- **Scheduled** shows a `datetime-local` box. It works in local time ("2026-12-01T09:00"); `new Date(...).toISOString()`
+  turns it into the exact moment for the server, and `toLocalInput` does the reverse when editing.
+
+### 42.7 Test it
+
+`npm run seed`, both terminals running, logged in as `admin@quickcart.ng` / `Admin@12345`. Your server's `.env` needs
+the Cloudinary keys (server STEP 25) for the photo part.
+
+| Do this                                                  | You should see                                            |
+| -------------------------------------------------------- | --------------------------------------------------------- |
+| Menu → **Products**                                       | Total Items **40**, Low / Critical **6** "Action Needed", 8 rows with photos, "Showing 1–8 of 40 products" |
+| **Low Stock** tab                                         | 6 products, red bars, "2 left in stock · Reorder @ 10"...; the address has `?tab=low-stock` |
+| Search "chair"; category; "Over ₦50,000" + "Price: Low to High" | only chairs; only that category; 3 products, cheapest first |
+| Type in the search and **at once** pick a category        | both stay in the address (the 42.1 fix)                    |
+| **Add Product** → **Save & Publish Product** with nothing filled | red messages under Title, Category, Regular Price, and "Add at least 1 photo" |
+| Fill the title, a category, Regular 45000, Sale 33750, Cost 28000 | **25% OFF** and **17.0% Margin** appear; the red messages go as you type |
+| **Regenerate**                                            | a SKU like `QC-EL-4821` (the category's first 2 letters)   |
+| Type "Flash Deal" + Enter in the tags box                  | a chip **flash-deal**                                      |
+| **Add Image**, pick 2 photos                              | "Uploading...", then both photos, "2 / 5 Slots Active"; ★ on the 2nd makes it the cover |
+| Pick a `.txt` or a 10 MB photo                            | a red message, nothing uploaded                            |
+| **Draft** → **Save Draft**                                | back on Products, toast "Product created · '...' has been created.", Drafts **1**, the row says "Unpublished draft" |
+| ✎ on it, change the stock, then **Discard**               | "Unsaved Modifications Detected", then back to "No changes yet" |
+| Set the SKU to another product's SKU, save                 | "That sku is already in use." in the save bar              |
+| Put the SKU back, **Published**, stock 3, alert 5, empty the Sale Price, save | toast "'...' is live.", Low / Critical **7**, row "3 left in stock", ₦45,000 with no crossed-out price; it's in the shop |
+| 🗑 on its row → **No**, then 🗑 → **Yes**                  | the row asks "Delete?" / toast "'...' has been deleted." (its photos are deleted from Cloudinary too) |
+| Phone width                                               | the table scrolls sideways inside its box; the form is one column; the page itself never scrolls sideways |
+
+I tested all of this on a copy of your project against a throwaway database: **48 checks, all passed** (after the fixes
+described above: the 42.1 bug, the 2 phone-width fixes, and a red message that stayed after it was fixed). The 2 test
+photos went to your Cloudinary and were deleted with the test product. `npm run build` and `npm run lint` pass.
+
+### 42.8 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 42: admin products table, add / edit product, photo uploads"
+git push
+```
+
+➡️ **Next: STEP 43 (Admin: Orders with the status updates and dispatch, Customers, Categories and Settings, using your
+STEP 25–27 endpoints).** Reply **NEXT** when 42.7 works.

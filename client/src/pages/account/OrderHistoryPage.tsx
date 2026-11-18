@@ -28,13 +28,12 @@ const OrderHistoryPage = () => {
   const search = params.get("search") ?? "";
   const sort = params.get("sort") ?? "";
 
+  // From the address bar as it is right now, so the search timer never undoes a tab clicked meanwhile (STEP 42.1)
   const update = (key: string, value: string) => {
-    setParams((current) => {
-      const next = new URLSearchParams(current);
-      if (value) next.set(key, value);
-      else next.delete(key);
-      return next;
-    });
+    const next = new URLSearchParams(window.location.search);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setParams(next);
   };
 
   // The search box waits until you stop typing (the same pattern as the Shop page, STEP 34)
@@ -178,6 +177,6 @@ const OrderHistoryPage = () => {
       )}
     </div>
   );
-};
+};;
 
 export default OrderHistoryPage;

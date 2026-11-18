@@ -56,3 +56,61 @@ export type DashboardResponse = {
 
 // The tab numbers of GET /api/admin/orders (STEP 26), used by the sidebar's "12 New"
 export type AdminOrderCounts = Record<"all" | OrderStatus, number>;
+
+// STEP 42: Admin products and categories (server: adminProductController.ts, adminCategoryController.ts, STEP 25)
+
+export type ProductStatus = "published" | "draft" | "scheduled";
+
+// One row of GET /api/admin/products (the server's TABLE_FIELDS)
+export type AdminProductRow = {
+  _id: string;
+  name: string;
+  slug: string;
+  sku: string;
+  brand: string;
+  category: { _id: string; name: string; slug: string } | null;
+  price: number;
+  oldPrice?: number;
+  costPrice?: number;
+  images: string[];
+  trackStock: boolean;
+  stock: number;
+  lowStockThreshold: number;
+  status: ProductStatus;
+  publishAt?: string;
+  badge?: string;
+  updatedAt: string;
+};
+
+export type AdminProductTab =
+  | "all"
+  | "in-stock"
+  | "low-stock"
+  | "out-of-stock"
+  | "drafts";
+
+export type AdminProductsResponse = {
+  products: AdminProductRow[];
+  total: number;
+  page: number;
+  pages: number;
+  counts: Record<AdminProductTab, number>;
+};
+
+// GET /api/admin/products/:id -> the whole product, for the edit form (category is just its id here)
+export type AdminProductDetail = Omit<AdminProductRow, "category"> & {
+  category: string;
+  description: string;
+  tagline?: string;
+  features: string[];
+  tags: string[];
+};
+
+// GET /api/admin/categories -> every category, counting drafts too
+export type AdminCategory = {
+  _id: string;
+  name: string;
+  slug: string;
+  icon: string;
+  productCount: number;
+};
