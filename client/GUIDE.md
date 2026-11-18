@@ -15589,11 +15589,30 @@ DEMO_MODE=false CLIENT_URL=http://localhost:4173 npm start
 | Ctrl+C terminal 1, then `npm run dev` there, Settings → **Move orders along** | "4 order(s) shipped and 3 order(s) delivered." and the menu's "New" badge disappears |
 | Type RESET → **Reset demo data**                            | "The demo data has been reset. Please log in again." and the admin login page |
 
-I tested all of this on a copy of your project (your STEP 43 commit + STEP 44 + this step): **25 checks** in dev mode
-and the production run below, all passing.
+I tested all of this on a copy of your project (your STEP 43 commit + STEP 44 + this step): **25 checks** in dev mode,
+all passing.
 
-<!--PROD_RESULTS-->Then I ran the tests of STEPs 33–44 again against the built versions (compiled server + built client); the results are
-below.
+Then I ran the tests of STEPs 33–45 again against the **built** versions (the compiled server with `node dist/server.js`
+and `DEMO_MODE=false`, and the built client), each on a freshly seeded throwaway database:
+
+| Step | Result on the built site |
+| ---- | ------------------------ |
+| 45 (this step) | 21 / 21: help pages, both 404s, Settings, demo tools "turned off", **no reset link in the Forgot Password reply** |
+| 44 Customers, Categories | 20 / 20 |
+| 43 Orders | 25 / 25 |
+| 42 Products, photo uploads | 48 / 48 |
+| 41 Dashboard | 21 / 21 |
+| 40 Order history and details | 17 / 17 |
+| 38 Checkout | 26 / 26 |
+| 36 Cart | 22 / 22 |
+| 35 Product page, reviews | 37 / 37 |
+| 33 Home sections | 19 / 19 |
+| 34 Shop | 29 / 30: the "kettle" search check read the list before the slow database answered; the 2 kettles appear about 3 seconds later (checked by hand) |
+| 39 My Account | 25 / 26: the test expected the design's "1 active"; the page correctly shows the seed's 2 (1 processing + 1 shipped) |
+
+STEP 37 (reset password, verify email) uses the on-screen demo links, which are off in the built server on purpose,
+so it's checked with real emails online in 45.15. The first run also found the `DEMO_MODE=true` line in your `.env` (see
+above and 45.12).
 
 ### 45.10 Commit and push
 
