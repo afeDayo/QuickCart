@@ -3,7 +3,7 @@
 
 // STEP 41 (part 1): Admin types
 
-import type { Order, OrderStatus } from "./api";
+import type { Order, OrderStatus, Address } from "./api";
 
 export type DashboardRange = "7d" | "30d" | "90d" | "year";
 
@@ -160,4 +160,36 @@ export type AdminOrderResponse = {
   };
   nextStatuses: OrderStatus[]; // where it may go next, e.g. ["shipped", "cancelled"]
   couriers: string[];
+};
+
+// STEP 44: Admin customers (server: adminCustomerController.ts, STEP 26)
+
+// One row of GET /api/admin/customers: the customer + numbers worked out from their orders
+export type AdminCustomerRow = {
+  _id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  isEmailVerified: boolean;
+  createdAt: string;
+  orderCount: number;
+  totalSpent: number; // cancelled orders not counted
+  lastOrderAt: string | null;
+};
+
+export type AdminCustomersResponse = {
+  customers: AdminCustomerRow[];
+  total: number;
+  page: number;
+  pages: number;
+};
+
+// GET /api/admin/customers/:id -> the customer, their addresses and their 20 newest orders
+export type AdminCustomerResponse = {
+  customer: AdminCustomerRow & { addresses: Address[] };
+  orders: (Pick<
+    Order,
+    "_id" | "orderNumber" | "total" | "status" | "createdAt"
+  > & { items: { quantity: number }[] })[];
 };
