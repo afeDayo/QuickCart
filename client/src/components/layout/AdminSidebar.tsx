@@ -20,6 +20,8 @@ import { useAuth } from "../../context/AuthContext";
 import { useApi } from "../../hooks/useApi";
 import type { AdminOrderCounts } from "../../types/admin";
 import AdminBrand from "../admin/AdminBrand";
+import { useEffect, useState } from "react";
+import { COUNTS_CHANGED } from "../../utils/adminEvents";
 
 type AdminSidebarProps = { onNavigate?: () => void }; // the phone menu closes itself after a click
 
@@ -27,9 +29,22 @@ const AdminSidebar = ({ onNavigate }: AdminSidebarProps) => {
   const { logout } = useAuth();
   const navigate = useNavigate();
 
+  // When a page announces "the numbers changed" (utils/adminEvents.ts), add 1 to version. A new version = a new path
+  // = useApi loads again. (The server ignores the extra ?v=.)
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setVersion((current) => current + 1);
+    window.addEventListener(COUNTS_CHANGED, bump);
+    return () => window.removeEventListener(COUNTS_CHANGED, bump);
+  }, []);
+
   // The numbers next to Products and Orders: limit=1 asks for the counts without the whole list
-  const products = useApi<{ total: number }>("/admin/products?limit=1");
-  const orders = useApi<{ counts: AdminOrderCounts }>("/admin/orders?limit=1");
+  const products = useApi<{ total: number }>(
+    `/admin/products?limit=1&v=${version}`,
+  );
+  const orders = useApi<{ counts: AdminOrderCounts }>(
+    `/admin/orders?limit=1&v=${version}`,
+  );
 
   const links: {
     to: string;

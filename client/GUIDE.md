@@ -48,10 +48,12 @@ then the admin.
 | ✅   | 39     | My Account: layout, overview, settings, addresses, saved items |
 | ✅   | 40     | Order History, Order Details and tracking, cancel, leave a review |
 | ✅   | 41     | Admin: login, layout, dashboard with the sales chart                                 |
-| ⬜   | **42** | **Admin: products table, add / edit product, photo upload** ← you are here           |
-| ⬜   | 43     | Admin: orders, customers, categories, settings                                       |
-| ⬜   | 44     | Demo panel, help pages, 404, final polish (loading, empty and error states, phones)  |
-| ⬜   | 45     | Build and put it online (server on Render, client on Vercel)                         |
+| ✅   | 42     | Admin: products table, add / edit product, photo upload                              |
+| ⬜   | 43     | Admin: orders, order panel (ship / deliver / cancel), dispatch manifest              |
+| ⬜   | **44** | **Admin: customers and categories** ← you are here                                   |
+| ⬜   | 45     | Admin settings (profile, password) and the demo panel                                |
+| ⬜   | 46     | Help pages, 404, final polish (loading, empty and error states, phones)              |
+| ⬜   | 47     | Build and put it online (server on Render, client on Vercel)                         |
 
 ## How to run both halves
 
@@ -13072,3 +13074,1673 @@ git push
 
 ➡️ **Next: STEP 43 (Admin: Orders with the status updates and dispatch, Customers, Categories and Settings, using your
 STEP 25–27 endpoints).** Reply **NEXT** when 42.7 works.
+
+---
+
+## STEP 43: Admin orders: the Orders table, ship / deliver / cancel, and the dispatch manifest
+
+> **Smaller steps from here.** STEP 43 is only the admin **Orders** page. Customers, Categories and Settings are now
+> STEP 44, then polish (STEP 45) and putting it online (STEP 46). The progress table at the top is updated.
+>
+> **Before you start:** STEP 42 isn't typed yet (only 42.1 is, and that's correct; delete the extra `;` after the last
+> `}` of `OrderHistoryPage.tsx`). You can do 42 and 43 in either order. 43.2 adds 1 line to 2 STEP 42 files.
+
+The design is **QuickCart Admin - Orders Management**, using your server STEP 26 endpoints.
+
+- **Export CSV** (an Excel file of the orders matching the filters) and **Print Manifest** (a printed list of the orders
+  waiting to ship, for the packer).
+- **The 5 cards:** Total Orders with the sales, Processing ("To ship"), In Transit, Delivered (% of all orders),
+  Cancelled.
+- **The table:** tabs **All / Processing / Shipped / Delivered / Cancelled** with counts, search (order number,
+  customer name, email or waybill), Payment, Date and Courier filters, and 10 orders a page.
+- **The order panel**, opened from any row: customer, delivery address, items, money, history, and the buttons that move
+  the order along. **Mark as Shipped** (pick the courier; the waybill is made for you), **Mark as Delivered** (a
+  pay-on-delivery order becomes "paid"), **Cancel order** (with a reason; the stock goes back). Each change emails the
+  customer (server STEP 26).
+
+| File                                              | What it is                                               |
+| ------------------------------------------------- | -------------------------------------------------------- |
+| `types/admin.ts`                                  | + the order shapes                                       |
+| `utils/adminEvents.ts` (new)                      | tells the menu "your numbers changed"                    |
+| `components/layout/AdminSidebar.tsx`              | the menu's "4 New" updates straight away                 |
+| `components/admin/OrdersTables.tsx`, `OrderPanel.tsx`, `DispatchManifest.tsx` | the table, the panel, the printout (all empty files now) |
+| `pages/admin/AdminOrdersPage.tsx`                 | the page (replaces the placeholder)                      |
+
+**Honest bits:** the design's "+14.2%", "Avg SLA: 2.1h", "98% on-schedule", "Auto-sync active", the row checkboxes,
+**Quick Dispatch Action**, and the whole bottom half (**Dispatch & Fulfillment Velocity** with its hubs, **Courier
+Partners** with "99.4%" and "API Synced") need data the server doesn't have: courier tracking, warehouse hubs, delivery
+times. They're left out instead of faked. The "₦214K reimbursed" card says **"value"**: the server adds up every
+cancelled order, and a cancelled pay-on-delivery order was never paid, so calling it all "reimbursed" wouldn't be true.
+
+### 43.1 `src/types/admin.ts`
+
+Add at the bottom:
+
+```ts
+// STEP 43: Admin orders (server: adminOrderController.ts, STEP 26)
+
+export type AdminOrderTab = "all" | OrderStatus;
+
+// One row of GET /api/admin/orders (the server's TABLE_FIELDS)
+export type AdminOrderRow = Pick<Order, "_id" | "orderNumber" | "waybill" | "courier" | "contact" | "total" | "status" | "createdAt"> & {
+  shippingAddress: { city: string; state: string };
+  items: { name: string; image: string; quantity: number }[];
+  payment: Pick<Order["payment"], "method" | "status" | "cardBrand">;
+};
+
+export type AdminOrdersResponse = {
+  orders: AdminOrderRow[];
+  total: number;
+  page: number;
+  pages: number;
+  counts: AdminOrderCounts; // the tabs and the cards, for ALL orders
+  sales: number; // the money of every order that isn't cancelled
+  refunded: number; // the money of the cancelled orders
+  couriers: string[]; // "QuickCart Express", "GIG Logistics", "DHL Express"
+};
+
+// GET /api/admin/orders/:orderNumber -> the order with its customer's account, and the buttons it may have
+export type AdminOrderResponse = {
+  order: Order & { user: { _id: string; firstName: string; lastName: string; email: string; createdAt: string } | null };
+  nextStatuses: OrderStatus[]; // where it may go next, e.g. ["shipped", "cancelled"]
+  couriers: string[];
+};
+```
+
+`Pick<Order, "_id" | "orderNumber" | ...>` takes just those fields from your `Order` type (STEP 38), because a table row
+only has the columns the server sends (its `TABLE_FIELDS`).
+
+### 43.2 The menu's numbers: `src/utils/adminEvents.ts` and `AdminSidebar.tsx`
+
+Without this, shipping an order leaves the menu saying "4 New" until you refresh the page, because the menu loaded its
+numbers once. Now a page announces "the numbers changed", and the menu loads them again.
+
+New file **`src/utils/adminEvents.ts`**:
+
+```ts
+// adminEvents.ts client/src/utils/adminEvents.ts
+// The admin menu shows "Products 40" and "Orders 4 New". When a page changes those numbers (an order shipped, a product
+// added or deleted), it calls announceCountsChanged() and the menu loads its numbers again.
+// (A browser "event", like a click, but one we make up ourselves: any component can listen for it.)
+
+// STEP 43 (part 1): Tell the admin menu its numbers changed
+
+export const COUNTS_CHANGED = "quickcart:admin-counts-changed";
+
+export const announceCountsChanged = () => {
+  window.dispatchEvent(new Event(COUNTS_CHANGED));
+};
+```
+
+In **`src/components/layout/AdminSidebar.tsx`**:
+
+1. Add 2 imports, next to the others:
+
+```tsx
+import { useEffect, useState } from "react";
+import { COUNTS_CHANGED } from "../../utils/adminEvents";
+```
+
+2. Replace:
+
+```tsx
+  // The numbers next to Products and Orders: limit=1 asks for the counts without the whole list
+  const products = useApi<{ total: number }>("/admin/products?limit=1");
+  const orders = useApi<{ counts: AdminOrderCounts }>("/admin/orders?limit=1");
+```
+
+with:
+
+```tsx
+  // When a page announces "the numbers changed" (utils/adminEvents.ts), add 1 to version. A new version = a new path
+  // = useApi loads again. (The server ignores the extra ?v=.)
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const bump = () => setVersion((current) => current + 1);
+    window.addEventListener(COUNTS_CHANGED, bump);
+    return () => window.removeEventListener(COUNTS_CHANGED, bump);
+  }, []);
+
+  // The numbers next to Products and Orders: limit=1 asks for the counts without the whole list
+  const products = useApi<{ total: number }>(`/admin/products?limit=1&v=${version}`);
+  const orders = useApi<{ counts: AdminOrderCounts }>(`/admin/orders?limit=1&v=${version}`);
+```
+
+3. **STEP 42's product pages** change the "Products 40" number too. When you type them (now or later), add
+   `import { announceCountsChanged } from "../../utils/adminEvents";` and one line in each place:
+
+```tsx
+// ProductForm.tsx, in handleSubmit, after showToast(...):
+      announceCountsChanged(); // the menu's "Products 40" (STEP 43)
+
+// ProductForm.tsx, in handleDelete, after showToast(...):
+      announceCountsChanged();
+
+// ProductsTable.tsx, in remove, after onDeleted():
+      announceCountsChanged(); // the menu's "Products 40" (STEP 43)
+```
+
+- **`window.dispatchEvent(new Event(...))`** fires an event, like a click, but one we named ourselves. Any component can
+  listen with `addEventListener`, and the effect's clean-up stops listening when the menu disappears.
+- **Why `?v=${version}` and not `reload()`?** A new path makes `useApi` load again by itself, and the server ignores a
+  query value it doesn't know. (`reload` is a new function on every render, so an effect that used it would subscribe
+  again on every render.)
+
+### 43.3 `OrdersTables.tsx`, `OrderPanel.tsx`, `DispatchManifest.tsx` in `src/components/admin/`
+
+```tsx
+// OrdersTables.tsx client/src/components/admin/OrdersTables.tsx
+// The orders table (design: Admin - Orders Management): order number and waybill, customer, date and city, items,
+// total, payment, status, and a Manage button that opens the order's panel.
+
+// STEP 43 (part 2): The orders table
+
+import { MdChevronRight } from "react-icons/md";
+import type { AdminOrderRow } from "../../types/admin";
+import { shortDateTime } from "../../utils/dates";
+import { naira, plural } from "../../utils/format";
+import StatusPill from "../common/StatusPill";
+
+// The payment pill: "● Paid", "● Pending", "● Refunded" (with "Visa" or "Pay on delivery" under it)
+const PAYMENT_STYLES = {
+  paid: { label: "Paid", classes: "bg-mint/40 text-forest" },
+  pending: { label: "Pending", classes: "bg-[#fff4e0] text-[#8a5300]" },
+  refunded: { label: "Refunded", classes: "bg-danger-light text-danger" },
+};
+
+const initials = (first: string, last: string) => `${first[0] ?? ""}${last[0] ?? ""}`.toUpperCase();
+
+type OrdersTablesProps = { orders: AdminOrderRow[]; onOpen: (orderNumber: string) => void };
+
+const OrdersTables = ({ orders, onOpen }: OrdersTablesProps) => {
+  return (
+    // relative: keeps the sr-only header text inside the scroll box (the STEP 42 phone fix)
+    <div className="relative overflow-x-auto">
+      <table className="w-full min-w-220 text-left text-sm">
+        <thead className="bg-panel text-xs font-bold tracking-wider text-ink-soft uppercase">
+          <tr>
+            <th scope="col" className="px-6 py-3">Order ID</th>
+            <th scope="col" className="px-4 py-3">Customer</th>
+            <th scope="col" className="px-4 py-3">Date & time</th>
+            <th scope="col" className="px-4 py-3">Items</th>
+            <th scope="col" className="px-4 py-3">Total</th>
+            <th scope="col" className="px-4 py-3">Payment</th>
+            <th scope="col" className="px-4 py-3">Status</th>
+            <th scope="col" className="py-3 pr-4">
+              <span className="sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {orders.map((order) => {
+            const { contact, payment } = order;
+            const pay = PAYMENT_STYLES[payment.status];
+            const count = order.items.reduce((sum, item) => sum + item.quantity, 0);
+            return (
+              <tr key={order._id} className="hover:bg-panel/50">
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <button type="button" onClick={() => onOpen(order.orderNumber)} className="text-base font-bold text-primary-hover hover:underline">
+                    #{order.orderNumber}
+                  </button>
+                  <p className="text-xs text-ink-soft">{order.waybill ?? "No waybill yet"}</p>
+                </td>
+                <td className="px-4 py-4">
+                  <div className="flex items-center gap-3">
+                    <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-light text-sm font-bold text-primary-hover">
+                      {initials(contact.firstName, contact.lastName)}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-semibold whitespace-nowrap text-ink">
+                        {contact.firstName} {contact.lastName}
+                      </p>
+                      <p className="text-xs text-ink-soft">{contact.email}</p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-4 py-4">
+                  <p className="whitespace-nowrap text-ink">{shortDateTime(order.createdAt)}</p>
+                  <p className="max-w-44 text-xs text-ink-soft">
+                    {order.shippingAddress.city}, {order.shippingAddress.state}
+                  </p>
+                </td>
+                <td className="py-4 pr-6 pl-4 whitespace-nowrap">
+                  <span className="flex items-center gap-2 text-ink-soft">
+                    {order.items[0]?.image && <img src={order.items[0].image} alt="" className="size-9 rounded-lg bg-field object-cover" />}
+                    {plural(count, "item")}
+                  </span>
+                </td>
+                <td className="px-4 py-4 text-base font-bold whitespace-nowrap text-ink">{naira(order.total)}</td>
+                <td className="px-4 py-4 whitespace-nowrap">
+                  <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold ${pay.classes}`}>
+                    <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />
+                    {pay.label}
+                  </span>
+                  <p className="mt-1 text-xs text-ink-soft">{payment.method === "card" ? (payment.cardBrand ?? "Card") : "Pay on delivery"}</p>
+                </td>
+                <td className="px-4 py-4">
+                  <StatusPill status={order.status} />
+                </td>
+                <td className="py-4 pr-4">
+                  <button
+                    type="button"
+                    onClick={() => onOpen(order.orderNumber)}
+                    aria-label={`Manage order ${order.orderNumber}`}
+                    className="flex size-9 items-center justify-center rounded-lg text-primary-hover hover:bg-primary-light"
+                  >
+                    <MdChevronRight size={22} />
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+export default OrdersTables;
+```
+
+```tsx
+// OrderPanel.tsx client/src/components/admin/OrderPanel.tsx
+// The panel that slides over the orders table when you click an order: customer, delivery address, items, money,
+// the status history, and the buttons that move the order along:
+//   Processing -> "Mark as Shipped" (courier + waybill) -> "Mark as Delivered"      (or "Cancel order" before delivery)
+// GET /api/admin/orders/:orderNumber and PATCH /api/admin/orders/:orderNumber/status (server STEP 26).
+
+// STEP 43 (part 3): The order panel
+
+import { useEffect, useState, type ReactNode } from "react";
+import { MdCheckCircleOutline, MdClose, MdLocalShipping, MdOutlineCancel } from "react-icons/md";
+import { useToast } from "../../context/ToastContext";
+import { useApi } from "../../hooks/useApi";
+import type { AdminOrderResponse } from "../../types/admin";
+import { announceCountsChanged } from "../../utils/adminEvents";
+import { api } from "../../utils/api";
+import { shortDate, shortDateTime } from "../../utils/dates";
+import { naira } from "../../utils/format";
+import StatusPill from "../common/StatusPill";
+
+const Box = ({ title, children }: { title: string; children: ReactNode }) => (
+  <section className="rounded-2xl bg-surface p-5 shadow-card">
+    <h3 className="mb-3 text-xs font-bold tracking-wider text-ink-soft uppercase">{title}</h3>
+    {children}
+  </section>
+);
+
+type OrderPanelProps = {
+  orderNumber: string;
+  onClose: () => void;
+  onChanged: () => void; // the list behind the panel loads again
+};
+
+const OrderPanel = ({ orderNumber, onClose, onChanged }: OrderPanelProps) => {
+  const { showToast } = useToast();
+  const { data, error, reload } = useApi<AdminOrderResponse>(`/admin/orders/${orderNumber}`);
+
+  const [courier, setCourier] = useState("");
+  const [waybill, setWaybill] = useState("");
+  const [reason, setReason] = useState("");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
+
+  // Escape closes the panel, like most pop-ups
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  const changeStatus = async (status: string) => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const body = status === "shipped" ? { status, courier: courier || data?.couriers[0], waybill: waybill.trim() } : status === "cancelled" ? { status, reason: reason.trim() } : { status };
+      const { message } = await api<{ message: string }>(`/admin/orders/${orderNumber}/status`, { method: "PATCH", body });
+      showToast({ type: "success", title: message, message: "The customer has been emailed." }); // "Order #QC-1048 is now shipped."
+      setConfirmCancel(false);
+      setReason("");
+      setWaybill("");
+      reload(); // this panel
+      onChanged(); // the table behind it
+      announceCountsChanged(); // the menu's "4 New"
+    } catch (err) {
+      setActionError((err as Error).message); // e.g. "This order was just changed by someone else..."
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const order = data?.order;
+  const next = data?.nextStatuses ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 print:hidden" role="dialog" aria-modal="true" aria-label={`Order ${orderNumber}`}>
+      <button type="button" aria-label="Close the order" onClick={onClose} className="absolute inset-0 animate-fade-in bg-ink/40" />
+
+      <div className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-page shadow-banner">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 border-b border-line bg-surface px-6 py-5">
+          <div>
+            <h2 className="flex flex-wrap items-center gap-3 text-2xl font-bold text-ink">
+              #{orderNumber} {order && <StatusPill status={order.status} />}
+            </h2>
+            {order && <p className="mt-1 text-sm text-ink-soft">Placed {shortDateTime(order.createdAt)}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="flex size-10 shrink-0 items-center justify-center rounded-full hover:bg-field">
+            <MdClose size={22} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {error ? (
+            <p role="alert" className="rounded-2xl bg-danger-light p-4 text-sm text-danger">
+              {error}
+            </p>
+          ) : !order ? (
+            <div aria-busy="true" className="h-96 animate-pulse rounded-2xl bg-surface" />
+          ) : (
+            <div className="flex flex-col gap-4">
+              {/* What can happen next */}
+              <Box title="Next step">
+                {next.length === 0 ? (
+                  <p className="text-sm text-ink-soft">
+                    {order.status === "delivered"
+                      ? `Delivered ${order.deliveredAt ? shortDate(order.deliveredAt) : ""}. Nothing more to do.`
+                      : `Cancelled${order.cancelReason ? `: ${order.cancelReason}` : ""}. Nothing more to do.`}
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-4">
+                    {next.includes("shipped") && (
+                      <div className="flex flex-col gap-3">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="text-sm font-medium text-ink">
+                            Courier
+                            <select
+                              value={courier || data.couriers[0]}
+                              onChange={(event) => setCourier(event.target.value)}
+                              className="mt-1.5 h-11 w-full cursor-pointer rounded-xl bg-field px-3 outline-none focus:ring-2 focus:ring-primary/30"
+                            >
+                              {data.couriers.map((name) => (
+                                <option key={name}>{name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-sm font-medium text-ink">
+                            Waybill number
+                            <input
+                              value={waybill}
+                              onChange={(event) => setWaybill(event.target.value)}
+                              placeholder="Leave empty to make one"
+                              className="mt-1.5 h-11 w-full rounded-xl bg-field px-3 uppercase outline-none placeholder:normal-case placeholder:text-muted focus:ring-2 focus:ring-primary/30"
+                            />
+                          </label>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => changeStatus("shipped")}
+                          className="flex h-11 items-center justify-center gap-2 rounded-xl bg-primary-hover font-semibold text-white hover:bg-primary disabled:opacity-60"
+                        >
+                          <MdLocalShipping size={20} aria-hidden="true" /> Mark as Shipped
+                        </button>
+                      </div>
+                    )}
+
+                    {next.includes("delivered") && (
+                      <div>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => changeStatus("delivered")}
+                          className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-forest font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                        >
+                          <MdCheckCircleOutline size={20} aria-hidden="true" /> Mark as Delivered
+                        </button>
+                        {order.payment.status === "pending" && (
+                          <p className="mt-2 text-xs text-ink-soft">Pay on delivery: this also marks the {naira(order.total)} as paid (the rider collected it).</p>
+                        )}
+                      </div>
+                    )}
+
+                    {next.includes("cancelled") &&
+                      (confirmCancel ? (
+                        <div className="flex flex-col gap-3 rounded-xl bg-danger-light p-4">
+                          <label className="text-sm font-medium text-danger">
+                            Reason (sent to the customer)
+                            <input
+                              value={reason}
+                              onChange={(event) => setReason(event.target.value)}
+                              placeholder="e.g. Out of stock"
+                              className="mt-1.5 h-11 w-full rounded-xl bg-surface px-3 text-ink outline-none focus:ring-2 focus:ring-danger/30"
+                            />
+                          </label>
+                          <p className="text-xs text-danger">
+                            The items go back in stock.{" "}
+                            {order.payment.status === "paid" ? `The ${naira(order.total)} card payment is marked as refunded.` : "Nothing was charged."}
+                          </p>
+                          <div className="flex gap-3">
+                            <button type="button" disabled={busy} onClick={() => changeStatus("cancelled")} className="h-10 rounded-xl bg-danger px-4 font-semibold text-white disabled:opacity-60">
+                              Yes, cancel order
+                            </button>
+                            <button type="button" onClick={() => setConfirmCancel(false)} className="h-10 rounded-xl px-4 font-semibold text-ink-soft hover:bg-surface">
+                              Keep it
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => setConfirmCancel(true)} className="flex items-center gap-2 self-start text-sm font-semibold text-danger hover:underline">
+                          <MdOutlineCancel size={18} aria-hidden="true" /> Cancel order
+                        </button>
+                      ))}
+                  </div>
+                )}
+                {actionError && (
+                  <p role="alert" className="mt-3 text-sm text-danger">
+                    {actionError}
+                  </p>
+                )}
+              </Box>
+
+              <Box title="Customer">
+                <p className="font-semibold text-ink">
+                  {order.contact.firstName} {order.contact.lastName}
+                </p>
+                <a href={`mailto:${order.contact.email}`} className="block text-sm text-primary hover:underline">
+                  {order.contact.email}
+                </a>
+                <a href={`tel:${order.contact.phone}`} className="block text-sm text-ink-soft hover:underline">
+                  {order.contact.phone}
+                </a>
+                {order.user && <p className="mt-2 text-xs text-muted">Customer since {shortDate(order.user.createdAt)}</p>}
+              </Box>
+
+              <Box title="Delivery">
+                <p className="text-sm text-ink">
+                  <strong className="font-semibold">{order.shippingAddress.fullName}</strong> · {order.shippingAddress.phone}
+                  <br />
+                  {order.shippingAddress.street}, {order.shippingAddress.city}, {order.shippingAddress.state}
+                </p>
+                {order.shippingAddress.instructions && <p className="mt-1 text-sm text-ink-soft italic">“{order.shippingAddress.instructions}”</p>}
+                <p className="mt-2 text-sm text-ink-soft">
+                  {order.deliveryMethod === "express" ? "Express" : "Standard"} delivery · expected {shortDate(order.estimatedDelivery.from)} – {shortDate(order.estimatedDelivery.to)}
+                </p>
+                {order.waybill && (
+                  <p className="mt-1 text-sm text-ink-soft">
+                    {order.courier} · waybill <strong className="font-semibold text-ink">{order.waybill}</strong>
+                  </p>
+                )}
+              </Box>
+
+              <Box title={`Items (${order.items.length})`}>
+                <ul className="divide-y divide-line">
+                  {order.items.map((item) => (
+                    <li key={`${item.product}-${item.color ?? ""}`} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                      <img src={item.image} alt="" className="size-12 shrink-0 rounded-lg bg-field object-cover" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium text-ink">{item.name}</p>
+                        <p className="text-xs text-ink-soft">
+                          {item.quantity} × {naira(item.price)}
+                          {item.color ? ` · ${item.color}` : ""} · SKU {item.sku}
+                        </p>
+                      </div>
+                      <span className="font-semibold text-ink">{naira(item.lineTotal)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Box>
+
+              <Box title="Payment">
+                <dl className="flex flex-col gap-1.5 text-sm">
+                  <div className="flex justify-between">
+                    <dt className="text-ink-soft">Subtotal</dt>
+                    <dd>{naira(order.subtotal)}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-ink-soft">Delivery</dt>
+                    <dd>{order.deliveryFee === 0 ? "Free" : naira(order.deliveryFee)}</dd>
+                  </div>
+                  {order.discount > 0 && (
+                    <div className="flex justify-between text-success">
+                      <dt>Discount{order.promoCode ? ` (${order.promoCode})` : ""}</dt>
+                      <dd>−{naira(order.discount)}</dd>
+                    </div>
+                  )}
+                  <div className="mt-1 flex justify-between border-t border-line pt-2 text-base font-bold">
+                    <dt>Total</dt>
+                    <dd>{naira(order.total)}</dd>
+                  </div>
+                </dl>
+                <p className="mt-3 text-sm text-ink-soft">
+                  {order.payment.method === "card" ? `${order.payment.cardBrand ?? "Card"} ending ${order.payment.cardLast4 ?? "••••"}` : "Pay on delivery"} ·{" "}
+                  <strong className="font-semibold text-ink capitalize">{order.payment.status}</strong>
+                </p>
+              </Box>
+
+              <Box title="History">
+                <ol className="flex flex-col gap-3">
+                  {[...order.statusHistory].reverse().map((entry) => (
+                    <li key={entry.at + entry.status} className="flex gap-3 text-sm">
+                      <span aria-hidden="true" className="mt-1.5 size-2 shrink-0 rounded-full bg-primary" />
+                      <div>
+                        <p className="font-medium text-ink">{entry.note}</p>
+                        <p className="text-xs text-ink-soft">{shortDateTime(entry.at)}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </Box>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default OrderPanel;
+```
+
+```tsx
+// DispatchManifest.tsx client/src/components/admin/DispatchManifest.tsx
+// "Print Manifest" (design: Admin - Orders Management): a printed list of the orders waiting to be shipped, for the
+// person packing them: order, customer, phone, city, items, cash to collect, and a box to sign.
+// It's hidden on screen (hidden) and is the only thing on the page when printing (print:block).
+
+// STEP 43 (part 4): The dispatch manifest
+
+import type { AdminOrderRow } from "../../types/admin";
+import { longDate } from "../../utils/dates";
+import { naira } from "../../utils/format";
+
+type DispatchManifestProps = { orders: AdminOrderRow[]; printedAt: string }; // printedAt: when Print was clicked
+
+const DispatchManifest = ({ orders, printedAt }: DispatchManifestProps) => {
+  // Pay on delivery: the rider must collect the money
+  const toCollect = orders.filter((order) => order.payment.status === "pending").reduce((sum, order) => sum + order.total, 0);
+
+  return (
+    <div className="hidden text-black print:block">
+      <h1 className="text-2xl font-bold">QuickCart · Dispatch Manifest</h1>
+      <p className="mb-4 text-sm">
+        {longDate(printedAt)} · {orders.length} orders waiting to ship · cash to collect: {naira(toCollect)}
+      </p>
+      {orders.length === 0 ? (
+        <p>No orders are waiting to be shipped.</p>
+      ) : (
+        <table className="w-full border-collapse text-left text-xs">
+          <thead>
+            <tr className="border-b-2 border-black">
+              <th className="py-1 pr-2">Order</th>
+              <th className="py-1 pr-2">Customer</th>
+              <th className="py-1 pr-2">Phone</th>
+              <th className="py-1 pr-2">City</th>
+              <th className="py-1 pr-2">Items</th>
+              <th className="py-1 pr-2">Collect</th>
+              <th className="w-28 py-1">Signature</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((order) => (
+              <tr key={order._id} className="border-b border-gray-400 align-top">
+                <td className="py-2 pr-2 font-bold">#{order.orderNumber}</td>
+                <td className="py-2 pr-2">
+                  {order.contact.firstName} {order.contact.lastName}
+                </td>
+                <td className="py-2 pr-2">{order.contact.phone}</td>
+                <td className="py-2 pr-2">
+                  {order.shippingAddress.city}, {order.shippingAddress.state}
+                </td>
+                <td className="py-2 pr-2">
+                  {order.items.map((item) => (
+                    <div key={item.name}>
+                      {item.quantity} × {item.name}
+                    </div>
+                  ))}
+                </td>
+                <td className="py-2 pr-2">{order.payment.status === "pending" ? naira(order.total) : "Paid"}</td>
+                <td className="py-2" />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+export default DispatchManifest;
+```
+
+**Things worth understanding:**
+
+- **The panel only shows the buttons the server allows.** `GET /api/admin/orders/:orderNumber` answers with
+  `nextStatuses` (e.g. `["shipped", "cancelled"]`, server STEP 26), so the page never has its own copy of the rules.
+  The server checks again anyway: a delivered order can't be shipped, even with Postman.
+- **After a change, 3 things load again:** the panel (`reload`), the table behind it (`onChanged`), and the menu
+  (`announceCountsChanged`).
+- **"This order was just changed by someone else"**: if 2 admins click at the same moment, the server lets only one
+  win (server STEP 26) and the other sees that message in red.
+- **The table fits a laptop screen:** the city wraps under the date, the payment method sits under the Paid / Pending
+  pill, and Manage is an arrow button with a label for screen readers. (My first version had a Manage text button
+  and cut off the Status column; the screenshot showed it.)
+- **Printing:** `hidden print:block` means hidden on screen, shown on paper. The page itself is `print:hidden`, and so
+  are the menu and top bar (STEP 41). `text-black` and plain borders print clearly on any printer.
+- **`printedAt` comes in as a prop** instead of `new Date()` inside the component: a component must give the same result
+  every time it's drawn, and `new Date()` changes every millisecond (the linter's `purity` rule caught it).
+
+### 43.4 `src/pages/admin/AdminOrdersPage.tsx`
+
+Replace the placeholder.
+
+```tsx
+// AdminOrdersPage.tsx client/src/pages/admin/AdminOrdersPage.tsx
+// "Orders Management" (design: Admin - Orders Management): Export CSV, Print Manifest, the 5 cards, the tabs
+// (All / Processing / Shipped / Delivered / Cancelled), search, payment, date and courier filters, 10 orders a page,
+// and the order panel (?order=QC-1048 in the address, so Back closes it and the link can be shared).
+// GET /api/admin/orders (server STEP 26).
+
+// STEP 43 (part 5): The admin Orders page
+
+import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { MdCheckCircleOutline, MdDownload, MdLocalShipping, MdOutlineCancel, MdOutlineInventory, MdOutlineReceiptLong, MdPrint, MdSearch, MdSearchOff } from "react-icons/md";
+import { useSearchParams } from "react-router-dom";
+import AdminStatCard from "../../components/admin/AdminStatCard";
+import DispatchManifest from "../../components/admin/DispatchManifest";
+import OrderPanel from "../../components/admin/OrderPanel";
+import OrdersTables from "../../components/admin/OrdersTables";
+import EmptyState from "../../components/common/EmptyState";
+import Pagination from "../../components/common/Pagination";
+import { useToast } from "../../context/ToastContext";
+import { useApi } from "../../hooks/useApi";
+import type { AdminOrderRow, AdminOrdersResponse, AdminOrderTab } from "../../types/admin";
+import { api } from "../../utils/api";
+import { naira } from "../../utils/format";
+
+const PER_PAGE = 10; // "Showing 1 - 10 of 1,248 orders"
+
+const TABS: { value: AdminOrderTab; label: string }[] = [
+  { value: "all", label: "All Orders" },
+  { value: "processing", label: "Processing" },
+  { value: "shipped", label: "Shipped" },
+  { value: "delivered", label: "Delivered" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+const selectClasses = "h-12 cursor-pointer rounded-xl bg-field px-4 font-medium text-ink outline-none focus:ring-2 focus:ring-primary/30";
+
+// "₦18,420,500" -> "₦18.4M", so it fits on the small cards
+const shortNaira = (amount: number) =>
+  amount >= 1_000_000 ? `₦${(amount / 1_000_000).toFixed(1)}M` : amount >= 1000 ? `₦${Math.round(amount / 1000)}K` : naira(amount);
+
+// One CSV cell: wrapped in quotes, with any quote inside doubled ("Ada ""the boss"" Obi")
+const cell = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
+
+const AdminOrdersPage = () => {
+  const { showToast } = useToast();
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get("status") as AdminOrderTab) || "all";
+  const search = params.get("search") ?? "";
+  const payment = params.get("payment") ?? "";
+  const days = params.get("days") ?? "";
+  const courier = params.get("courier") ?? "";
+  const page = Math.max(1, Number(params.get("page")) || 1);
+  const openOrder = params.get("order"); // the order in the panel, or null
+
+  // From the address bar as it is right now (the STEP 42.1 lesson). A filter goes back to page 1;
+  // opening or closing the panel doesn't.
+  const update = (changes: Record<string, string>) => {
+    const next = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value && !(key === "status" && value === "all")) next.set(key, value);
+      else next.delete(key);
+    }
+    if (!("page" in changes) && !("order" in changes)) next.delete("page");
+    setParams(next);
+  };
+
+  const [searchText, setSearchText] = useState(search);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleSearch = (value: string) => {
+    setSearchText(value);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => update({ search: value.trim() }), 400);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  // The filters, as the server wants them (also used by Export CSV)
+  const filters = new URLSearchParams();
+  if (tab !== "all") filters.set("status", tab);
+  if (search) filters.set("search", search);
+  if (payment) filters.set("payment", payment);
+  if (days) filters.set("days", days);
+  if (courier) filters.set("courier", courier);
+
+  const { data, error, loading, reload } = useApi<AdminOrdersResponse>(`/admin/orders?${filters}&limit=${PER_PAGE}&page=${page}`);
+  const counts = data?.counts;
+
+  // Export CSV: up to 100 orders matching the filters (the server's largest page), made into a file in the browser
+  const exportCsv = async () => {
+    try {
+      const { orders } = await api<AdminOrdersResponse>(`/admin/orders?${filters}&limit=100`);
+      const header = ["Order", "Date", "Customer", "Email", "City", "State", "Items", "Total", "Payment", "Payment status", "Status", "Courier", "Waybill"];
+      const rows = orders.map((order) => [
+        order.orderNumber,
+        order.createdAt.slice(0, 10),
+        `${order.contact.firstName} ${order.contact.lastName}`,
+        order.contact.email,
+        order.shippingAddress.city,
+        order.shippingAddress.state,
+        order.items.reduce((sum, item) => sum + item.quantity, 0),
+        order.total,
+        order.payment.method === "card" ? "Card" : "Pay on delivery",
+        order.payment.status,
+        order.status,
+        order.courier ?? "",
+        order.waybill ?? "",
+      ]);
+      const csv = [header, ...rows].map((row) => row.map(cell).join(",")).join("\n");
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+      link.download = `quickcart-orders-${tab}.csv`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't export the orders", message: (err as Error).message });
+    }
+  };
+
+  // Print Manifest: load the orders waiting to ship, put them in <DispatchManifest>, then print.
+  // flushSync makes React draw the manifest NOW, before window.print() takes its picture of the page.
+  const [manifest, setManifest] = useState<{ orders: AdminOrderRow[]; printedAt: string } | null>(null);
+  const printManifest = async () => {
+    try {
+      const { orders } = await api<AdminOrdersResponse>("/admin/orders?status=processing&limit=100");
+      flushSync(() => setManifest({ orders, printedAt: new Date().toISOString() }));
+      window.print();
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't load the manifest", message: (err as Error).message });
+    }
+  };
+
+  const first = data ? (data.page - 1) * PER_PAGE + 1 : 0;
+  const last = data ? Math.min(data.page * PER_PAGE, data.total) : 0;
+
+  return (
+    <>
+      {manifest && <DispatchManifest orders={manifest.orders} printedAt={manifest.printedAt} />}
+
+      <div className="flex flex-col gap-6 print:hidden">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl">Orders Management</h1>
+            <p className="mt-2 max-w-130 text-ink-soft">Follow customer orders from payment to delivery: ship them, mark them delivered, or cancel them.</p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button type="button" onClick={exportCsv} className="flex h-12 items-center gap-2 rounded-xl bg-surface px-4 font-semibold text-ink shadow-card hover:text-primary">
+              <MdDownload size={20} aria-hidden="true" /> Export CSV
+            </button>
+            <button type="button" onClick={printManifest} className="flex h-12 items-center gap-2 rounded-xl bg-primary-hover px-5 font-semibold text-white hover:bg-primary">
+              <MdPrint size={20} aria-hidden="true" /> Print Manifest
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <AdminStatCard label="Total orders" value={counts?.all ?? "–"} icon={MdOutlineReceiptLong} note={data ? `${shortNaira(data.sales)} sales` : undefined} />
+          <AdminStatCard
+            label="Processing"
+            value={counts?.processing ?? "–"}
+            icon={MdOutlineInventory}
+            note={counts && counts.processing > 0 && <span className="rounded-full bg-[#fff4e0] px-2 py-0.5 text-xs font-semibold text-[#8a5300]">To ship</span>}
+          />
+          <AdminStatCard label="In transit" value={counts?.shipped ?? "–"} icon={MdLocalShipping} note={data ? `${data.couriers.length} couriers` : undefined} />
+          <AdminStatCard
+            label="Delivered"
+            value={counts?.delivered ?? "–"}
+            icon={MdCheckCircleOutline}
+            note={counts && counts.all > 0 ? `${((counts.delivered / counts.all) * 100).toFixed(1)}%` : undefined}
+          />
+          <AdminStatCard label="Cancelled" value={counts?.cancelled ?? "–"} icon={MdOutlineCancel} note={data ? `${shortNaira(data.refunded)} value` : undefined} />
+        </div>
+
+        <div className="flex flex-col gap-4 rounded-3xl bg-surface p-5 shadow-card">
+          <div role="tablist" aria-label="Filter orders" className="flex gap-2 overflow-x-auto pb-1">
+            {TABS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                role="tab"
+                aria-selected={tab === item.value}
+                onClick={() => update({ status: item.value })}
+                className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2 font-medium transition-colors ${
+                  tab === item.value ? "bg-primary-hover text-white" : "bg-field text-ink hover:bg-primary-light"
+                }`}
+              >
+                {item.label}
+                {counts && <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${tab === item.value ? "bg-white/20" : "bg-surface"}`}>{counts[item.value]}</span>}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+            <div className="relative">
+              <label htmlFor="admin-order-search" className="sr-only">
+                Search orders
+              </label>
+              <MdSearch size={20} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted" />
+              <input
+                id="admin-order-search"
+                type="search"
+                value={searchText}
+                onChange={(event) => handleSearch(event.target.value)}
+                placeholder="Search by order ID, customer name, email or waybill..."
+                className="h-12 w-full rounded-xl bg-field pr-4 pl-11 outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </div>
+            <select aria-label="Payment" value={payment} onChange={(event) => update({ payment: event.target.value })} className={selectClasses}>
+              <option value="">Payment: All</option>
+              <option value="paid">Paid</option>
+              <option value="pending">Pending (pay on delivery)</option>
+              <option value="refunded">Refunded</option>
+            </select>
+            <select aria-label="Date" value={days} onChange={(event) => update({ days: event.target.value })} className={selectClasses}>
+              <option value="">Date: All time</option>
+              <option value="1">Last 24 hours</option>
+              <option value="7">Last 7 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+            </select>
+            <select aria-label="Courier" value={courier} onChange={(event) => update({ courier: event.target.value })} className={selectClasses}>
+              <option value="">Courier: All</option>
+              {data?.couriers.map((name) => (
+                <option key={name}>{name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {error ? (
+          <div role="alert" className="flex items-center justify-between rounded-2xl bg-danger-light p-4 text-sm text-danger">
+            {error}
+            <button type="button" onClick={reload} className="font-semibold underline">
+              Try again
+            </button>
+          </div>
+        ) : !data ? (
+          <div aria-busy="true" className="h-96 animate-pulse rounded-3xl bg-surface shadow-card" />
+        ) : data.orders.length === 0 ? (
+          <EmptyState icon={MdSearchOff} title="No orders found" text="Try another tab, filter or search." />
+        ) : (
+          <section aria-label="Orders" className={`overflow-hidden rounded-3xl bg-surface shadow-card ${loading ? "opacity-60" : ""}`}>
+            <OrdersTables orders={data.orders} onOpen={(orderNumber) => update({ order: orderNumber })} />
+            <div className="flex flex-col items-center justify-between gap-4 border-t border-line px-6 py-4 sm:flex-row">
+              <p className="text-sm text-ink-soft">
+                Showing {first}–{last} of {data.total} orders
+              </p>
+              <Pagination page={data.page} pages={data.pages} onChange={(next) => update({ page: String(next) })} />
+            </div>
+          </section>
+        )}
+      </div>
+
+      {/* key: another order = a fresh panel (its courier box, cancel reason... start empty) */}
+      {openOrder && <OrderPanel key={openOrder} orderNumber={openOrder} onClose={() => update({ order: "" })} onChanged={reload} />}
+    </>
+  );
+};
+
+export default AdminOrdersPage;
+```
+
+- **The open order is in the address** (`?order=QC-1041`): Back closes the panel, a refresh keeps it open, and you can
+  send the link to another admin. Opening or closing it doesn't send you back to page 1; changing a filter does.
+- **`update` starts from `window.location.search`** (the STEP 42.1 lesson), so a quick search and filter never undo
+  each other.
+- **Export CSV** asks for up to 100 orders matching the filters (the most the server sends at once) and builds the file
+  in the browser, like the dashboard's export (STEP 41). `cell` wraps every value in quotes, so a comma inside an
+  address can't break the columns.
+- **`flushSync`** (from `react-dom`): React normally draws changes a moment later. `window.print()` takes its picture
+  straight away, so `flushSync` makes React draw the manifest first.
+- **`key={openOrder}`** on the panel: opening another order gives a fresh panel, so a half-typed cancel reason doesn't
+  carry over.
+
+### 43.5 Test it
+
+`npm run seed`, both terminals running, logged in as `admin@quickcart.ng` / `Admin@12345`.
+
+| Do this                                                   | You should see                                           |
+| --------------------------------------------------------- | -------------------------------------------------------- |
+| Menu → **Orders**                                          | Total Orders **41** with "₦...M sales", Processing **4** "To ship", In Transit **3**, Delivered **32** "78.0%", Cancelled **2**; 10 rows; "Showing 1–10 of 41 orders"; the menu says **4 New** |
+| **Processing** tab                                        | only the 4 processing orders; the address has `?status=processing` |
+| Search "ada"; Payment **Pending**; Courier **GIG Logistics** | only Ada's orders; only "Pending · Pay on delivery"; only waybills starting "GIG-" |
+| The **›** on a processing order                            | the panel: Next step with Courier and Waybill, Customer, Delivery (with the delivery note), Items, Payment, History |
+| GIG Logistics, waybill empty → **Mark as Shipped**         | toast "Order #QC-.... is now shipped. · The customer has been emailed."; the panel says SHIPPED, "GIG Logistics · waybill GIG-123456", History "Dispatched with GIG Logistics..."; the menu goes to **3 New** |
+| **Mark as Delivered**                                     | DELIVERED, "Nothing more to do."                          |
+| Esc                                                       | the panel closes                                          |
+| Another processing order → **Cancel order** → "Out of stock" → **Yes, cancel order** | "Cancelled: Out of stock", History "Cancelled by QuickCart"; the cards update |
+| Browser **Back**                                          | the panel closes                                          |
+| `/admin/orders?order=QC-99999`                             | the panel says "Order not found"                          |
+| **Export CSV**                                            | `quickcart-orders-all.csv` downloads: a header row + 41 orders |
+| **Print Manifest**                                        | the print preview shows only "QuickCart · Dispatch Manifest" with the orders waiting to ship and a Signature column |
+| Phone width                                               | the table scrolls sideways inside its box; the panel fills the screen |
+
+Each change sends the customer an email through your Brevo key (server STEP 19B). The seed customers have made-up
+@example.com addresses, so those emails go nowhere; the server terminal says "Email sent with Brevo to ...".
+
+I tested all of this on a copy of your project (your STEP 41 commit + STEP 42 + this step) against a throwaway database:
+**25 checks, all passed**. The screenshots match the design. `npm run build` and `npm run lint` pass.
+
+### 43.6 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 43: admin orders, order panel, dispatch manifest"
+git push
+```
+
+(If STEP 42 is done too, commit it first with its own message, or together as "STEPs 42–43".)
+
+➡️ **Next: STEP 44 (Admin: Customers, Categories and Settings).** Reply **NEXT** when 43.5 works.
+
+---
+
+## STEP 44: Admin customers and categories
+
+> **Before you start: finish STEP 43.** When I checked, 43.2 was done, but with one line in the wrong place. In
+> `ProductForm.tsx`'s `handleDelete`, `announceCountsChanged();` is inside the `catch`, so it only runs when the delete
+> **fails**. Move it into the `try`, right after `showToast({ type: "success", title: message });`. 43.1, 43.3 and 43.4
+> were still to do. (The extra `;` at the end of `OrderHistoryPage.tsx` is still there too.)
+>
+> **The plan changed a little:** the server has no "settings" endpoint, and there's no Settings design. So **Settings**
+> goes with the demo panel in STEP 45 (your admin account and the demo tools), then help pages and polish (STEP 46), then
+> putting it online (STEP 47).
+
+Two admin pages, using your server STEP 25–26 endpoints. Neither has a design, so they follow the look of the Orders and
+Products pages.
+
+- **Customers:** every shopper with their phone, number of orders, **total spent** (cancelled orders not counted), last
+  order and join date. Search by name, email or phone; sort by newest, most spent, most orders or name. Click one for a
+  **panel** with their contact details, saved addresses and orders. Clicking an order opens it on the Orders page
+  (STEP 43's panel).
+- **Categories:** the 8 departments as cards with their icon and product count (drafts included). **Add Category**
+  (name + icon), ✎ to rename or change the icon, 🗑 to delete. Delete only works for an empty category: every product
+  must have one, so the server refuses (server STEP 25) and the button is greyed out with "Move its products before
+  deleting".
+
+| File                                              | What it is                                              |
+| ------------------------------------------------- | ------------------------------------------------------- |
+| `types/admin.ts`                                  | + the customer shapes                                   |
+| `components/admin/CustomerPanel.tsx` (new)        | the customer's details panel                            |
+| `pages/admin/AdminCustomersPage.tsx`              | the Customers page (replaces the placeholder)           |
+| `components/admin/CategoryForm.tsx` (new)         | the name + icon form, for adding and editing            |
+| `pages/admin/AdminCategoriesPage.tsx`             | the Categories page (replaces the placeholder)          |
+
+### 44.1 `src/types/admin.ts`
+
+Add `Address` to the import at the top (`import type { Address, Order, OrderStatus } from "./api";`), then add at the bottom:
+
+```ts
+// STEP 44: Admin customers (server: adminCustomerController.ts, STEP 26)
+
+// One row of GET /api/admin/customers: the customer + numbers worked out from their orders
+export type AdminCustomerRow = {
+  _id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  isEmailVerified: boolean;
+  createdAt: string;
+  orderCount: number;
+  totalSpent: number; // cancelled orders not counted
+  lastOrderAt: string | null;
+};
+
+export type AdminCustomersResponse = { customers: AdminCustomerRow[]; total: number; page: number; pages: number };
+
+// GET /api/admin/customers/:id -> the customer, their addresses and their 20 newest orders
+export type AdminCustomerResponse = {
+  customer: AdminCustomerRow & { addresses: Address[] };
+  orders: (Pick<Order, "_id" | "orderNumber" | "total" | "status" | "createdAt"> & { items: { quantity: number }[] })[];
+};
+```
+
+### 44.2 Customers: `src/components/admin/CustomerPanel.tsx` and `src/pages/admin/AdminCustomersPage.tsx`
+
+```tsx
+// CustomerPanel.tsx client/src/components/admin/CustomerPanel.tsx
+// The panel that slides over the customers table (like the order panel, STEP 43): contact details, the numbers,
+// saved addresses and their orders. Clicking an order opens it on the Orders page.
+// GET /api/admin/customers/:id (server STEP 26).
+
+// STEP 44 (part 2): The customer panel
+
+import { useEffect, type ReactNode } from "react";
+import { MdClose, MdVerified } from "react-icons/md";
+import { Link } from "react-router-dom";
+import { useApi } from "../../hooks/useApi";
+import type { AdminCustomerResponse } from "../../types/admin";
+import { shortDate } from "../../utils/dates";
+import { naira, plural } from "../../utils/format";
+import StatusPill from "../common/StatusPill";
+
+const Box = ({ title, children }: { title: string; children: ReactNode }) => (
+  <section className="rounded-2xl bg-surface p-5 shadow-card">
+    <h3 className="mb-3 text-xs font-bold tracking-wider text-ink-soft uppercase">{title}</h3>
+    {children}
+  </section>
+);
+
+type CustomerPanelProps = { customerId: string; onClose: () => void };
+
+const CustomerPanel = ({ customerId, onClose }: CustomerPanelProps) => {
+  const { data, error } = useApi<AdminCustomerResponse>(`/admin/customers/${customerId}`);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  const customer = data?.customer;
+
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Customer details">
+      <button type="button" aria-label="Close the customer" onClick={onClose} className="absolute inset-0 animate-fade-in bg-ink/40" />
+
+      <div className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-page shadow-banner">
+        <div className="flex items-start justify-between gap-4 border-b border-line bg-surface px-6 py-5">
+          <div>
+            <h2 className="flex items-center gap-2 text-2xl font-bold text-ink">
+              {customer ? `${customer.firstName} ${customer.lastName}` : "Customer"}
+              {customer?.isEmailVerified && <MdVerified size={20} aria-label="Email verified" className="text-primary" />}
+            </h2>
+            {customer && <p className="mt-1 text-sm text-ink-soft">Customer since {shortDate(customer.createdAt)}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="flex size-10 shrink-0 items-center justify-center rounded-full hover:bg-field">
+            <MdClose size={22} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {error ? (
+            <p role="alert" className="rounded-2xl bg-danger-light p-4 text-sm text-danger">
+              {error}
+            </p>
+          ) : !data || !customer ? (
+            <div aria-busy="true" className="h-96 animate-pulse rounded-2xl bg-surface" />
+          ) : (
+            <div className="flex flex-col gap-4">
+              {/* The 3 numbers */}
+              <dl className="grid grid-cols-3 gap-3">
+                {[
+                  { label: "Orders", value: String(customer.orderCount) },
+                  { label: "Total spent", value: naira(customer.totalSpent) },
+                  { label: "Last order", value: customer.lastOrderAt ? shortDate(customer.lastOrderAt) : "—" },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-2xl bg-surface p-4 shadow-card">
+                    <dt className="text-xs font-semibold text-ink-soft uppercase">{item.label}</dt>
+                    <dd className="mt-1 text-lg font-bold text-ink">{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+
+              <Box title="Contact">
+                <a href={`mailto:${customer.email}`} className="block text-primary hover:underline">
+                  {customer.email}
+                </a>
+                <p className="mt-1 text-sm text-ink-soft">
+                  {customer.phone || "No phone number"} · {customer.isEmailVerified ? "Email verified" : "Email not verified yet"}
+                </p>
+              </Box>
+
+              <Box title={`Saved addresses (${customer.addresses.length})`}>
+                {customer.addresses.length === 0 ? (
+                  <p className="text-sm text-ink-soft">No saved addresses.</p>
+                ) : (
+                  <ul className="flex flex-col gap-3">
+                    {customer.addresses.map((address) => (
+                      <li key={address._id} className="text-sm">
+                        <p className="font-semibold text-ink">
+                          {address.label} {address.isDefault && <span className="ml-1 rounded-full bg-primary-light px-2 py-0.5 text-xs text-primary-hover">Default</span>}
+                        </p>
+                        <p className="text-ink-soft">
+                          {address.fullName} · {address.phone}
+                          <br />
+                          {address.street}, {address.city}, {address.state}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Box>
+
+              <Box title={data.orders.length === 20 ? "Latest 20 orders" : `Orders (${data.orders.length})`}>
+                {data.orders.length === 0 ? (
+                  <p className="text-sm text-ink-soft">No orders yet.</p>
+                ) : (
+                  <ul className="divide-y divide-line">
+                    {data.orders.map((order) => (
+                      <li key={order._id}>
+                        {/* Opens the order's panel on the Orders page (?order=..., STEP 43) */}
+                        <Link to={`/admin/orders?order=${order.orderNumber}`} className="flex items-center justify-between gap-3 py-3 hover:text-primary">
+                          <span>
+                            <span className="block font-semibold">#{order.orderNumber}</span>
+                            <span className="text-xs text-ink-soft">
+                              {shortDate(order.createdAt)} · {plural(order.items.reduce((sum, item) => sum + item.quantity, 0), "item")}
+                            </span>
+                          </span>
+                          <span className="flex items-center gap-3">
+                            <StatusPill status={order.status} />
+                            <span className="font-semibold text-ink">{naira(order.total)}</span>
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Box>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default CustomerPanel;
+```
+
+```tsx
+// AdminCustomersPage.tsx client/src/pages/admin/AdminCustomersPage.tsx
+// "Customers": every shopper with their orders and total spent. Search by name, email or phone; sort by newest,
+// most spent, most orders or name; 10 a page; click a customer for the details panel (?customer=<id>).
+// GET /api/admin/customers (server STEP 26). There's no design for this page, so it follows the Orders page.
+
+// STEP 44 (part 3): The admin Customers page
+
+import { useEffect, useRef, useState } from "react";
+import { MdChevronRight, MdSearch, MdSearchOff, MdVerified } from "react-icons/md";
+import { useSearchParams } from "react-router-dom";
+import CustomerPanel from "../../components/admin/CustomerPanel";
+import EmptyState from "../../components/common/EmptyState";
+import Pagination from "../../components/common/Pagination";
+import { useApi } from "../../hooks/useApi";
+import type { AdminCustomersResponse } from "../../types/admin";
+import { shortDate } from "../../utils/dates";
+import { naira } from "../../utils/format";
+
+const PER_PAGE = 10;
+
+const AdminCustomersPage = () => {
+  const [params, setParams] = useSearchParams();
+  const search = params.get("search") ?? "";
+  const sort = params.get("sort") ?? "";
+  const page = Math.max(1, Number(params.get("page")) || 1);
+  const openCustomer = params.get("customer");
+
+  // The STEP 42.1 pattern: start from the real address bar
+  const update = (changes: Record<string, string>) => {
+    const next = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(changes)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    if (!("page" in changes) && !("customer" in changes)) next.delete("page");
+    setParams(next);
+  };
+
+  const [searchText, setSearchText] = useState(search);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const handleSearch = (value: string) => {
+    setSearchText(value);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => update({ search: value.trim() }), 400);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const query = new URLSearchParams({ limit: String(PER_PAGE), page: String(page) });
+  if (search) query.set("search", search);
+  if (sort) query.set("sort", sort);
+  const { data, error, loading, reload } = useApi<AdminCustomersResponse>(`/admin/customers?${query}`);
+
+  const first = data ? (data.page - 1) * PER_PAGE + 1 : 0;
+  const last = data ? Math.min(data.page * PER_PAGE, data.total) : 0;
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl">Customers</h1>
+        <p className="mt-2 max-w-130 text-ink-soft">Everyone who has an account, with their orders and how much they've spent.</p>
+      </div>
+
+      <div className="grid gap-3 rounded-3xl bg-surface p-5 shadow-card md:grid-cols-[1fr_auto]">
+        <div className="relative">
+          <label htmlFor="admin-customer-search" className="sr-only">
+            Search customers
+          </label>
+          <MdSearch size={20} aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-muted" />
+          <input
+            id="admin-customer-search"
+            type="search"
+            value={searchText}
+            onChange={(event) => handleSearch(event.target.value)}
+            placeholder="Search by name, email or phone..."
+            className="h-12 w-full rounded-xl bg-field pr-4 pl-11 outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+        <select
+          aria-label="Sort"
+          value={sort}
+          onChange={(event) => update({ sort: event.target.value })}
+          className="h-12 cursor-pointer rounded-xl bg-field px-4 font-medium text-ink outline-none focus:ring-2 focus:ring-primary/30"
+        >
+          <option value="">Newest first</option>
+          <option value="spent">Most spent</option>
+          <option value="orders">Most orders</option>
+          <option value="name">Name (A–Z)</option>
+        </select>
+      </div>
+
+      {error ? (
+        <div role="alert" className="flex items-center justify-between rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          {error}
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : !data ? (
+        <div aria-busy="true" className="h-96 animate-pulse rounded-3xl bg-surface shadow-card" />
+      ) : data.customers.length === 0 ? (
+        <EmptyState icon={MdSearchOff} title="No customers found" text="Try another name, email or phone number." />
+      ) : (
+        <section aria-label="Customers" className={`overflow-hidden rounded-3xl bg-surface shadow-card ${loading ? "opacity-60" : ""}`}>
+          {/* relative: keeps the sr-only header inside the scroll box (STEP 42) */}
+          <div className="relative overflow-x-auto">
+            <table className="w-full min-w-200 text-left text-sm">
+              <thead className="bg-panel text-xs font-bold tracking-wider text-ink-soft uppercase">
+                <tr>
+                  <th scope="col" className="px-6 py-3">Customer</th>
+                  <th scope="col" className="px-4 py-3">Phone</th>
+                  <th scope="col" className="px-4 py-3">Orders</th>
+                  <th scope="col" className="px-4 py-3">Total spent</th>
+                  <th scope="col" className="px-4 py-3">Last order</th>
+                  <th scope="col" className="px-4 py-3">Joined</th>
+                  <th scope="col" className="py-3 pr-4">
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {data.customers.map((customer) => (
+                  <tr key={customer._id} className="hover:bg-panel/50">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-light text-sm font-bold text-primary-hover">
+                          {`${customer.firstName[0] ?? ""}${customer.lastName[0] ?? ""}`.toUpperCase()}
+                        </span>
+                        <div className="min-w-0">
+                          <button type="button" onClick={() => update({ customer: customer._id })} className="flex items-center gap-1 font-semibold text-ink hover:text-primary">
+                            {customer.firstName} {customer.lastName}
+                            {customer.isEmailVerified && <MdVerified size={16} aria-label="Email verified" className="text-primary" />}
+                          </button>
+                          <p className="text-xs text-ink-soft">{customer.email}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap text-ink-soft">{customer.phone || "—"}</td>
+                    <td className="px-4 py-4 font-semibold text-ink">{customer.orderCount}</td>
+                    <td className="px-4 py-4 font-bold whitespace-nowrap text-ink">{naira(customer.totalSpent)}</td>
+                    <td className="px-4 py-4 whitespace-nowrap text-ink-soft">{customer.lastOrderAt ? shortDate(customer.lastOrderAt) : "No orders yet"}</td>
+                    <td className="px-4 py-4 whitespace-nowrap text-ink-soft">{shortDate(customer.createdAt)}</td>
+                    <td className="py-4 pr-4">
+                      <button
+                        type="button"
+                        onClick={() => update({ customer: customer._id })}
+                        aria-label={`View ${customer.firstName} ${customer.lastName}`}
+                        className="flex size-9 items-center justify-center rounded-lg text-primary-hover hover:bg-primary-light"
+                      >
+                        <MdChevronRight size={22} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-col items-center justify-between gap-4 border-t border-line px-6 py-4 sm:flex-row">
+            <p className="text-sm text-ink-soft">
+              Showing {first}–{last} of {data.total} customers
+            </p>
+            <Pagination page={data.page} pages={data.pages} onChange={(next) => update({ page: String(next) })} />
+          </div>
+        </section>
+      )}
+
+      {openCustomer && <CustomerPanel key={openCustomer} customerId={openCustomer} onClose={() => update({ customer: "" })} />}
+    </div>
+  );
+};
+
+export default AdminCustomersPage;
+```
+
+- **The same patterns as STEP 43:** the filters and the open customer live in the address (`?sort=spent&customer=...`),
+  `update` starts from `window.location.search`, the search waits 0.4 seconds, Esc and Back close the panel.
+- **The numbers come from the server** (`orderCount`, `totalSpent`, `lastOrderAt`). MongoDB works them out in one query
+  with `$lookup`, a "join" with the orders collection (server STEP 26). The page doesn't add up orders itself.
+- **The server never sends passwords or reset codes** here: it picks only safe fields (`CUSTOMER_FIELDS`, server STEP 26).
+- **"Latest 20 orders"**: the panel shows at most 20 (the server's limit). The Orders page has all of them.
+
+### 44.3 Categories: `src/components/admin/CategoryForm.tsx` and `src/pages/admin/AdminCategoriesPage.tsx`
+
+```tsx
+// CategoryForm.tsx client/src/components/admin/CategoryForm.tsx
+// The small form for adding or editing a category: its name and its icon (picked from the icons the shop can show).
+// Used twice on the Categories page: "Add Category" and each card's Edit.
+
+// STEP 44 (part 4): The category form
+
+import { useState, type FormEvent } from "react";
+import { categoryIcons } from "../../utils/categoryIcons";
+import TextInput from "../form/TextInput";
+
+type CategoryFormProps = {
+  initialName?: string;
+  initialIcon?: string;
+  submitLabel: string; // "Add Category" or "Save"
+  onSubmit: (name: string, icon: string) => Promise<void>; // throws with the server's message when it fails
+  onCancel: () => void;
+};
+
+const CategoryForm = ({ initialName = "", initialIcon = "category", submitLabel, onSubmit, onCancel }: CategoryFormProps) => {
+  const [name, setName] = useState(initialName);
+  const [icon, setIcon] = useState(initialIcon);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) {
+      setError("Please enter the category name.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSubmit(name.trim(), icon);
+    } catch (err) {
+      setError((err as Error).message); // e.g. "There is already a category called 'Books'."
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
+      <TextInput
+        label="Category name"
+        value={name}
+        onChange={(event) => {
+          setName(event.target.value);
+          setError("");
+        }}
+        error={error}
+        placeholder="e.g. Toys & Games"
+        maxLength={40}
+      />
+
+      {/* A group of radio buttons that look like icon tiles. fieldset + legend = the group's label for screen readers. */}
+      <fieldset>
+        <legend className="mb-2 text-sm font-medium text-ink">Icon</legend>
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(categoryIcons).map(([iconName, Icon]) => (
+            <label
+              key={iconName}
+              title={iconName}
+              className={`flex size-11 cursor-pointer items-center justify-center rounded-xl border-2 transition-colors has-focus-visible:ring-2 has-focus-visible:ring-primary/40 ${
+                icon === iconName ? "border-primary bg-primary-light text-primary-hover" : "border-transparent bg-field text-ink-soft hover:text-ink"
+              }`}
+            >
+              <input type="radio" name="category-icon" value={iconName} checked={icon === iconName} onChange={() => setIcon(iconName)} className="sr-only" />
+              <Icon size={22} aria-hidden="true" />
+              <span className="sr-only">{iconName.replace("_", " ")}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className="flex gap-3">
+        <button type="submit" disabled={saving} className="h-11 rounded-xl bg-primary-hover px-5 font-semibold text-white hover:bg-primary disabled:opacity-60">
+          {saving ? "Saving..." : submitLabel}
+        </button>
+        <button type="button" onClick={onCancel} className="h-11 rounded-xl px-4 font-semibold text-ink-soft hover:bg-field">
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+};
+
+export default CategoryForm;
+```
+
+```tsx
+// AdminCategoriesPage.tsx client/src/pages/admin/AdminCategoriesPage.tsx
+// "Categories": the shop's departments with their product counts (drafts included). Add one, rename it or change its
+// icon, or delete it (only when no product uses it: every product must have a category).
+// GET / POST / PATCH / DELETE /api/admin/categories (server STEP 25). There's no design, so it follows the other admin pages.
+
+// STEP 44 (part 5): The admin Categories page
+
+import { useState } from "react";
+import { MdAddCircleOutline, MdDeleteOutline, MdEdit } from "react-icons/md";
+import { Link } from "react-router-dom";
+import CategoryForm from "../../components/admin/CategoryForm";
+import { useToast } from "../../context/ToastContext";
+import { useApi } from "../../hooks/useApi";
+import type { AdminCategory } from "../../types/admin";
+import { api } from "../../utils/api";
+import { categoryIcons, DefaultCategoryIcon } from "../../utils/categoryIcons";
+import { plural } from "../../utils/format";
+
+const AdminCategoriesPage = () => {
+  const { showToast } = useToast();
+  const { data, error, reload } = useApi<{ categories: AdminCategory[] }>("/admin/categories");
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null); // the card showing its form
+  const [confirmId, setConfirmId] = useState<string | null>(null); // the card asking "Delete?"
+
+  const add = async (name: string, icon: string) => {
+    const { message } = await api<{ message: string }>("/admin/categories", { method: "POST", body: { name, icon } });
+    showToast({ type: "success", title: message }); // "'Toys & Games' has been added."
+    setAdding(false);
+    reload();
+  };
+
+  const save = async (id: string, name: string, icon: string) => {
+    const { message } = await api<{ message: string }>(`/admin/categories/${id}`, { method: "PATCH", body: { name, icon } });
+    showToast({ type: "success", title: message });
+    setEditingId(null);
+    reload();
+  };
+
+  const remove = async (category: AdminCategory) => {
+    try {
+      const { message } = await api<{ message: string }>(`/admin/categories/${category._id}`, { method: "DELETE" });
+      showToast({ type: "success", title: message });
+      reload();
+    } catch (err) {
+      showToast({ type: "error", title: "Couldn't delete the category", message: (err as Error).message });
+    }
+    setConfirmId(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-4xl font-bold tracking-tight text-ink sm:text-5xl">Categories</h1>
+          <p className="mt-2 max-w-130 text-ink-soft">The departments shoppers browse. A renamed category keeps its link, so old links still work.</p>
+        </div>
+        {!adding && (
+          <button type="button" onClick={() => setAdding(true)} className="flex h-12 items-center gap-2 rounded-xl bg-primary-hover px-6 text-lg font-semibold text-white hover:bg-primary">
+            <MdAddCircleOutline size={22} aria-hidden="true" /> Add Category
+          </button>
+        )}
+      </div>
+
+      {adding && (
+        <section aria-label="New category" className="rounded-3xl bg-surface p-6 shadow-card">
+          <h2 className="mb-4 text-xl font-semibold text-ink">New category</h2>
+          <CategoryForm submitLabel="Add Category" onSubmit={add} onCancel={() => setAdding(false)} />
+        </section>
+      )}
+
+      {error ? (
+        <div role="alert" className="flex items-center justify-between rounded-2xl bg-danger-light p-4 text-sm text-danger">
+          {error}
+          <button type="button" onClick={reload} className="font-semibold underline">
+            Try again
+          </button>
+        </div>
+      ) : !data ? (
+        <div aria-busy="true" className="h-64 animate-pulse rounded-3xl bg-surface shadow-card" />
+      ) : (
+        <ul aria-label="Categories" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {data.categories.map((category) => {
+            const Icon = categoryIcons[category.icon] ?? DefaultCategoryIcon;
+            return (
+              <li key={category._id} className="rounded-3xl bg-surface p-5 shadow-card">
+                {editingId === category._id ? (
+                  // key: a fresh form each time Edit is clicked
+                  <CategoryForm
+                    key={category._id}
+                    initialName={category.name}
+                    initialIcon={category.icon || "category"}
+                    submitLabel="Save"
+                    onSubmit={(name, icon) => save(category._id, name, icon)}
+                    onCancel={() => setEditingId(null)}
+                  />
+                ) : (
+                  <>
+                    <div className="flex items-start gap-4">
+                      <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-primary-light text-primary-hover">
+                        <Icon size={26} aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <h2 className="text-lg font-semibold text-ink">{category.name}</h2>
+                        <p className="text-xs text-ink-soft">/shop?category={category.slug}</p>
+                        <Link to={`/admin/products?category=${category.slug}`} className="mt-1 inline-block text-sm font-semibold text-primary hover:underline">
+                          {plural(category.productCount, "product")}
+                        </Link>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-end gap-1 border-t border-line pt-3">
+                      {confirmId === category._id ? (
+                        <span className="flex items-center gap-3 text-sm">
+                          Delete '{category.name}'?
+                          <button type="button" onClick={() => remove(category)} className="font-semibold text-danger hover:underline">
+                            Yes
+                          </button>
+                          <button type="button" onClick={() => setConfirmId(null)} className="font-semibold text-ink-soft hover:underline">
+                            No
+                          </button>
+                        </span>
+                      ) : (
+                        <>
+                          {category.productCount > 0 && <span className="mr-auto text-xs text-muted">Move its products before deleting</span>}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(category._id);
+                              setConfirmId(null);
+                            }}
+                            aria-label={`Edit ${category.name}`}
+                            className="flex size-9 items-center justify-center rounded-lg text-ink-soft hover:bg-field hover:text-primary"
+                          >
+                            <MdEdit size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmId(category._id)}
+                            disabled={category.productCount > 0}
+                            aria-label={`Delete ${category.name}`}
+                            className="flex size-9 items-center justify-center rounded-lg text-ink-soft hover:bg-danger-light hover:text-danger disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-soft"
+                          >
+                            <MdDeleteOutline size={18} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default AdminCategoriesPage;
+```
+
+- **The icon picker is a group of radio buttons** dressed as tiles: the real `<input type="radio">` is `sr-only`
+  (hidden but still there), so the arrow keys and screen readers work like any radio group. `has-focus-visible:` draws
+  the focus ring on the tile when you Tab to it.
+- **The icons come from your own `utils/categoryIcons.ts`** (you made it before STEP 30), the same list the shop uses, so whatever you pick
+  shows on the Categories page and the Home page. The server only accepts icon names like `fitness_center` (server STEP 25).
+- **`onSubmit` throws when the server says no**, and `CategoryForm` catches it and shows the message under the name
+  ("There is already a category called 'Books'."). So the page only handles success.
+- **Renaming keeps the slug** (`toys-games` stays even after "Toys & Games" becomes "Toys"), so links like
+  `/shop?category=toys-games` that people saved keep working (server STEP 25).
+- **The product count is a link** to the Products page filtered to that category (`/admin/products?category=...`,
+  STEP 42).
+
+### 44.4 Test it
+
+`npm run seed`, both terminals running, logged in as `admin@quickcart.ng` / `Admin@12345`.
+
+| Do this                                                    | You should see                                          |
+| ---------------------------------------------------------- | ------------------------------------------------------- |
+| Menu → **Customers**                                        | 5 customers with phone, orders, total spent, last order, joined; "Showing 1–5 of 5 customers" |
+| Sort **Most spent**                                         | Chioma Nwosu first (₦783,400)                           |
+| Search "fatima"                                             | only Fatima Danjuma                                     |
+| The **›** on Fatima                                         | the panel: Orders / Total spent / Last order, contact, saved addresses, her orders |
+| Click one of her orders                                     | the Orders page opens with that order's panel           |
+| Esc; then `/admin/customers?customer=aaaaaaaaaaaaaaaaaaaaaaaa` | the panel closes; "Customer not found"               |
+| Menu → **Categories**                                       | 8 cards with icons and "15 products", "6 products"...; every 🗑 is greyed out |
+| **Add Category** → **Add Category** with no name            | "Please enter the category name."                       |
+| Name "Books"                                                | "There is already a category called 'Books'."           |
+| Name "Toys & Games", the dumbbell icon                      | toast "'Toys & Games' has been added."; a 9th card "0 products", `/shop?category=toys-games`, its 🗑 works |
+| ✎ on it → "Toys", the sofa icon → **Save**                  | "'Toys' has been updated."; the link is still `toys-games` |
+| 🗑 → **No**, then 🗑 → **Yes**                               | "Delete 'Toys'?" / "'Toys' has been deleted."; 8 cards again |
+| Click "15 products" on Electronics                          | the Products page, filtered to Electronics              |
+| Phone width                                                 | the customers table scrolls inside its box; the cards stack |
+
+I tested all of this on a copy of your project (your STEP 42 commit + STEP 43 + this step) against a throwaway
+database: **20 checks, all passed** on the first run. `npm run build` and `npm run lint` pass.
+
+### 44.5 Commit
+
+```bash
+cd ~/Desktop/QuickCarrt/client
+git add .
+git commit -m "STEP 44: admin customers and categories"
+git push
+```
+
+(Commit STEP 43 first, with its own message, once it's finished.)
+
+➡️ **Next: STEP 45 (Admin Settings: your admin profile and password, and the demo panel to reset the demo data and move
+orders along).** Reply **NEXT** when 44.4 works.

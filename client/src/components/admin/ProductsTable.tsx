@@ -16,6 +16,7 @@ import type { AdminProductRow } from "../../types/admin";
 import { api } from "../../utils/api";
 import { shortDate } from "../../utils/dates";
 import { naira } from "../../utils/format";
+import { announceCountsChanged } from "../../utils/adminEvents";
 
 // The small note under the SKU, depending on the product
 const noteFor = (product: AdminProductRow) => {
@@ -102,6 +103,7 @@ const ProductsTable = ({ products, onDeleted }: ProductsTableProps) => {
       showToast({ type: "success", title: message }); // "'Demo Speaker' has been deleted."
       setConfirmId(null);
       onDeleted();
+      announceCountsChanged(); // the menu's "Products 40" (STEP 43)
     } catch (err) {
       showToast({
         type: "error",
