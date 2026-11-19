@@ -34,4 +34,7 @@ export const env = {
   emailFromName: process.env.EMAIL_FROM_NAME || "QuickCart",
 
   brevoListId: Number(process.env.BREVO_LIST_ID) || undefined, // the Brevo contact list for the newsletter, e.g. 3
+  // "Continue with Google" (authController.ts -> googleSignIn): the OAuth Client ID from Google Cloud Console,
+  // the same one the website uses (client/.env VITE_GOOGLE_CLIENT_ID). Empty = Google sign-in is switched off.
+  googleClientId: process.env.GOOGLE_CLIENT_ID || "",
 };

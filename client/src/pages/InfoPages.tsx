@@ -18,7 +18,7 @@ const InfoPage = ({ page }: { page: InfoPageData }) => {
     <div className="mx-auto max-w-6xl px-4 py-10 md:px-8">
       <Breadcrumb items={[{ label: "Home", to: "/" }, { label: page.title }]} />
 
-      <div className="mt-6 grid items-start gap-8 lg:grid-cols-[1fr_280px]">
+      <div className="mt-6 grid items-start gap-8 lg:grid-cols-[1fr_280px] max-lg:grid-cols-1">
         <article className="rounded-3xl bg-surface p-6 shadow-card md:p-10">
           <p className="text-sm font-bold tracking-wider text-primary uppercase">
             {page.group}

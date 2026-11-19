@@ -87,7 +87,7 @@ const FlashSale = () => {
         </div>
       </div>
 
-      <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 max-sm:grid-cols-2 max-sm:gap-3">
         {loading
           ? Array.from({ length: 4 }, (_, index) => (
               <li

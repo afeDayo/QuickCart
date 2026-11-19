@@ -68,8 +68,8 @@ const BundleOffer = ({ product }: { product: Product }) => {
             Frequently Bought Together
           </h2>
         </div>
-        <div className="flex items-center gap-4 rounded-2xl bg-panel py-2 pr-2 pl-4">
-          <p className="text-right text-sm text-ink-soft">
+        <div className="flex items-center gap-4 rounded-2xl bg-panel py-2 pr-2 pl-4 max-md:justify-between">
+          <p className="text-right text-sm text-ink-soft max-md:text-left">
             Bundle Total ({count} items):
             <span className="block text-lg font-bold text-primary-hover">
               {naira(total)}
@@ -78,14 +78,14 @@ const BundleOffer = ({ product }: { product: Product }) => {
           <button
             type="button"
             onClick={addAll}
-            className="h-11 rounded-xl bg-primary px-5 font-semibold text-white transition-colors hover:bg-primary-hover"
+            className="h-11 rounded-xl bg-primary px-5 font-semibold text-white transition-colors hover:bg-primary-hover max-md:shrink-0 max-md:px-4 max-md:whitespace-nowrap"
           >
             Add All {count} to Cart
           </button>
         </div>
       </div>
 
-      <ul className="grid gap-4 md:grid-cols-3">
+      <ul className="grid gap-4 md:grid-cols-3 max-md:grid-cols-1">
         {product.bundleProducts.map((item) => (
           <li key={item._id}>
             {/* The whole card is the label: clicking anywhere on it ticks the box */}

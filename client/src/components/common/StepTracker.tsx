@@ -12,7 +12,7 @@ const StepTracker = ({ current }: { current: 1 | 2 | 3 }) => {
   return (
     <ol
       aria-label="Checkout steps"
-      className="mb-6 flex flex-wrap items-center gap-2 text-sm"
+      className="mb-6 flex flex-wrap items-center gap-2 text-sm max-sm:flex-nowrap max-sm:gap-1 max-sm:text-xs"
     >
       {STEPS.map((label, index) => {
         const number = index + 1;
@@ -21,7 +21,7 @@ const StepTracker = ({ current }: { current: 1 | 2 | 3 }) => {
         return (
           <li
             key={label}
-            className="flex items-center gap-2"
+            className="flex items-center gap-2 max-sm:gap-1"
             aria-current={active ? "step" : undefined}
           >
             {index > 0 && (
@@ -32,7 +32,7 @@ const StepTracker = ({ current }: { current: 1 | 2 | 3 }) => {
               />
             )}
             <span
-              className={`flex size-7 items-center justify-center rounded-full text-xs font-bold ${
+              className={`flex size-7 items-center justify-center rounded-full text-xs font-bold max-sm:size-6 ${
                 active
                   ? "bg-primary text-white"
                   : done
@@ -42,7 +42,9 @@ const StepTracker = ({ current }: { current: 1 | 2 | 3 }) => {
             >
               {done ? <MdCheck size={16} aria-label="done" /> : number}
             </span>
-            <span className={active ? "font-semibold text-ink" : "text-muted"}>
+            <span
+              className={`max-sm:whitespace-nowrap ${active ? "font-semibold text-ink" : "text-muted"}`}
+            >
               {label}
             </span>
           </li>

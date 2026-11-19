@@ -21,7 +21,7 @@ const AccountSettingsPage = () => {
       <div className="rounded-3xl bg-surface p-2 shadow-card">
         <EditProfileForm />
       </div>
-      <div className="grid items-start gap-6 xl:grid-cols-[1fr_360px]">
+      <div className="grid items-start gap-6 xl:grid-cols-[1fr_360px] max-xl:grid-cols-1">
         <ChangePasswordForm />
         <SecurityCard />
       </div>

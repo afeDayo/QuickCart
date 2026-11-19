@@ -85,7 +85,7 @@ const OrderCard = ({ order }: { order: Order }) => {
       <div className="flex flex-col gap-4 p-5">
         {band}
 
-        <ul className="grid gap-3 md:grid-cols-2">
+        <ul className="grid gap-3 md:grid-cols-2 max-md:grid-cols-1">
           {order.items.map((item) => (
             <li
               key={`${item.product}-${item.color}`}

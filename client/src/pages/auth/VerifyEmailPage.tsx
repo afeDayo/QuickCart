@@ -12,7 +12,7 @@ import {
   MdScience,
   MdVerified,
 } from "react-icons/md";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import AccountRecoveryLayout from "../../components/auth/AccountRecoveryLayout";
 import CodeInput from "../../components/form/CodeInput";
 import { useAuth } from "../../context/AuthContext";
@@ -21,14 +21,23 @@ import { api } from "../../utils/api";
 
 const RESEND_SECONDS = 60; // wait a minute before "Send again", so nobody floods the inbox
 
+// What sign-up and login pass here when the server has already emailed a code (RegisterPage, LoginPage)
+type ArrivalState = {
+  verification?: { message: string; devCode?: string };
+  next?: string; // where the shopper was going before logging in (e.g. /checkout)
+} | null;
+
 const VerifyEmailPage = () => {
   const { user, setUser } = useAuth();
-  const [sentTo, setSentTo] = useState(""); // the message after sending: "We've sent a 6-digit code to ..."
-  const [devCode, setDevCode] = useState(""); // demo mode only: the code, so a demo needs no inbox
+  const arrival = useLocation().state as ArrivalState;
+  const alreadySent = arrival?.verification; // just signed up or logged in: the code is already in the inbox
+
+  const [sentTo, setSentTo] = useState(alreadySent?.message ?? ""); // "We've sent a 6-digit code to ..."
+  const [devCode, setDevCode] = useState(alreadySent?.devCode ?? ""); // demo mode only: the code, so a demo needs no inbox
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [wait, setWait] = useState(0); // seconds before you can send again
+  const [wait, setWait] = useState(alreadySent ? RESEND_SECONDS : 0); // seconds before you can send again
 
   // Count the resend timer down, one second at a time
   useEffect(() => {
@@ -95,10 +104,11 @@ const VerifyEmailPage = () => {
             will arrive in that inbox.
           </p>
           <Link
-            to="/"
+            to={arrival?.next ?? "/"}
             className="mt-8 inline-flex h-12 items-center gap-2 rounded-xl bg-primary px-6 font-semibold text-white hover:bg-primary-hover"
           >
-            Start Shopping <MdArrowForward size={18} aria-hidden="true" />
+            {arrival?.next && arrival.next !== "/" ? "Continue" : "Start Shopping"}{" "}
+            <MdArrowForward size={18} aria-hidden="true" />
           </Link>
         </div>
       </AccountRecoveryLayout>
@@ -183,7 +193,7 @@ const VerifyEmailPage = () => {
       )}
 
       <Link
-        to="/"
+        to={arrival?.next ?? "/"}
         className="mx-auto mt-6 block w-fit text-sm text-muted hover:text-ink"
       >
         Skip for now

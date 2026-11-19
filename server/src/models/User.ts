@@ -26,7 +26,8 @@ export interface IUser {
   lastName: string;
   email: string; // unique: one account per email
   phone?: string;
-  password: string; // the bcrypt hash, never the real password
+  password?: string; // the bcrypt hash, never the real password. Empty for accounts made with Google.
+  googleId?: string; // set when the account signs in with Google ("sub", Google's id for the person)
   role: "customer" | "admin";
   isEmailVerified: boolean;
   addresses: IAddress[];
@@ -99,10 +100,19 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
 
     password: {
       type: String,
-      required: [true, "Password is required"],
+      // Required, except for accounts made with "Continue with Google" (they can set one later with Forgot password)
+      required: [
+        function (this: IUser) {
+          return !this.googleId;
+        },
+        "Password is required",
+      ],
       minlength: [8, "Password must be at least 8 characters"],
       select: false, // left out of every query unless asked for with .select("+password")
     },
+
+    // Google's id for the person. unique + sparse: no two accounts share one, and accounts without Google are fine
+    googleId: { type: String, unique: true, sparse: true, select: false },
 
     role: { type: String, enum: ["customer", "admin"], default: "customer" },
 
@@ -141,8 +151,8 @@ const userSchema = new Schema<IUser, UserModel, IUserMethods>(
 // Before every save: if the password was set or changed, replace it with its bcrypt hash.
 // "function" (not an arrow) is required here: Mongoose sets "this" to the user being saved.
 userSchema.pre("save", async function () {
-  if (!this.isModified("password")) {
-    return; // e.g. only the name changed: don't hash the hash again!
+  if (!this.isModified("password") || !this.password) {
+    return; // e.g. only the name changed: don't hash the hash again! (or a Google account with no password)
   }
 
   this.password = await bcrypt.hash(this.password, 10); // 10 = how hard to scramble (the usual choice)
@@ -156,6 +166,9 @@ userSchema.pre("save", async function () {
 // user.comparePassword("typed password") -> true / false
 // bcrypt hashes the typed password the same way and compares. (Needs .select("+password") when loading the user.)
 userSchema.method("comparePassword", async function (candidate: string) {
+  if (!this.password) {
+    return false; // an account made with Google has no password yet: no password can match
+  }
   return bcrypt.compare(candidate, this.password);
 });
 

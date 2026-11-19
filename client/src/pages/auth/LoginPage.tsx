@@ -19,6 +19,7 @@ import {
   useNavigate,
   type Location,
 } from "react-router-dom";
+import SocialSignIn from "../../components/auth/SocialSignIn";
 import Checkbox from "../../components/form/Checkbox";
 import PasswordInput from "../../components/form/PasswordInput";
 import TextInput from "../../components/form/TextInput";
@@ -82,7 +83,19 @@ const LoginPage = () => {
     setServerError("");
     setSubmitting(true);
     try {
-      const loggedIn = await login(email.trim(), password, rememberMe);
+      const { user: loggedIn, verification } = await login(
+        email.trim(),
+        password,
+        rememberMe,
+      );
+      // Never verified their email? The server has just emailed a code: verify first, then carry on to "from"
+      if (verification) {
+        navigate("/verify-email", {
+          replace: true,
+          state: { verification, next: from },
+        });
+        return;
+      }
       // Admins land on their dashboard, unless they were on their way somewhere
       navigate(from === "/" && loggedIn.role === "admin" ? "/admin" : from, {
         replace: true,
@@ -175,6 +188,12 @@ const LoginPage = () => {
           </button>
         </form>
 
+        {/* "Continue with Google": Google accounts are already verified, so carry straight on */}
+        <SocialSignIn
+          mode="signin"
+          onSignedIn={() => navigate(from, { replace: true })}
+        />
+
         <p className="mt-8 text-center text-[15px] text-ink-soft">
           Don't have an account?{" "}
           <Link
@@ -196,7 +215,7 @@ const LoginPage = () => {
         </p>
       </div>
 
-      <ul className="mx-auto mt-12 grid max-w-240 gap-6 md:grid-cols-3">
+      <ul className="mx-auto mt-12 grid max-w-240 gap-6 md:grid-cols-3 max-md:grid-cols-1">
         {perks.map((perk) => (
           <li
             key={perk.title}

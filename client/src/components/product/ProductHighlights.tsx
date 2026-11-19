@@ -22,7 +22,7 @@ const ProductHighlights = ({
 
   return (
     <section aria-label="Highlights">
-      <ul className="grid gap-6 md:grid-cols-3">
+      <ul className="grid gap-6 md:grid-cols-3 max-md:grid-cols-1">
         {highlights.map((highlight, index) => {
           const Icon = getHighlightIcon(highlight.icon);
           return (

@@ -33,6 +33,7 @@ import {
   updateOrderStatus,
 } from "../controllers/adminOrderController";
 import { getDashboard } from "../controllers/adminDashboardController";
+import { addAdmin, getTeam, removeAdmin } from "../controllers/adminTeamController";
 import { advanceOrders, resetDemo } from "../controllers/demoController";
 
 const router = Router();
@@ -40,6 +41,11 @@ const router = Router();
 // One line guards EVERY route below: logged in (protect), and an admin (adminOnly). Order matters.
 router.use(protect, adminOnly);
 router.get("/dashboard", getDashboard);
+
+// Team (Settings): who the admins are, make an existing account an admin, remove admin rights
+router.get("/team", getTeam);
+router.post("/team", addAdmin);
+router.delete("/team/:id", removeAdmin);
 
 // Photos: uploadPhotos (multer) reads the files first, then the controller sends them to Cloudinary
 router.post("/uploads", uploadPhotos, uploadProductPhotos);

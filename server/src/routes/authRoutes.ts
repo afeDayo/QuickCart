@@ -9,6 +9,7 @@ import {
   checkResetToken,
   forgotPassword,
   getMe,
+  googleSignIn,
   login,
   logout,
   register,
@@ -22,6 +23,7 @@ const router = Router();
 
 router.post("/register", register);
 router.post("/login", login);
+router.post("/google", googleSignIn); // "Continue with Google": { credential } -> { token, user }
 router.get("/check-email", checkEmail);
 router.get("/me", protect, getMe); // protect runs first; getMe only runs if it calls next()
 router.post("/logout", protect, logout);

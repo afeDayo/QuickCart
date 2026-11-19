@@ -35,7 +35,7 @@ const AccountRecoveryLayout = ({
   children,
 }: AccountRecoveryLayoutProps) => {
   return (
-    <div className="mx-auto grid max-w-360 items-start gap-8 px-4 py-12 md:px-12 lg:grid-cols-[0.8fr_1fr]">
+    <div className="mx-auto grid max-w-360 items-start gap-8 px-4 py-12 md:px-12 lg:grid-cols-[0.8fr_1fr] max-lg:grid-cols-1">
       <aside className="relative overflow-hidden rounded-3xl bg-linear-to-br from-primary-hover to-primary p-8 text-white shadow-banner md:p-10">
         <div
           aria-hidden="true"

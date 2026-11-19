@@ -48,7 +48,7 @@ const AdminLoginPage = () => {
     setError("");
     setSubmitting(true);
     try {
-      const loggedIn = await login(email.trim(), password, false);
+      const { user: loggedIn } = await login(email.trim(), password, false);
       if (loggedIn.role !== "admin") {
         // A real customer account, but not staff. (The server would refuse its admin requests with 403 anyway.)
         logout();

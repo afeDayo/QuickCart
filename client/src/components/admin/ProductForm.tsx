@@ -390,7 +390,7 @@ const ProductForm = ({ product, categories }: ProductFormProps) => {
         )}
       </div>
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px] max-lg:grid-cols-1">
         {/* Left column */}
         <div className="flex flex-col gap-6">
           <FormCard
@@ -418,7 +418,7 @@ const ProductForm = ({ product, categories }: ProductFormProps) => {
                 maxLength={2000}
                 hint="Plain text. Shown under the price on the product page."
               />
-              <div className="grid gap-5 md:grid-cols-3">
+              <div className="grid gap-5 md:grid-cols-3 max-md:grid-cols-1">
                 <SelectInput
                   label="Primary Category"
                   value={values.category}
@@ -460,7 +460,7 @@ const ProductForm = ({ product, categories }: ProductFormProps) => {
 
           <FormCard icon={MdOutlinePayments} title="Pricing & Inventory">
             <div className="flex flex-col gap-6">
-              <div className="grid gap-5 md:grid-cols-3">
+              <div className="grid gap-5 md:grid-cols-3 max-md:grid-cols-1">
                 <TextInput
                   label="Regular Price (₦)"
                   type="number"
@@ -548,7 +548,7 @@ const ProductForm = ({ product, categories }: ProductFormProps) => {
               </div>
 
               {values.trackStock ? (
-                <div className="grid gap-5 md:grid-cols-2">
+                <div className="grid gap-5 md:grid-cols-2 max-md:grid-cols-1">
                   <TextInput
                     label="Available Stock Units"
                     type="number"

@@ -6,6 +6,7 @@
 
 import ChangePasswordForm from "../../components/account/ChangePasswordForm";
 import EditProfileForm from "../../components/account/EditProfileForm";
+import TeamPanel from "../../components/admin/TeamPanel";
 import DemoPanel from "../../components/demo/DemoPanel";
 
 // The rules the server uses (server/src/utils/orderRules.ts and data/promoCodes.ts). Shown here so the admin knows
@@ -30,7 +31,7 @@ const AdminSettingsPage = () => {
           Settings
         </h1>
         <p className="mt-2 max-w-130 text-ink-soft">
-          Your admin account, the shop's rules, and the demo tools.
+          Your admin account, the team, the shop's rules, and the demo tools.
         </p>
       </div>
 
@@ -38,7 +39,7 @@ const AdminSettingsPage = () => {
         <EditProfileForm />
       </div>
 
-      <div className="grid items-start gap-6 xl:grid-cols-[1fr_420px]">
+      <div className="grid items-start gap-6 xl:grid-cols-[1fr_420px] max-xl:grid-cols-1">
         <ChangePasswordForm />
 
         <section
@@ -64,6 +65,9 @@ const AdminSettingsPage = () => {
           </p>
         </section>
       </div>
+
+      {/* Team: who the admins are, and adding or removing admins */}
+      <TeamPanel />
 
       <DemoPanel />
     </div>

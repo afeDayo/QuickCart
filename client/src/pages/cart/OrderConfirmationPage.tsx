@@ -119,7 +119,7 @@ const OrderConfirmationPage = () => {
         </div>
       </section>
 
-      <div className="grid items-start gap-8 lg:grid-cols-[1fr_440px]">
+      <div className="grid items-start gap-8 lg:grid-cols-[1fr_440px] max-lg:grid-cols-1">
         <div className="flex flex-col gap-6">
           <section
             aria-labelledby="items-title"

@@ -19,6 +19,7 @@ import {
   useNavigate,
   type Location,
 } from "react-router-dom";
+import SocialSignIn from "../../components/auth/SocialSignIn";
 import Checkbox from "../../components/form/Checkbox";
 import PasswordInput from "../../components/form/PasswordInput";
 import PasswordStrength from "../../components/form/PasswordStrength";
@@ -144,7 +145,7 @@ const RegisterPage = () => {
     setServerError("");
     setSubmitting(true);
     try {
-      await register({
+      const { verification } = await register({
         firstName: form.firstName.trim(),
         lastName: form.lastName.trim(),
         email,
@@ -153,7 +154,8 @@ const RegisterPage = () => {
         confirmPassword: form.confirmPassword,
         agreeToTerms,
       });
-      navigate("/verify-email", { replace: true }); // new accounts verify their email first (STEP 37)
+      // New accounts verify their email first (STEP 37). The server has already emailed the code.
+      navigate("/verify-email", { replace: true, state: { verification } });
     } catch (error) {
       setServerError((error as Error).message); // e.g. 409 "That email is already in use."
       setSubmitting(false);
@@ -328,6 +330,12 @@ const RegisterPage = () => {
             <MdArrowForward size={20} aria-hidden="true" />
           </button>
         </form>
+
+        {/* "Sign up with Google": no password or email code needed (Google has verified the email) */}
+        <SocialSignIn
+          mode="signup"
+          onSignedIn={() => navigate(from, { replace: true })}
+        />
 
         <p className="mt-8 text-center text-[15px] text-ink-soft">
           Already have an account?{" "}

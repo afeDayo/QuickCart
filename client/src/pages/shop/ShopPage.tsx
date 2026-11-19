@@ -260,7 +260,7 @@ const ShopPage = () => {
       ) : !data && loading ? (
         <ul
           aria-hidden="true"
-          className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4"
+          className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 max-sm:grid-cols-2 max-sm:gap-3"
         >
           {Array.from({ length: 8 }, (_, index) => (
             <li
@@ -294,7 +294,7 @@ const ShopPage = () => {
             {/* While new results load, the old ones stay but fade (aria-busy tells screen readers it's updating) */}
             <ul
               aria-busy={loading}
-              className={`grid grid-cols-1 gap-6 transition-opacity sm:grid-cols-2 lg:grid-cols-4 ${loading ? "opacity-50" : ""}`}
+              className={`grid grid-cols-1 gap-6 transition-opacity sm:grid-cols-2 lg:grid-cols-4 max-sm:grid-cols-2 max-sm:gap-3 ${loading ? "opacity-50" : ""}`}
             >
               {data.products.map((product) => (
                 <li key={product._id} className="flex">

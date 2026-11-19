@@ -75,7 +75,7 @@ const AdminCustomersPage = () => {
         </p>
       </div>
 
-      <div className="grid gap-3 rounded-3xl bg-surface p-5 shadow-card md:grid-cols-[1fr_auto]">
+      <div className="grid gap-3 rounded-3xl bg-surface p-5 shadow-card md:grid-cols-[1fr_auto] max-md:grid-cols-1">
         <div className="relative">
           <label htmlFor="admin-customer-search" className="sr-only">
             Search customers

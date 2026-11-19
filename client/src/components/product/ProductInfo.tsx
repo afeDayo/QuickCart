@@ -79,7 +79,7 @@ const ProductInfo = ({ product, onShowReviews }: ProductInfoProps) => {
         <span className="text-sm text-muted">SKU: {product.sku}</span>
       </div>
 
-      <h1 className="text-3xl leading-10 font-bold tracking-tight text-ink">
+      <h1 className="text-3xl leading-10 font-bold tracking-tight text-ink max-sm:text-2xl max-sm:leading-8">
         {product.name}
       </h1>
 
@@ -193,7 +193,7 @@ const ProductInfo = ({ product, onShowReviews }: ProductInfoProps) => {
           type="button"
           onClick={add}
           disabled={soldOut}
-          className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-6 text-base font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
+          className="flex h-12 flex-1 max-sm:basis-full items-center justify-center gap-2 rounded-xl bg-primary px-6 text-base font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
         >
           <MdOutlineLocalMall size={20} aria-hidden="true" />
           {soldOut

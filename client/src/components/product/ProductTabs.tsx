@@ -85,7 +85,7 @@ const ProductTabs = ({
               No specifications listed for this product.
             </p>
           ) : (
-            <div className="grid gap-x-10 gap-y-8 md:grid-cols-2">
+            <div className="grid gap-x-10 gap-y-8 md:grid-cols-2 max-md:grid-cols-1">
               {[...groups].map(([group, specs]) => (
                 <div key={group}>
                   <h3 className="mb-2 font-semibold text-ink">{group}</h3>
@@ -114,7 +114,7 @@ const ProductTabs = ({
 
         {/* The same rules as the server's checkout (DELIVERY_OPTIONS and the 1-hour cancel, server STEP 22) */}
         {tab === "shipping" && (
-          <div className="grid gap-6 text-[15px] leading-6 text-ink-soft md:grid-cols-3">
+          <div className="grid gap-6 text-[15px] leading-6 text-ink-soft md:grid-cols-3 max-md:grid-cols-1">
             <div>
               <h3 className="mb-1 font-semibold text-ink">
                 Standard Delivery: Free

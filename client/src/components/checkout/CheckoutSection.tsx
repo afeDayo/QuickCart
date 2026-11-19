@@ -26,7 +26,7 @@ const CheckoutSection = ({
       aria-labelledby={id}
       className="overflow-hidden rounded-3xl bg-surface shadow-card"
     >
-      <header className="flex items-start justify-between gap-4 border-b border-line bg-panel/60 px-6 py-5">
+      <header className="flex items-start justify-between gap-4 border-b border-line bg-panel/60 px-6 py-5 max-sm:flex-wrap max-sm:gap-3 max-sm:px-4 max-sm:py-4">
         <div className="flex items-start gap-3">
           <span
             aria-hidden="true"
@@ -43,7 +43,7 @@ const CheckoutSection = ({
         </div>
         {badge}
       </header>
-      <div className="p-6">{children}</div>
+      <div className="p-6 max-sm:p-4">{children}</div>
     </section>
   );
 };

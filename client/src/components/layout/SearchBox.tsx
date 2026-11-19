@@ -8,8 +8,10 @@ import { useState, type FormEvent } from "react";
 import { MdSearch } from "react-icons/md";
 import { useNavigate } from "react-router-dom";
 
-const SearchBox = () => {
+// wide: the full-width box under the header on phones and tablets (the normal box only shows on large screens)
+const SearchBox = ({ wide = false }: { wide?: boolean }) => {
   const navigate = useNavigate();
+  const id = wide ? "header-search-mobile" : "header-search"; // two boxes on one page need different ids
   const [text, setText] = useState("");
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -24,9 +26,9 @@ const SearchBox = () => {
     <form
       role="search"
       onSubmit={handleSubmit}
-      className="relative hidden lg:block"
+      className={wide ? "relative w-full" : "relative hidden lg:block"}
     >
-      <label htmlFor="header-search" className="sr-only">
+      <label htmlFor={id} className="sr-only">
         Search products, brands and categories
       </label>
       <MdSearch
@@ -35,13 +37,14 @@ const SearchBox = () => {
         className="pointer-events-none absolute top-3 left-3.25 text-muted"
       />
       <input
-        id="header-search"
+        id={id}
         name="search"
         type="search"
         value={text}
         onChange={(event) => setText(event.target.value)}
-        placeholder="Search products, brands and categories..."
-        className="h-12 w-83 rounded-full bg-field pr-4 pl-11.75 text-[13px] text-ink outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/30"
+        placeholder={wide ? "Search products and brands..." : "Search products, brands and categories..."}
+        // 16px text on phones: a smaller font makes iPhones zoom in when the box is tapped
+        className={`h-12 rounded-full bg-field pr-4 pl-11.75 text-ink outline-none placeholder:text-muted focus:ring-2 focus:ring-primary/30 ${wide ? "w-full text-base" : "w-83 text-[13px]"}`}
       />
     </form>
   );

@@ -59,10 +59,10 @@ const ProductCard = ({ product, badge, details }: ProductCardProps) => {
   };
 
   return (
-    <article className="group flex w-full flex-col rounded-3xl bg-surface p-3 shadow-card transition-shadow hover:shadow-lift">
+    <article className="group flex w-full flex-col rounded-3xl bg-surface p-3 shadow-card transition-shadow hover:shadow-lift max-sm:rounded-2xl max-sm:p-2">
       <Link
         to={link}
-        className="relative mb-4 block overflow-hidden rounded-2xl bg-field"
+        className="relative mb-4 block overflow-hidden rounded-2xl bg-field max-sm:mb-2.5 max-sm:rounded-xl"
       >
         {product.images[0] ? (
           <img
@@ -79,7 +79,7 @@ const ProductCard = ({ product, badge, details }: ProductCardProps) => {
 
         {shownBadge && (
           <span
-            className={`absolute top-3 left-3 rounded-full px-2.5 py-1 text-[11px] leading-3.5 font-bold uppercase ${shownBadge.className}`}
+            className={`absolute top-3 left-3 rounded-full px-2.5 py-1 text-[11px] leading-3.5 font-bold uppercase max-sm:top-2 max-sm:left-2 max-sm:px-2 max-sm:text-[10px] ${shownBadge.className}`}
           >
             {shownBadge.label}
           </span>
@@ -91,7 +91,7 @@ const ProductCard = ({ product, badge, details }: ProductCardProps) => {
           {product.category.name}
         </p>
 
-        <h3 className="mt-1 text-base leading-5.5 font-semibold text-ink">
+        <h3 className="mt-1 text-base leading-5.5 font-semibold text-ink max-sm:line-clamp-2 max-sm:text-sm max-sm:leading-5">
           {/* The link covers the name only, so the Add button isn't inside a link */}
           <Link to={link} className="hover:text-primary">
             {product.name}
@@ -108,7 +108,7 @@ const ProductCard = ({ product, badge, details }: ProductCardProps) => {
           )}
         </div>
 
-        <div className="mt-auto flex items-center justify-between gap-2 pt-3">
+        <div className="mt-auto flex items-center justify-between gap-2 pt-3 max-sm:flex-col max-sm:items-stretch">
           <Price price={product.price} oldPrice={product.oldPrice} />
           <button
             type="button"
@@ -119,7 +119,7 @@ const ProductCard = ({ product, badge, details }: ProductCardProps) => {
                 ? `${product.name} is sold out`
                 : `Add ${product.name} to cart`
             }
-            className="h-9 shrink-0 rounded-full bg-navy px-4 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
+            className="h-9 shrink-0 max-sm:w-full rounded-full bg-navy px-4 text-sm font-semibold text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
           >
             {soldOut ? "Sold out" : "Add"}
           </button>

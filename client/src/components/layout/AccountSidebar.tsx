@@ -59,8 +59,8 @@ const AccountSidebar = () => {
   ];
 
   return (
-    <aside className="flex flex-col gap-4">
-      <div className="flex items-center gap-3 rounded-3xl bg-surface p-5 shadow-card">
+    <aside className="flex flex-col gap-4 max-lg:gap-0">
+      <div className="flex items-center gap-3 rounded-3xl bg-surface p-5 shadow-card max-lg:hidden">
         <span className="relative flex size-12 shrink-0 items-center justify-center rounded-full bg-primary text-lg font-bold text-white">
           {user.firstName[0]}
           {user.lastName[0]}
@@ -81,16 +81,16 @@ const AccountSidebar = () => {
 
       <nav
         aria-label="My Account"
-        className="rounded-3xl bg-surface p-3 shadow-card"
+        className="rounded-3xl bg-surface p-3 shadow-card max-lg:rounded-2xl max-lg:p-2"
       >
-        <ul className="flex flex-col gap-1">
+        <ul className="flex flex-col gap-1 max-lg:flex-row max-lg:overflow-x-auto">
           {links.map((link) => (
-            <li key={link.to}>
+            <li key={link.to} className="max-lg:shrink-0">
               <NavLink
                 to={link.to}
                 end={link.end} // "end": Overview is only active on /account itself, not on /account/orders
                 className={({ isActive }) =>
-                  `flex items-center gap-3 rounded-xl px-4 py-3 text-[15px] font-medium transition-colors ${
+                  `flex items-center gap-3 rounded-xl px-4 py-3 text-[15px] font-medium transition-colors max-lg:gap-2 max-lg:px-3 max-lg:py-2 max-lg:text-sm max-lg:whitespace-nowrap ${
                     isActive
                       ? "bg-primary-light/70 text-primary"
                       : "text-ink hover:bg-field"
@@ -108,7 +108,7 @@ const AccountSidebar = () => {
             </li>
           ))}
         </ul>
-        <div className="mt-2 border-t border-line pt-2">
+        <div className="mt-2 border-t border-line pt-2 max-lg:hidden">
           <button
             type="button"
             onClick={() => {
@@ -122,7 +122,7 @@ const AccountSidebar = () => {
         </div>
       </nav>
 
-      <div className="rounded-3xl bg-primary-light/50 p-5">
+      <div className="rounded-3xl bg-primary-light/50 p-5 max-lg:hidden">
         <p className="flex items-center gap-2 font-semibold text-primary">
           <MdOutlineSupportAgent size={20} aria-hidden="true" /> QuickSupport
         </p>

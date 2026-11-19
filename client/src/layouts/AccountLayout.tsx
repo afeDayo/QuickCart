@@ -14,7 +14,7 @@ const AccountLayout = () => {
       <Breadcrumb
         items={[{ label: "Home", to: "/" }, { label: "My Account" }]}
       />
-      <div className="grid items-start gap-8 lg:grid-cols-[300px_1fr]">
+      <div className="grid items-start gap-8 lg:grid-cols-[300px_1fr] max-lg:grid-cols-1">
         <AccountSidebar />
         <div className="min-w-0">
           <Outlet />

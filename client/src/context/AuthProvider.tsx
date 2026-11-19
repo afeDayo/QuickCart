@@ -52,18 +52,31 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     rememberMe: boolean,
   ) => {
     // Errors (e.g. 401 "Incorrect email or password.") are thrown on to the login page, which shows them
-    return startSession(
-      await api<AuthResponse>("/auth/login", {
-        method: "POST",
-        body: { email, password, rememberMe },
-      }),
-    );
+    const reply = await api<AuthResponse>("/auth/login", {
+      method: "POST",
+      body: { email, password, rememberMe },
+    });
+    startSession(reply);
+    return reply; // the page needs reply.verification too (a code was emailed to an unverified shopper)
   };
 
   const register = async (data: RegisterData) => {
-    return startSession(
-      await api<AuthResponse>("/auth/register", { method: "POST", body: data }),
-    );
+    const reply = await api<AuthResponse>("/auth/register", {
+      method: "POST",
+      body: data,
+    });
+    startSession(reply);
+    return reply; // reply.verification: the code the server just emailed
+  };
+
+  // "Continue with Google": the server checks Google's token, then logs in (or creates) the account
+  const googleLogin = async (credential: string) => {
+    const reply = await api<AuthResponse>("/auth/google", {
+      method: "POST",
+      body: { credential },
+    });
+    startSession(reply);
+    return reply;
   };
 
   const logout = () => {
@@ -76,7 +89,16 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ user, checking, login, register, logout, setUser, startSession }}
+      value={{
+        user,
+        checking,
+        login,
+        register,
+        googleLogin,
+        logout,
+        setUser,
+        startSession,
+      }}
     >
       {children}
     </AuthContext.Provider>

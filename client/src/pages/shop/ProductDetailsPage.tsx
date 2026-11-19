@@ -106,7 +106,7 @@ const ProductDetailsPage = () => {
     return (
       <div
         aria-busy="true"
-        className="mx-auto grid max-w-360 gap-8 px-4 py-10 md:px-12 lg:grid-cols-2"
+        className="mx-auto grid max-w-360 gap-8 px-4 py-10 md:px-12 lg:grid-cols-2 max-lg:grid-cols-1"
       >
         <div className="aspect-square animate-pulse rounded-3xl bg-surface shadow-card" />
         <div className="h-140 animate-pulse rounded-3xl bg-surface shadow-card" />
@@ -132,7 +132,7 @@ const ProductDetailsPage = () => {
             { label: product.name },
           ]}
         />
-        <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_1fr]">
+        <div className="grid items-start gap-8 lg:grid-cols-[1.1fr_1fr] max-lg:grid-cols-1">
           <ProductGallery product={product} />
           <ProductInfo product={product} onShowReviews={showReviews} />
         </div>
@@ -162,7 +162,7 @@ const ProductDetailsPage = () => {
               <MdArrowForward size={16} aria-hidden="true" />
             </Link>
           </SectionHeader>
-          <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 max-sm:grid-cols-2 max-sm:gap-3">
             {product.relatedProducts.map((related) => (
               <li key={related._id} className="flex">
                 <ProductCard

@@ -92,7 +92,8 @@ const NewsletterBanner = () => {
               aria-describedby={
                 status === "error" ? "newsletter-error" : undefined
               }
-              className="h-13 flex-1 rounded-xl bg-white px-4 text-ink outline-none placeholder:text-muted focus:ring-4 focus:ring-white/30"
+              // max-sm:flex-none: on phones the form is a column, and flex-1 would squash the box's height
+              className="h-13 flex-1 rounded-xl bg-white px-4 text-ink outline-none placeholder:text-muted focus:ring-4 focus:ring-white/30 max-sm:flex-none"
             />
             <button
               type="submit"

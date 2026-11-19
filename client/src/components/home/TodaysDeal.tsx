@@ -63,7 +63,7 @@ const TodaysDeal = () => {
       {/* overflow-x-auto: the row scrolls sideways (swipe on phones). snap: it stops neatly on a card. */}
       <ul
         ref={rowRef}
-        className="-mx-4 flex snap-x snap-mandatory gap-6 overflow-x-auto scroll-smooth px-4 pt-1 pb-4 md:mx-0 md:px-0"
+        className="-mx-4 flex snap-x snap-mandatory gap-6 overflow-x-auto scroll-smooth px-4 pt-1 pb-4 md:mx-0 md:px-0 max-lg:relative"
       >
         {loading
           ? Array.from({ length: 4 }, (_, index) => (

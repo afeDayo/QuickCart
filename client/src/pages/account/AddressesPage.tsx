@@ -61,7 +61,7 @@ const AddressesPage = () => {
           text="Add one now to check out in seconds next time."
         />
       ) : (
-        <ul className="grid gap-4 md:grid-cols-2">
+        <ul className="grid gap-4 md:grid-cols-2 max-md:grid-cols-1">
           {user.addresses.map((address) => (
             <AddressCard
               key={address._id}

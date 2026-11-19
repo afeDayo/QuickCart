@@ -44,7 +44,12 @@ export type User = {
 };
 
 // POST /api/auth/login and /register -> { token, user }
-export type AuthResponse = { token: string; user: User };
+// verification: after signing up, or when a shopper who never verified logs in, the server has just emailed a code
+export type AuthResponse = {
+  token: string;
+  user: User;
+  verification?: { message: string; devCode?: string };
+};
 
 export type CategoriesResponse = { categories: Category[] };
 

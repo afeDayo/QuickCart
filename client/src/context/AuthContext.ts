@@ -27,8 +27,9 @@ export type AuthContextValue = {
     email: string,
     password: string,
     rememberMe: boolean,
-  ) => Promise<User>;
-  register: (data: RegisterData) => Promise<User>;
+  ) => Promise<AuthResponse>; // the whole reply: the user, and "verification" if a code was just emailed
+  register: (data: RegisterData) => Promise<AuthResponse>;
+  googleLogin: (credential: string) => Promise<AuthResponse>; // "Continue with Google" (components/auth/SocialSignIn.tsx)
   logout: () => void;
   setUser: (user: User) => void; // after the profile changes (STEP 39), show the new name everywhere
   startSession: (auth: AuthResponse) => User; // log in with a token the server just gave (reset password, STEP 37)

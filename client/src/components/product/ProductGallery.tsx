@@ -69,7 +69,7 @@ const ProductGallery = ({ product }: { product: Product }) => {
       </div>
 
       {photos.length > 1 && (
-        <ul className="mt-4 grid grid-cols-4 gap-3 sm:grid-cols-5">
+        <ul className="mt-4 grid grid-cols-4 gap-3 sm:grid-cols-5 max-sm:grid-cols-5 max-sm:gap-2">
           {photos.map((photo, index) => (
             <li key={photo}>
               <button

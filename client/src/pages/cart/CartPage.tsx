@@ -125,7 +125,7 @@ const CartPage = () => {
       {items.length === 0 ? (
         <EmptyCart />
       ) : (
-        <div className="grid items-start gap-8 lg:grid-cols-[1fr_400px]">
+        <div className="grid items-start gap-8 lg:grid-cols-[1fr_400px] max-lg:grid-cols-1">
           <div className="flex flex-col gap-4">
             <FreeDeliveryBar saved={saved} />
 

@@ -41,7 +41,7 @@ const CheckOUTSummary = ({
   return (
     <aside
       aria-labelledby="checkout-summary-title"
-      className="rounded-3xl bg-surface p-6 shadow-card lg:sticky lg:top-28"
+      className="rounded-3xl bg-surface p-6 shadow-card lg:sticky lg:top-28 max-sm:p-4"
     >
       <div className="mb-4 flex items-center justify-between">
         <h2

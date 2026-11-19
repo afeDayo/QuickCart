@@ -71,14 +71,14 @@ const AccountOverviewPage = () => {
       <ProfileCard />
 
       <section aria-labelledby="recent-orders-title">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 flex items-center justify-between max-sm:flex-wrap max-sm:gap-2">
           <h2
             id="recent-orders-title"
-            className="flex items-center gap-2 text-2xl font-semibold text-ink"
+            className="flex items-center gap-2 text-2xl font-semibold text-ink max-sm:text-xl"
           >
             Recent Orders
             {data && data.totalOrders > 0 && (
-              <span className="rounded-full bg-field px-2 py-0.5 text-xs font-semibold text-ink-soft">
+              <span className="rounded-full bg-field px-2 py-0.5 text-xs font-semibold text-ink-soft max-sm:whitespace-nowrap">
                 {data.recentOrders.length} of {data.totalOrders}
               </span>
             )}
@@ -86,7 +86,7 @@ const AccountOverviewPage = () => {
           {data && data.totalOrders > 0 && (
             <Link
               to="/account/orders"
-              className="flex items-center gap-1 font-semibold text-primary-hover hover:underline"
+              className="flex items-center gap-1 font-semibold text-primary-hover hover:underline max-sm:text-sm"
             >
               View All Orders ({data.totalOrders}){" "}
               <MdArrowForward size={18} aria-hidden="true" />
@@ -117,7 +117,7 @@ const AccountOverviewPage = () => {
         )}
       </section>
 
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 md:grid-cols-2 max-md:grid-cols-1">
         <SavedAddressCard
           address={defaultAddress}
           total={user.addresses.length}

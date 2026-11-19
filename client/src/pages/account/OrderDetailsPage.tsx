@@ -112,7 +112,7 @@ const OrderDetailsPage = () => {
         </div>
       </div>
 
-      <div className="grid items-start gap-6 lg:grid-cols-[1fr_440px]">
+      <div className="grid items-start gap-6 lg:grid-cols-[1fr_440px] max-lg:grid-cols-1">
         <div className="flex flex-col gap-6">
           <ShipmentTracker order={order} />
           <PackageContents order={order} />

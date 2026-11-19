@@ -51,7 +51,7 @@ const Testimonials = () => {
         say about QuickCart.
       </p>
 
-      <ul className="mt-8 grid gap-6 text-left md:grid-cols-3">
+      <ul className="mt-8 grid gap-6 text-left md:grid-cols-3 max-md:grid-cols-1">
         {testimonials.map((item) => (
           <li key={item.name}>
             {/* <figure> + <blockquote> + <figcaption>: the HTML way to write "a quote and who said it" */}

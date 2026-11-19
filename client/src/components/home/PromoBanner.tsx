@@ -35,7 +35,7 @@ const PromoBanner = () => {
   return (
     <section
       aria-labelledby="promo-title"
-      className="grid overflow-hidden rounded-3xl bg-linear-to-r from-footer via-primary to-primary text-white shadow-banner lg:grid-cols-[1.4fr_1fr]"
+      className="grid overflow-hidden rounded-3xl bg-linear-to-r from-footer via-primary to-primary text-white shadow-banner lg:grid-cols-[1.4fr_1fr] max-lg:grid-cols-1"
     >
       <div className="p-8 md:p-10">
         <p className="mb-4 flex w-fit items-center gap-1.5 rounded-full bg-mint px-3 py-1 text-xs font-bold tracking-wide text-forest uppercase">

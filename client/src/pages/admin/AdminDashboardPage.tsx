@@ -179,7 +179,7 @@ const AdminDashboardPage = () => {
 
           <section
             aria-labelledby="chart-title"
-            className="grid gap-6 rounded-3xl bg-surface p-6 shadow-card xl:grid-cols-[1fr_260px]"
+            className="grid gap-6 rounded-3xl bg-surface p-6 shadow-card xl:grid-cols-[1fr_260px] max-xl:grid-cols-1"
           >
             <div className="min-w-0">
               <h2 id="chart-title" className="text-2xl font-semibold text-ink">
@@ -236,7 +236,7 @@ const AdminDashboardPage = () => {
             </div>
           </section>
 
-          <div className="grid items-start gap-6 xl:grid-cols-[1fr_380px]">
+          <div className="grid items-start gap-6 xl:grid-cols-[1fr_380px] max-xl:grid-cols-1">
             <RecentOrdersTable
               orders={data.recentOrders}
               total={data.totalOrdersAllTime}

@@ -41,10 +41,10 @@ const FlashDealCard = ({ product }: { product: ProductSummary }) => {
   };
 
   return (
-    <article className="flex w-full flex-col rounded-3xl bg-surface p-4 shadow-card">
+    <article className="flex w-full flex-col rounded-3xl bg-surface p-4 shadow-card max-sm:rounded-2xl max-sm:p-2.5">
       <Link
         to={link}
-        className="relative mb-4 block overflow-hidden rounded-2xl bg-field"
+        className="relative mb-4 block overflow-hidden rounded-2xl bg-field max-sm:mb-2.5 max-sm:rounded-xl"
       >
         <img
           src={product.images[0]}
@@ -53,12 +53,12 @@ const FlashDealCard = ({ product }: { product: ProductSummary }) => {
           className="aspect-square w-full object-cover"
         />
         {percentOff > 0 && (
-          <span className="absolute top-3 left-3 rounded-full bg-danger px-2.5 py-1 text-[11px] font-bold text-white">
+          <span className="absolute top-3 left-3 rounded-full bg-danger px-2.5 py-1 text-[11px] font-bold text-white max-sm:top-2 max-sm:left-2 max-sm:px-2 max-sm:text-[10px]">
             -{percentOff}% OFF
           </span>
         )}
         {product.tags.includes("fast-deal") && (
-          <span className="absolute top-3 right-3 flex items-center gap-0.5 rounded-full bg-ink/60 px-2 py-0.5 text-[11px] font-medium text-white">
+          <span className="absolute top-3 right-3 flex items-center gap-0.5 rounded-full bg-ink/60 px-2 py-0.5 text-[11px] font-medium text-white max-sm:hidden">
             <MdBolt size={13} aria-hidden="true" /> Fast Deal
           </span>
         )}
@@ -67,14 +67,14 @@ const FlashDealCard = ({ product }: { product: ProductSummary }) => {
       <p className="text-[11px] font-semibold tracking-wider text-muted uppercase">
         {product.category.name}
       </p>
-      <h3 className="mt-1 text-lg leading-6 font-semibold text-ink">
+      <h3 className="mt-1 text-lg leading-6 font-semibold text-ink max-sm:line-clamp-2 max-sm:text-sm max-sm:leading-5">
         <Link to={link} className="hover:text-primary">
           {product.name}
         </Link>
       </h3>
 
-      <p className="mt-1 flex items-baseline gap-2">
-        <span className="text-lg font-bold text-danger">
+      <p className="mt-1 flex items-baseline gap-2 max-sm:flex-wrap max-sm:gap-x-1.5">
+        <span className="text-lg font-bold text-danger max-sm:text-base">
           {naira(product.price)}
         </span>
         {product.oldPrice && (
@@ -98,7 +98,7 @@ const FlashDealCard = ({ product }: { product: ProductSummary }) => {
           style={{ width: `${claimed}%` }}
         />
       </div>
-      <p className="mt-1.5 flex justify-between text-xs">
+      <p className="mt-1.5 flex justify-between text-xs max-sm:text-[11px]">
         <span className="text-muted">Claimed: {claimed}%</span>
         <span className="font-semibold text-danger">
           {soldOut
@@ -113,7 +113,7 @@ const FlashDealCard = ({ product }: { product: ProductSummary }) => {
         type="button"
         onClick={handleAdd}
         disabled={soldOut}
-        className="mt-4 flex h-11 items-center justify-center gap-2 rounded-xl bg-navy text-base font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
+        className="mt-4 flex h-11 max-sm:mt-3 max-sm:h-10 max-sm:text-sm items-center justify-center gap-2 rounded-xl bg-navy text-base font-medium text-white transition-colors hover:bg-primary disabled:cursor-not-allowed disabled:bg-line-soft disabled:text-muted"
       >
         <MdOutlineAddShoppingCart size={18} aria-hidden="true" />
         {soldOut ? "Sold out" : "Quick Add"}

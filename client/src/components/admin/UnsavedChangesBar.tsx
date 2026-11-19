@@ -25,7 +25,7 @@ const UnsavedChangesBar = ({
 }: UnsavedChangesBarProps) => {
   return (
     // sticky bottom-4: it rides along the bottom of the screen while you scroll the form
-    <div className="sticky bottom-4 z-10 rounded-2xl bg-navy px-5 py-4 text-white shadow-lg">
+    <div className="sticky bottom-4 z-10 rounded-2xl bg-navy px-5 py-4 text-white shadow-lg max-sm:px-4">
       {error && (
         <p
           role="alert"
@@ -47,12 +47,12 @@ const UnsavedChangesBar = ({
             <p className="hidden text-sm text-white/70 sm:block">{note}</p>
           </div>
         </div>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-3 max-sm:w-full">
           <button
             type="button"
             onClick={onDiscard}
             disabled={!dirty || saving}
-            className="h-11 rounded-xl px-4 font-semibold hover:bg-white/10 disabled:opacity-40"
+            className="h-11 rounded-xl px-4 font-semibold hover:bg-white/10 disabled:opacity-40 max-sm:px-3"
           >
             Discard
           </button>
@@ -60,7 +60,7 @@ const UnsavedChangesBar = ({
           <button
             type="submit"
             disabled={saving}
-            className="flex h-11 items-center gap-2 rounded-xl bg-primary px-5 font-semibold whitespace-nowrap hover:bg-primary-hover disabled:opacity-60"
+            className="flex h-11 items-center gap-2 rounded-xl bg-primary px-5 font-semibold whitespace-nowrap max-sm:flex-1 max-sm:justify-center max-sm:px-3 max-sm:text-sm hover:bg-primary-hover disabled:opacity-60"
           >
             <MdSave size={20} aria-hidden="true" />
             {saving ? "Saving..." : saveLabel}

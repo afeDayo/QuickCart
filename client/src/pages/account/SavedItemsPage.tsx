@@ -45,7 +45,7 @@ const SavedItemsPage = () => {
       ) : !data ? (
         <div
           aria-busy="true"
-          className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3"
+          className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3 max-sm:grid-cols-2 max-sm:gap-3"
         >
           {[1, 2, 3].map((n) => (
             <div
@@ -69,7 +69,7 @@ const SavedItemsPage = () => {
           }
         />
       ) : (
-        <ul className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+        <ul className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3 max-sm:grid-cols-2 max-sm:gap-3">
           {products.map((product) => (
             <li key={product._id} className="relative flex">
               <ProductCard product={product} />

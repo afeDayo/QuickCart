@@ -299,7 +299,7 @@ const AdminOrdersPage = () => {
             ))}
           </div>
 
-          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto] max-md:grid-cols-1">
             <div className="relative">
               <label htmlFor="admin-order-search" className="sr-only">
                 Search orders
@@ -314,7 +314,7 @@ const AdminOrdersPage = () => {
                 type="search"
                 value={searchText}
                 onChange={(event) => handleSearch(event.target.value)}
-                placeholder="Search by order ID, customer name, email or waybill..."
+                placeholder="Search by order ID, name, email or waybill..."
                 className="h-12 w-full rounded-xl bg-field pr-4 pl-11 outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>

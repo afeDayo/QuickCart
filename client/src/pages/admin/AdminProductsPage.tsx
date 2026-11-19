@@ -199,7 +199,7 @@ const AdminProductsPage = () => {
           ))}
         </div>
 
-        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto]">
+        <div className="grid gap-3 md:grid-cols-[1fr_auto_auto_auto] max-md:grid-cols-1">
           <div className="relative">
             <label htmlFor="admin-product-search" className="sr-only">
               Search products

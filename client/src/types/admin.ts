@@ -193,3 +193,6 @@ export type AdminCustomerResponse = {
     "_id" | "orderNumber" | "total" | "status" | "createdAt"
   > & { items: { quantity: number }[] })[];
 };
+
+// Admin → Settings → Team (server: adminTeamController.ts)
+export type AdminTeamMember = { _id: string; firstName: string; lastName: string; email: string; createdAt: string };

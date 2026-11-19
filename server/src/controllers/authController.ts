@@ -15,7 +15,9 @@
 // POST /api/auth/verify-email          -> check the code            (protect)
 
 import { Request, Response } from "express";
-import { User } from "../models/User";
+import { OAuth2Client, type TokenPayload } from "google-auth-library";
+import { HydratedDocument } from "mongoose";
+import { IUser, User } from "../models/User";
 import { AppError } from "../utils/AppError";
 import { signToken } from "../utils/token";
 import { checkNewPassword } from "../utils/password";
@@ -56,9 +58,12 @@ export const register = async (req: Request, res: Response) => {
     password,
   });
 
+  // Email the verification code straight away, so it's waiting in the inbox when the Verify page opens
+  const verification = await sendVerificationCode(user);
+
   // 201 = "created". Log them straight in by sending a token too.
   // The user's toJSON (STEP 17) removes the password from the reply.
-  res.status(201).json({ token: signToken(String(user._id)), user });
+  res.status(201).json({ token: signToken(String(user._id)), user, verification });
 };
 
 // POST /api/auth/login
@@ -79,7 +84,101 @@ export const login = async (req: Request, res: Response) => {
     throw new AppError(401, "Incorrect email or password.");
   }
 
-  res.json({ token: signToken(String(user._id), Boolean(rememberMe)), user });
+  // A shopper who never verified their email gets a fresh code now, and the website opens the Verify page.
+  // (Admins and verified shoppers log in as usual: no code.)
+  const verification =
+    !user.isEmailVerified && user.role !== "admin"
+      ? await sendVerificationCode(user)
+      : undefined;
+
+  res.json({
+    token: signToken(String(user._id), Boolean(rememberMe)),
+    user,
+    verification,
+  });
+};
+
+// ---- "Continue with Google" -----------------------------------------------------------------
+// The website shows Google's own button. When the person picks their Google account, Google gives the website
+// a signed "ID token" (a JWT) saying who they are. The website sends it here; we check with Google that it's
+// genuine and meant for OUR app, then log the person in (or create their account).
+
+const googleClient = new OAuth2Client();
+
+// Find the account for this Google person, or make one.
+//   1. Already linked (same googleId)            -> that account
+//   2. An account with the same email exists     -> link Google to it (Google has confirmed they own the email)
+//   3. Nobody                                     -> a new, already-verified account with no password
+// Admin accounts are never opened with Google: staff sign in with their password.
+export const findOrCreateGoogleUser = async (google: TokenPayload) => {
+  const email = String(google.email).toLowerCase();
+
+  let user: HydratedDocument<IUser> | null = await User.findOne({
+    googleId: google.sub,
+  }).select("+googleId");
+  let isNew = false;
+
+  if (!user) {
+    user = await User.findOne({ email }).select("+googleId");
+    if (user) {
+      if (user.role === "admin") {
+        throw new AppError(403, "Admin accounts sign in with their email and password.");
+      }
+      user.googleId = google.sub;
+      user.isEmailVerified = true; // Google has verified this email
+      await user.save();
+    }
+  }
+
+  if (!user) {
+    const nameParts = (google.name ?? "").trim().split(/\s+/);
+    user = await User.create({
+      firstName: google.given_name || nameParts[0] || email.split("@")[0],
+      lastName: google.family_name || nameParts.slice(1).join(" ") || "Shopper",
+      email,
+      googleId: google.sub,
+      isEmailVerified: true,
+    });
+    isNew = true;
+  }
+
+  if (user.role === "admin") {
+    throw new AppError(403, "Admin accounts sign in with their email and password.");
+  }
+  return { user, isNew };
+};
+
+// POST /api/auth/google   { "credential": "<the ID token Google gave the website>" }
+export const googleSignIn = async (req: Request, res: Response) => {
+  if (!env.googleClientId) {
+    throw new AppError(503, "Google sign-in isn't set up yet. Please use your email and password.");
+  }
+
+  const credential = typeof req.body?.credential === "string" ? req.body.credential : "";
+  if (!credential) {
+    throw new AppError(400, "Google didn't send a sign-in token. Please try again.");
+  }
+
+  // Checks Google's signature, that it hasn't expired, and that it was made for OUR Client ID ("audience")
+  let google: TokenPayload | undefined;
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: env.googleClientId,
+    });
+    google = ticket.getPayload();
+  } catch {
+    throw new AppError(401, "Google sign-in didn't work. Please try again.");
+  }
+
+  if (!google?.sub || !google.email || !google.email_verified) {
+    throw new AppError(401, "Your Google account needs a verified email address to sign in.");
+  }
+
+  const { user, isNew } = await findOrCreateGoogleUser(google);
+
+  // 201 when the account was just created, like register. Google sign-ins stay logged in (like "Remember me").
+  res.status(isNew ? 201 : 200).json({ token: signToken(String(user._id), true), user });
 };
 
 // GET /api/auth/me (after protect, so req.user is already loaded)
@@ -215,13 +314,10 @@ export const resetPassword = async (
 };
 
 // POST /api/auth/send-verification   (protect: must be logged in)
-export const sendVerification = async (req: Request, res: Response) => {
-  const user = req.user!; // "!" = "protect ran first, so this is definitely set"
-
-  if (user.isEmailVerified) {
-    throw new AppError(400, "Your email is already verified.");
-  }
-
+// Make a new 6-digit code, save its scrambled copy, and email the real one.
+// Used by sign-up and by an unverified shopper's login (the code arrives without asking), and by
+// "Send a new code" (sendVerification below). Demo mode also returns the code, so a demo needs no inbox.
+const sendVerificationCode = async (user: HydratedDocument<IUser>) => {
   const { code, hashed } = makeCode();
   user.emailVerifyToken = hashed;
   user.emailVerifyExpires = new Date(Date.now() + FIFTEEN_MINUTES);
@@ -236,12 +332,20 @@ export const sendVerification = async (req: Request, res: Response) => {
   const reply: { message: string; devCode?: string } = {
     message: `We've sent a 6-digit code to ${user.email}.`,
   };
-
   if (env.demoMode) {
     reply.devCode = code;
   }
+  return reply;
+};
 
-  res.json(reply);
+export const sendVerification = async (req: Request, res: Response) => {
+  const user = req.user!; // "!" = "protect ran first, so this is definitely set"
+
+  if (user.isEmailVerified) {
+    throw new AppError(400, "Your email is already verified.");
+  }
+
+  res.json(await sendVerificationCode(user));
 };
 
 // POST /api/auth/verify-email   { "code": "048213" }   (protect)

@@ -17,18 +17,18 @@ const CartItem = ({ item }: { item: CartItemType }) => {
   const link = `/product/${item.slug}`;
 
   return (
-    <li className="flex gap-4 rounded-3xl bg-surface p-4 shadow-card sm:gap-5">
+    <li className="flex gap-4 rounded-3xl bg-surface p-4 shadow-card sm:gap-5 max-sm:gap-3 max-sm:p-3">
       <Link to={link} className="shrink-0">
         <img
           src={item.image}
           alt={item.name}
-          className="size-24 rounded-2xl bg-field object-cover sm:size-32"
+          className="size-24 rounded-2xl bg-field object-cover sm:size-32 max-sm:size-20"
         />
       </Link>
 
       <div className="flex min-w-0 flex-1 flex-col justify-between gap-3 sm:flex-row">
         <div className="min-w-0">
-          <h2 className="text-lg leading-6 font-semibold text-ink">
+          <h2 className="text-lg leading-6 font-semibold text-ink max-sm:text-base max-sm:leading-5">
             <Link to={link} className="hover:text-primary">
               {item.name}
             </Link>
@@ -51,7 +51,7 @@ const CartItem = ({ item }: { item: CartItemType }) => {
           )}
         </div>
 
-        <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-end">
+        <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-end max-sm:flex-wrap max-sm:gap-x-3 max-sm:gap-y-2">
           <QuantityStepper
             size="sm"
             value={item.quantity}
@@ -59,7 +59,7 @@ const CartItem = ({ item }: { item: CartItemType }) => {
             onChange={(quantity) => updateQuantity(item.key, quantity)}
             label={`Quantity of ${item.name}`}
           />
-          <p className="text-xl font-bold text-ink">
+          <p className="text-xl font-bold text-ink max-sm:text-lg">
             {naira(item.price * item.quantity)}
           </p>
           <button

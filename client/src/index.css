@@ -133,3 +133,16 @@
     }
   }
 }
+
+/* Phones only (below 640px): form fields.
+   - 16px text: with anything smaller, iPhones zoom the whole page in when a field is tapped.
+   - "…": a placeholder too long for a narrow box ends with "…" instead of being cut mid-word.
+   (Not the big one-digit boxes of the email code, which use text-2xl.) */
+@media (max-width: 639.98px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not(.text-2xl),
+  select,
+  textarea {
+    font-size: 16px;
+    text-overflow: ellipsis;
+  }
+}

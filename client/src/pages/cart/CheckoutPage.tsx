@@ -224,7 +224,7 @@ const CheckoutPage = () => {
       </div>
       <h1 className="sr-only">Checkout</h1>
 
-      <div className="grid items-start gap-8 lg:grid-cols-[1fr_380px]">
+      <div className="grid items-start gap-8 lg:grid-cols-[1fr_380px] max-lg:grid-cols-1">
         <div className="flex flex-col gap-6">
           <ContactInfoForm
             form={form}

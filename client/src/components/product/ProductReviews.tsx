@@ -58,7 +58,7 @@ const ProductReviews = ({ product, onReviewed }: ProductReviewsProps) => {
   };
 
   return (
-    <div className="grid gap-10 lg:grid-cols-[320px_1fr]">
+    <div className="grid gap-10 lg:grid-cols-[320px_1fr] max-lg:grid-cols-1">
       {/* Left: the average and the bars */}
       <div>
         <div className="flex items-center gap-4">
